@@ -1,0 +1,134 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Brand (shikshagraha toolkit) */
+    --indigo: 87 46 145;
+    --purple: 153 69 154;
+    --pink: 237 35 136;
+    --red: 209 31 68;
+    --vermilion: 238 69 51;
+    --tangerine: 255 153 17;
+    --yellow: 255 222 89;
+    --teal: 0 221 187;
+    --cyan: 51 220 238;
+    --blue: 17 119 255;
+    --clay: 202 120 98;
+    --terracotta: 150 28 0;
+
+    /* Neutrals */
+    --bg-page: 248 246 251;
+    --bg-surface: 255 255 255;
+    --bg-subtle: 241 237 247;
+    --border: 230 225 238;
+    --border-strong: 207 198 221;
+    --text-primary: 31 21 48;
+    --text-secondary: 91 85 102;
+    --text-muted: 133 127 144;
+    --indigo-hover: 71 37 122;
+    --indigo-50: 238 232 246;
+    --shadow: 31 21 48;
+
+    /* Text-safe variants of brand colours (same as base in light mode) */
+    --indigo-text: 87 46 145;
+    --purple-text: 153 69 154;
+    --red-text: 209 31 68;
+    --stopped-dot: 133 127 144;
+
+    /* Status badges */
+    --st-pending-bg: 255 241 221;
+    --st-pending-fg: 138 75 0;
+    --st-approved-bg: 238 232 246;
+    --st-approved-fg: 87 46 145;
+    --st-provisioning-bg: 227 238 255;
+    --st-provisioning-fg: 11 79 176;
+    --st-running-bg: 221 250 244;
+    --st-running-fg: 0 105 90;
+    --st-stopped-bg: 241 239 244;
+    --st-stopped-fg: 91 85 102;
+    --st-rejected-bg: 252 228 233;
+    --st-rejected-fg: 209 31 68;
+    --st-change-bg: 247 233 247;
+    --st-change-fg: 153 69 154;
+    --st-over-bg: 253 231 227;
+    --st-over-fg: 181 48 31;
+
+    color-scheme: light;
+  }
+
+  .dark {
+    --bg-page: 20 16 28;
+    --bg-surface: 28 23 38;
+    --bg-subtle: 38 32 51;
+    --border: 51 43 66;
+    --border-strong: 69 58 88;
+    --text-primary: 241 237 247;
+    --text-secondary: 185 178 198;
+    --text-muted: 142 135 155;
+    --indigo-hover: 108 64 170;
+    --indigo-50: 42 33 64;
+    --shadow: 0 0 0;
+
+    --indigo-text: 183 156 230;
+    --purple-text: 215 155 216;
+    --red-text: 242 122 147;
+    --stopped-dot: 142 135 155;
+
+    --st-pending-bg: 58 42 18;
+    --st-pending-fg: 255 195 122;
+    --st-approved-bg: 46 36 72;
+    --st-approved-fg: 201 178 240;
+    --st-provisioning-bg: 21 40 74;
+    --st-provisioning-fg: 141 187 255;
+    --st-running-bg: 14 54 49;
+    --st-running-fg: 95 232 208;
+    --st-stopped-bg: 42 37 51;
+    --st-stopped-fg: 185 178 198;
+    --st-rejected-bg: 62 21 33;
+    --st-rejected-fg: 245 143 165;
+    --st-change-bg: 58 30 59;
+    --st-change-fg: 226 166 227;
+    --st-over-bg: 63 27 22;
+    --st-over-fg: 255 154 139;
+
+    color-scheme: dark;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-bg-page font-sans text-body text-text-primary antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(var(--pink));
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: rgb(var(--indigo) / 0.18);
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-card border border-border bg-bg-surface shadow-card;
+  }
+  .card-interactive {
+    @apply transition-[box-shadow,border-color] duration-150 hover:border-border-strong hover:shadow-card-hover;
+  }
+  .eyebrow {
+    @apply text-eyebrow uppercase text-text-muted;
+  }
+  .link {
+    @apply font-semibold text-indigo-text underline-offset-2 hover:underline;
+  }
+}
