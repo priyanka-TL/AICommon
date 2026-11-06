@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Archive, ArchiveRestore, ExternalLink, Library, Pencil, Plus, SearchX } from 'lucide-react'
 import type { CatalogCategory, CatalogItem, CatalogStatus } from '@/data/types'
@@ -30,18 +31,20 @@ export function ItemMark({ item, className }: { item: CatalogItem; className?: s
 export default function AdminCatalog() {
   const loading = useSimulatedLoading()
   const catalog = useAppStore((s) => s.catalog)
+  const tenants = useAppStore((s) => s.tenants)
+  const [params] = useSearchParams()
   const environments = useAppStore((s) => s.environments)
   const setCatalogStatus = useAppStore((s) => s.setCatalogStatus)
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<'all' | CatalogCategory>('all')
   const [hosting, setHosting] = useState<'all' | CatalogItem['hosting']>('all')
   const [status, setStatus] = useState<'all' | CatalogStatus>('all')
-  const [formOpen, setFormOpen] = useState(false)
-  const [editingId, setEditingId] = useState<string | null>(null)
+  const [formOpen, setFormOpen] = useState(!!params.get('item'))
+  const [editingId, setEditingId] = useState<string | null>(params.get('item'))
   const [deprecateTarget, setDeprecateTarget] = useState<CatalogItem | null>(null)
 
   const usage = useMemo(() => {
-    const live = environments.filter((e) => e.status !== 'rejected')
+    const live = environments.filter((e) => e.status !== 'terminated')
     const m = new Map<string, number>()
     for (const e of live) {
       for (const id of [...e.spec.llms.map((l) => l.id), ...e.spec.asr, ...e.spec.capabilities]) m.set(id, (m.get(id) ?? 0) + 1)
@@ -93,6 +96,17 @@ export default function AdminCatalog() {
     { key: 'version', header: 'Version', cell: (c) => <code className="font-mono text-caption text-text-secondary">{c.version}</code>, className: 'hidden xl:table-cell' },
     { key: 'licence', header: 'Licence', cell: (c) => <span className="text-text-secondary">{c.licence}</span>, className: 'hidden xl:table-cell' },
     { key: 'cost', header: 'Cost (credits)', align: 'right', cell: (c) => <span className="text-text-secondary">{costLabel(c).replace(' credits', '')}</span>, className: 'hidden lg:table-cell' },
+    {
+      key: 'avail',
+      header: 'Available to',
+      cell: (c) => (
+        <span className="text-text-secondary">
+          {c.availability === 'all' ? 'All tenants' : c.availability.map((id) => tenants.find((t) => t.id === id)?.name).filter(Boolean).join(', ')}
+          {c.origin === 'suggestion' && <Tag className="ml-2">Suggested</Tag>}
+        </span>
+      ),
+      className: 'hidden lg:table-cell',
+    },
     { key: 'use', header: 'In use', align: 'right', cell: (c) => usage.get(c.id) ?? 0 },
     { key: 'status', header: 'Status', cell: (c) => <CatalogStatusBadge status={c.status} /> },
     {
@@ -120,8 +134,8 @@ export default function AdminCatalog() {
     <>
       <PageHeader
         eyebrow="Platform"
-        title="Capability catalog"
-        description="Models, speech providers and open-source tools that organisations can add to their environments."
+        title="Model & capability registry"
+        description="Every model, speech provider and tool on the platform. Choose which tenants each one is available to; Tenant Admins then switch them on for their teams."
         actions={
           <Button
             onClick={() => {
@@ -183,7 +197,7 @@ export default function AdminCatalog() {
           filtersActive ? (
             <EmptyState
               icon={SearchX}
-              title="Nothing in the catalog matches these filters"
+              title="Nothing in the registry matches these filters"
               action={
                 <Button
                   variant="secondary"
@@ -199,7 +213,7 @@ export default function AdminCatalog() {
               }
             />
           ) : (
-            <EmptyState icon={Library} title="The catalog is empty" action={<Button onClick={() => setFormOpen(true)}>Add capability</Button>} />
+            <EmptyState icon={Library} title="The registry is empty" action={<Button onClick={() => setFormOpen(true)}>Add capability</Button>} />
           )
         }
         mobileCard={(c) => (

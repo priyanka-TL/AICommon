@@ -1,10 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, Info, Save, Send, ShieldAlert } from 'lucide-react'
-import type { CatalogCategory, CatalogItem, EnvSpec, Language, Tenant } from '@/data/types'
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, FolderKanban, Info, MessageSquareWarning, Save, Send, ShieldAlert } from 'lucide-react'
+import type { CatalogCategory, CatalogItem, EnvSpec, Language, Project, Role, Tenant } from '@/data/types'
 import { useAppStore, useCurrentTenant, useCurrentUser } from '@/store/useAppStore'
-import { activeHoursPerMonth, checkQuota, estimateCost, HOURLY_RATE } from '@/lib/cost'
+import { useTenantCatalog } from '@/store/selectors'
+import { activeHoursPerMonth, estimateCost, HOURLY_RATE } from '@/lib/cost'
+import { allocationOf, checkQuota, quotaMessage, subQuota, tenantAllocated } from '@/lib/quota'
+import { addsInfrastructure } from '@/lib/spec'
+import { envPath, requestPath, requestsPath } from '@/lib/paths'
+import { EmptyState } from '@/components/shared/EmptyState'
 import { formatInt } from '@/lib/format'
 import { AUTO_SHUTDOWN_OPTIONS, CATEGORY_LABELS, COMPUTE_TIERS, DATA_CLASSES, LANGUAGES, PURPOSES } from '@/lib/labels'
 import { diffSpecs } from '@/lib/spec'
@@ -35,9 +40,11 @@ const DURATIONS = [2, 4, 6, 8, 12, 16]
 export const DEFAULT_SPEC: EnvSpec = {
   name: '',
   description: '',
+  projectId: '',
   purpose: 'development',
   durationWeeks: 8,
   compute: 't4',
+  gpuCount: 1,
   storageGb: 100,
   autoShutdownHours: 2,
   llms: [],
@@ -50,13 +57,14 @@ export const DEFAULT_SPEC: EnvSpec = {
   justification: '',
 }
 
-type Errors = Partial<Record<'name' | 'languages' | 'justification' | 'changes', string>>
+type Errors = Partial<Record<'name' | 'projectId' | 'languages' | 'justification' | 'changes', string>>
 
 function validate(spec: EnvSpec, step: number): Errors {
   const e: Errors = {}
+  if (step === 0 && !spec.projectId) e.projectId = 'Choose the project this environment is for.'
   if (step === 0 && spec.name.trim().length < 3) e.name = 'Give the environment a name of at least 3 characters.'
   if (step === 3 && spec.asr.length > 0 && spec.languages.length === 0) e.languages = 'Choose at least one language for speech recognition.'
-  if (step === 6 && spec.justification.trim().length < 10) e.justification = 'Tell your admin in a sentence or two why your organisation needs this.'
+  if (step === 6 && spec.justification.trim().length < 10) e.justification = 'Tell your reviewers in a sentence or two why your organisation needs this.'
   return e
 }
 
@@ -78,9 +86,23 @@ function RadioCard({ value, title, description, extra }: { value: string; title:
   )
 }
 
-function StepPurpose({ spec, set, errors }: StepProps) {
+function StepPurpose({ spec, set, errors, projects }: StepProps) {
   return (
     <div className="flex flex-col gap-6">
+      <Field label="Project" htmlFor="env-project" required error={errors.projectId} helper="Project members can see and use this environment.">
+        <Select value={spec.projectId} onValueChange={(v) => set({ projectId: v })}>
+          <SelectTrigger id="env-project" className="sm:max-w-md" aria-invalid={!!errors.projectId}>
+            <SelectValue placeholder="Choose a project" />
+          </SelectTrigger>
+          <SelectContent>
+            {projects.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
       <div>
         <p className="mb-3 text-sm font-semibold text-text-primary">What is this environment for?</p>
         <RadioGroup value={spec.purpose} onValueChange={(v) => set({ purpose: v as EnvSpec['purpose'] })} className="sm:grid-cols-2" aria-label="Purpose">
@@ -149,6 +171,23 @@ function StepCompute({ spec, set }: StepProps) {
         </RadioGroup>
       </div>
 
+      {COMPUTE_TIERS.find((t) => t.value === spec.compute)!.gpu && (
+        <Field label="Number of GPUs" htmlFor="gpu-count" helper="Each GPU comes with its own vCPU and RAM, as listed above.">
+          <Select value={String(spec.gpuCount)} onValueChange={(v) => set({ gpuCount: Number(v) })}>
+            <SelectTrigger id="gpu-count" className="sm:max-w-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {[1, 2, 3, 4].map((n) => (
+                <SelectItem key={n} value={String(n)}>
+                  {n} GPU{n > 1 ? 's' : ''}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      )}
+
       <div className="flex flex-col gap-2">
         <div className="flex items-baseline justify-between">
           <label htmlFor="storage" className="text-sm font-semibold text-text-primary">
@@ -183,15 +222,15 @@ function NotAllowed({ tenant, what }: { tenant: Tenant; what: string }) {
     <div className="flex gap-3 rounded-card border border-border bg-bg-subtle p-4 text-sm text-text-secondary">
       <ShieldAlert className="mt-0.5 size-5 shrink-0 text-text-muted" aria-hidden />
       <p>
-        {what} is not enabled for {tenant.name}. Ask your ShikshaLokam admin to turn it on, then come back to this step.
+        No {what.toLowerCase()} are enabled for {tenant.name} yet. Ask your Tenant Admin to switch some on.
       </p>
     </div>
   )
 }
 
-function StepLlms({ spec, set, catalog, tenant }: StepProps) {
-  const items = catalog.filter((c) => c.category === 'llm' && c.status !== 'deprecated')
-  const allowed = tenant.allowedCapabilities.includes('llm')
+function StepLlms({ spec, set, catalog, selectable, tenant }: StepProps) {
+  const items = selectable.filter((c) => c.category === 'llm')
+  const allowed = items.length > 0
   const toggle = (id: string) =>
     set({
       llms: spec.llms.some((l) => l.id === id) ? spec.llms.filter((l) => l.id !== id) : [...spec.llms, { id, tokenBudget: 5 }],
@@ -200,7 +239,7 @@ function StepLlms({ spec, set, catalog, tenant }: StepProps) {
     <div className="flex flex-col gap-6">
       {!allowed && <NotAllowed tenant={tenant} what="Language models" />}
       <p className="text-sm text-text-secondary">Choose one or more. Hosted APIs are quick to start; open models run on shared GPUs and cost less per token.</p>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,15rem),1fr))] gap-3">
         {items.map((item) => (
           <SelectableCard key={item.id} item={item} selected={spec.llms.some((l) => l.id === item.id)} onToggle={() => toggle(item.id)} disabled={!allowed} />
         ))}
@@ -238,9 +277,9 @@ function StepLlms({ spec, set, catalog, tenant }: StepProps) {
   )
 }
 
-function StepAsr({ spec, set, catalog, tenant, errors }: StepProps) {
-  const items = catalog.filter((c) => c.category === 'asr' && c.status !== 'deprecated')
-  const allowed = tenant.allowedCapabilities.includes('asr')
+function StepAsr({ spec, set, catalog, selectable, tenant, errors }: StepProps) {
+  const items = selectable.filter((c) => c.category === 'asr')
+  const allowed = items.length > 0
   const toggle = (id: string) => set({ asr: spec.asr.includes(id) ? spec.asr.filter((x) => x !== id) : [...spec.asr, id] })
   const toggleLang = (l: Language) =>
     set({ languages: spec.languages.includes(l) ? spec.languages.filter((x) => x !== l) : [...spec.languages, l] })
@@ -252,7 +291,7 @@ function StepAsr({ spec, set, catalog, tenant, errors }: StepProps) {
     <div className="flex flex-col gap-6">
       {!allowed && <NotAllowed tenant={tenant} what="Speech recognition" />}
       <p className="text-sm text-text-secondary">Optional. Pick two providers if you want to compare transcripts in the Playground.</p>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,15rem),1fr))] gap-3">
         {items.map((item) => (
           <SelectableCard key={item.id} item={item} selected={spec.asr.includes(item.id)} onToggle={() => toggle(item.id)} disabled={!allowed} />
         ))}
@@ -305,30 +344,26 @@ function StepAsr({ spec, set, catalog, tenant, errors }: StepProps) {
 
 const CAPABILITY_GROUPS: CatalogCategory[] = ['agent-framework', 'vector-db', 'evaluation', 'low-code']
 
-function StepCapabilities({ spec, set, catalog, tenant }: StepProps) {
+function StepCapabilities({ spec, set, selectable, tenant }: StepProps) {
   const toggle = (id: string) =>
     set({ capabilities: spec.capabilities.includes(id) ? spec.capabilities.filter((x) => x !== id) : [...spec.capabilities, id] })
   return (
     <div className="flex flex-col gap-8">
       <p className="text-sm text-text-secondary">Add the open-source building blocks you need. Each is installed and configured in your environment.</p>
       {CAPABILITY_GROUPS.map((cat) => {
-        const allowed = tenant.allowedCapabilities.includes(cat)
-        const items = catalog.filter((c) => c.category === cat && c.status !== 'deprecated')
+        const items = selectable.filter((c) => c.category === cat)
         return (
           <section key={cat}>
             <h3 className="mb-3 font-heading text-h3 text-text-primary">{CATEGORY_LABELS[cat]}</h3>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {items.map((item) => (
-                <SelectableCard
-                  key={item.id}
-                  item={item}
-                  selected={spec.capabilities.includes(item.id)}
-                  onToggle={() => toggle(item.id)}
-                  disabled={!allowed}
-                  disabledReason="Not enabled for your organisation"
-                />
-              ))}
-            </div>
+            {items.length === 0 ? (
+              <p className="text-sm text-text-secondary">None enabled for {tenant.name}. Your Tenant Admin can switch them on.</p>
+            ) : (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,15rem),1fr))] gap-3">
+                {items.map((item) => (
+                  <SelectableCard key={item.id} item={item} selected={spec.capabilities.includes(item.id)} onToggle={() => toggle(item.id)} />
+                ))}
+              </div>
+            )}
           </section>
         )
       })}
@@ -387,13 +422,12 @@ function StepData({ spec, set }: StepProps) {
   )
 }
 
-function StepReview({ spec, set, catalog, tenant, errors, goTo, editing }: StepProps & { goTo: (s: number) => void; editing: boolean }) {
-  const quota = checkQuota(tenant, estimateCost(spec, catalog))
+function StepReview({ spec, set, catalog, projects, errors, goTo, editing, quotaNote, role }: StepProps & { goTo: (s: number) => void; editing: boolean; quotaNote: string | null }) {
   return (
     <div className="flex flex-col gap-6">
       <div className="rounded-card border border-border p-5">
         <p className="mb-4 font-heading text-h3 text-text-primary">{spec.name || 'Untitled environment'}</p>
-        <SpecSummary spec={spec} catalog={catalog} onEdit={goTo} />
+        <SpecSummary spec={spec} catalog={catalog} projects={projects} onEdit={goTo} />
       </div>
       <Field
         label="Why does your organisation need this?"
@@ -416,16 +450,18 @@ function StepReview({ spec, set, catalog, tenant, errors, goTo, editing }: StepP
           <AlertTriangle className="size-4" aria-hidden /> {errors.changes}
         </p>
       )}
-      {quota.over && (
+      {quotaNote && (
         <div className="flex gap-3 rounded-card bg-status-over-bg p-4 text-sm text-status-over-fg">
           <AlertTriangle className="mt-0.5 size-5 shrink-0" aria-hidden />
-          <p>{quota.message} You can still submit; your admin will decide.</p>
+          <p>{quotaNote} You can still submit.</p>
         </div>
       )}
       <p className="text-caption text-text-muted">
         {editing
-          ? 'Submitting creates a change request. Your environment keeps its current setup until an admin approves the change.'
-          : 'Submitting sends this to the ShikshaLokam platform team. You’ll get a notification when they review it.'}
+          ? 'Changes that need no new infrastructure apply straight away. Anything that adds infrastructure goes to the Super Admin for approval.'
+          : role === 'tenant_admin'
+            ? 'As a Tenant Admin, your request goes straight to the Super Admin, who approves new infrastructure.'
+            : 'Your Tenant Admin reviews it first, then the Super Admin approves new infrastructure. You’ll get a notification at each step.'}
       </p>
     </div>
   )
@@ -434,8 +470,13 @@ function StepReview({ spec, set, catalog, tenant, errors, goTo, editing }: StepP
 interface StepProps {
   spec: EnvSpec
   set: (patch: Partial<EnvSpec>) => void
+  /** Full catalog, for names and costs. */
   catalog: CatalogItem[]
+  /** Items this person can pick: enabled for the tenant, plus anything already selected. */
+  selectable: CatalogItem[]
+  projects: Project[]
   tenant: Tenant
+  role: Role
   errors: Errors
 }
 
@@ -443,22 +484,35 @@ interface StepProps {
 
 export default function NewEnvironment() {
   const { id: editId } = useParams()
+  const [params] = useSearchParams()
+  const requestId = params.get('request')
   const user = useCurrentUser()!
   const tenant = useCurrentTenant()!
   const catalog = useAppStore((s) => s.catalog)
+  const environments = useAppStore((s) => s.environments)
+  const allProjects = useAppStore((s) => s.projects)
+  const users = useAppStore((s) => s.users)
+  const tenantItems = useTenantCatalog()
   const editingEnv = useAppStore((s) => (editId ? s.environments.find((e) => e.id === editId) : undefined))
-  const draft = useAppStore((s) => s.drafts[user.id])
+  const existing = useAppStore((s) => (requestId ? s.requests.find((r) => r.id === requestId) : undefined))
   const saveDraft = useAppStore((s) => s.saveDraft)
-  const clearDraft = useAppStore((s) => s.clearDraft)
   const submitRequest = useAppStore((s) => s.submitRequest)
-  const submitChangeRequest = useAppStore((s) => s.submitChangeRequest)
+  const transitionRequest = useAppStore((s) => s.transitionRequest)
+  const editEnvironment = useAppStore((s) => s.editEnvironment)
   const navigate = useNavigate()
 
-  const editing = !!editId
-  const [spec, setSpec] = useState<EnvSpec>(() => (editingEnv ? structuredClone(editingEnv.spec) : draft ? structuredClone(draft) : DEFAULT_SPEC))
-  const [usingDraft, setUsingDraft] = useState(!editing && !!draft)
+  const mode: 'new' | 'draft' | 'resubmit' | 'edit' = editId ? 'edit' : existing?.status === 'draft' ? 'draft' : existing?.status === 'changes_requested' ? 'resubmit' : 'new'
+  const editing = mode === 'edit'
+  const projects = useMemo(
+    () => allProjects.filter((p) => p.tenantId === tenant.id && p.status === 'active' && (user.role === 'tenant_admin' || p.memberIds.includes(user.id))),
+    [allProjects, tenant.id, user],
+  )
+  const [draftId, setDraftId] = useState<string | undefined>(mode === 'draft' ? existing?.id : undefined)
+  const [spec, setSpec] = useState<EnvSpec>(() =>
+    editingEnv ? structuredClone(editingEnv.spec) : existing && mode !== 'new' ? structuredClone(existing.spec) : { ...DEFAULT_SPEC, projectId: projects[0]?.id ?? '' },
+  )
   const [step, setStep] = useState(0)
-  const [maxStep, setMaxStep] = useState(editing ? STEPS.length - 1 : 0)
+  const [maxStep, setMaxStep] = useState(mode === 'new' ? 0 : STEPS.length - 1)
   const [errors, setErrors] = useState<Errors>({})
   const headingRef = useRef<HTMLHeadingElement>(null)
   const firstRender = useRef(true)
@@ -473,10 +527,41 @@ export default function NewEnvironment() {
   }, [step])
 
   const est = useMemo(() => estimateCost(spec, catalog), [spec, catalog])
+  const used = useMemo(() => tenantAllocated(environments, tenant.id), [environments, tenant.id])
 
-  if (editing && (!editingEnv || editingEnv.tenantId !== tenant.id)) {
-    return <NotFound message="This environment doesn’t exist or belongs to another organisation." />
+  if (editing && (!editingEnv || editingEnv.tenantId !== tenant.id || (user.role === 'user' && editingEnv.ownerId !== user.id))) {
+    return <NotFound message="This environment doesn’t exist or you can’t change it." />
   }
+  if (requestId && (!existing || existing.requesterId !== user.id || mode === 'new')) {
+    return <NotFound message="This request can’t be edited. Only your own drafts and requests with changes requested can be." />
+  }
+  if (!editing && projects.length === 0) {
+    return (
+      <div className="card">
+        <EmptyState
+          icon={FolderKanban}
+          title="You’re not in a project yet"
+          description="Every environment belongs to a project. Ask your Tenant Admin to add you to one, then come back."
+          action={
+            <Button asChild variant="secondary">
+              <Link to={requestsPath(user.role)}>Back to requests</Link>
+            </Button>
+          }
+        />
+      </div>
+    )
+  }
+
+  const selectedIds = [...spec.llms.map((l) => l.id), ...spec.asr, ...spec.capabilities]
+  const enabledIds = new Set(tenantItems.filter((i) => i.enabled).map((i) => i.id))
+  const selectable = catalog.filter((c) => enabledIds.has(c.id) || selectedIds.includes(c.id))
+  const previous = editing ? editingEnv!.spec : null
+  const delta = previous ? subQuota(allocationOf(spec), allocationOf(previous)) : allocationOf(spec)
+  const positive = { vcpu: Math.max(0, delta.vcpu), ramGb: Math.max(0, delta.ramGb), gpus: Math.max(0, delta.gpus), storageGb: Math.max(0, delta.storageGb) }
+  const quota = checkQuota(tenant.quota, used, positive)
+  const quotaNote = quota.over ? quotaMessage(quota.items, tenant.name, user.role === 'tenant_admin' ? 'tenant_admin' : 'user') : null
+  const needsApproval = editing && addsInfrastructure(editingEnv!.spec, spec)
+  const lastAsk = mode === 'resubmit' ? [...existing!.history].reverse().find((h) => h.status === 'changes_requested') : undefined
 
   const set = (patch: Partial<EnvSpec>) => {
     setSpec((s) => ({ ...s, ...patch }))
@@ -516,54 +601,84 @@ export default function NewEnvironment() {
     }
     if (editing && editingEnv) {
       if (diffSpecs(editingEnv.spec, { ...spec, justification: editingEnv.spec.justification }, catalog).length === 0) {
-        setErrors({ changes: 'Nothing has changed yet. Edit at least one setting before sending a change request.' })
+        setErrors({ changes: 'Nothing has changed yet. Edit at least one setting first.' })
         return
       }
-      submitChangeRequest(editingEnv.id, spec)
-      toast.success('Change request sent.', { description: 'Your environment keeps running as it is until an admin approves.' })
-      navigate(`/app/environments/${editingEnv.id}`)
+      const res = editEnvironment(editingEnv.id, spec)
+      if (res.mode === 'error') {
+        toast.error(res.error)
+        return
+      }
+      if (res.mode === 'applied') {
+        toast.success('Changes saved.', { description: 'No new infrastructure was needed, so they apply straight away.' })
+        navigate(envPath(user.role, editingEnv.id))
+      } else {
+        toast.success('Change sent for approval.', { description: 'It adds infrastructure, so the Super Admin approves it. The environment keeps its current setup until then.' })
+        navigate(requestPath(user.role, res.id))
+      }
       return
     }
-    submitRequest(spec)
-    toast.success(`Request sent for “${spec.name}”.`, { description: 'You’ll get a notification when an admin reviews it.' })
-    navigate('/app')
+    if (mode === 'resubmit' && existing) {
+      const res = transitionRequest(existing.id, 'resubmitted', { spec })
+      if (!res.ok) {
+        toast.error(res.error)
+        return
+      }
+      toast.success(`Resubmitted “${spec.name}”.`)
+      navigate(requestPath(user.role, existing.id))
+      return
+    }
+    const res = submitRequest(spec, draftId)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    toast.success(`Request sent for “${spec.name}”.`, {
+      description: user.role === 'tenant_admin' ? 'It went straight to the Super Admin.' : 'Your Tenant Admin reviews it first.',
+    })
+    navigate(requestPath(user.role, res.id!))
   }
 
   const onSaveDraft = () => {
-    saveDraft(spec)
-    toast.success('Draft saved.', { description: 'Pick up where you left off from your dashboard.' })
+    const id = saveDraft(spec, draftId)
+    setDraftId(id)
+    toast.success('Draft saved.', { description: 'Continue it any time from My requests.' })
   }
 
-  const startOver = () => {
-    clearDraft()
-    setSpec(DEFAULT_SPEC)
-    setUsingDraft(false)
-    setStep(0)
-    setMaxStep(0)
-    setErrors({})
-  }
-
-  const props: StepProps = { spec, set, catalog, tenant, errors }
+  const props: StepProps = { spec, set, catalog, selectable, projects, tenant, role: user.role, errors }
   const last = step === STEPS.length - 1
 
   return (
     <>
       <PageHeader
-        eyebrow={editing ? 'Change request' : tenant.name}
-        title={editing ? `Edit “${editingEnv!.spec.name}”` : 'New environment'}
+        eyebrow={editing ? 'Edit configuration' : mode === 'resubmit' ? 'Edit and resubmit' : tenant.name}
+        title={editing ? `Edit “${editingEnv!.spec.name}”` : mode === 'resubmit' ? `Resubmit “${existing!.spec.name}”` : 'New environment'}
         description={
           editing
-            ? 'Change the setup below. An admin reviews the change before it takes effect.'
-            : 'Tell us what you are building. Your admin reviews the request, usually within a working day.'
+            ? 'Changes that add no infrastructure apply straight away. More GPUs, a bigger tier or more storage needs the Super Admin’s approval.'
+            : user.role === 'tenant_admin'
+              ? 'Requests for new infrastructure go to the Super Admin for approval.'
+              : 'Tell us what you are building. Your Tenant Admin reviews it, then the Super Admin approves new infrastructure.'
         }
       />
 
-      {usingDraft && (
-        <div className="mb-6 flex flex-col gap-2 rounded-card border border-border bg-indigo-50 px-5 py-3 text-sm text-text-primary sm:flex-row sm:items-center sm:justify-between">
-          <span>You’re continuing a saved draft.</span>
-          <Button variant="ghost" size="sm" onClick={startOver}>
-            Start over
-          </Button>
+      {mode === 'draft' && (
+        <div className="mb-6 rounded-card border border-border bg-indigo-50 px-5 py-3 text-sm text-text-primary">You’re continuing a saved draft. It stays private until you submit it.</div>
+      )}
+      {lastAsk?.comment && (
+        <div className="mb-6 flex gap-3 rounded-card bg-status-change-bg p-4 text-sm text-status-change-fg">
+          <MessageSquareWarning className="mt-0.5 size-5 shrink-0" aria-hidden />
+          <div>
+            <p className="font-semibold">{users.find((u) => u.id === lastAsk.actorId)?.name} asked for changes</p>
+            <p className="mt-1">{lastAsk.comment}</p>
+          </div>
+        </div>
+      )}
+      {editing && (
+        <div className={cn('mb-6 rounded-card px-5 py-3 text-sm', needsApproval ? 'bg-status-review-bg text-status-review-fg' : 'bg-status-running-bg text-status-running-fg')}>
+          {needsApproval
+            ? 'These changes add infrastructure, so they go to the Super Admin for approval. Until then the environment keeps its current setup.'
+            : 'These changes need no new infrastructure, so they apply as soon as you save.'}
         </div>
       )}
 
@@ -581,7 +696,7 @@ export default function NewEnvironment() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[200px_minmax(0,1fr)] xl:grid-cols-[200px_minmax(0,1fr)_300px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[200px_minmax(0,1fr)] 2xl:grid-cols-[200px_minmax(0,1fr)_320px]">
         <nav aria-label="Wizard steps" className="hidden lg:block">
           <ol className="sticky top-24 flex flex-col">
             {STEPS.map((s, i) => {
@@ -639,43 +754,43 @@ export default function NewEnvironment() {
             {step === 3 && <StepAsr {...props} />}
             {step === 4 && <StepCapabilities {...props} />}
             {step === 5 && <StepData {...props} />}
-            {step === 6 && <StepReview {...props} goTo={goTo} editing={editing} />}
+            {step === 6 && <StepReview {...props} goTo={goTo} editing={editing} quotaNote={quotaNote} />}
           </div>
 
-          <div className="xl:hidden">
-            <CostEstimate spec={spec} tenant={tenant} catalog={catalog} className="mx-5 mb-6 sm:mx-6" />
+          <div className="2xl:hidden">
+            <CostEstimate spec={spec} tenant={tenant} used={used} previous={previous} catalog={catalog} audience={user.role} className="mx-5 mb-6 sm:mx-6" />
           </div>
 
           <div className="sticky bottom-0 flex flex-wrap items-center gap-2 rounded-b-card border-t border-border bg-bg-surface px-5 py-4 sm:px-6">
             <Button variant="secondary" onClick={() => goTo(step - 1)} disabled={step === 0}>
               <ChevronLeft /> Back
             </Button>
-            {!editing && (
+            {(mode === 'new' || mode === 'draft') && (
               <Button variant="ghost" onClick={onSaveDraft}>
                 <Save /> Save draft
               </Button>
             )}
             {editing && (
               <Button asChild variant="ghost">
-                <Link to={`/app/environments/${editId}`}>Cancel</Link>
+                <Link to={envPath(user.role, editId!)}>Cancel</Link>
               </Button>
             )}
-            <span className="tabular ml-auto hidden text-caption text-text-secondary sm:inline xl:hidden">{formatInt(est.credits)} credits / month</span>
+            <span className="tabular ml-auto hidden text-caption text-text-secondary xl:inline 2xl:hidden">{formatInt(est.credits)} credits / month</span>
             {last ? (
               <Button onClick={submit} className="ml-auto sm:ml-0">
-                <Send /> {editing ? 'Send change request' : 'Submit request'}
+                <Send /> {editing ? (needsApproval ? 'Send for approval' : 'Save changes') : mode === 'resubmit' ? 'Resubmit request' : 'Submit request'}
               </Button>
             ) : (
-              <Button onClick={() => goTo(step + 1)} className="ml-auto sm:ml-0 xl:ml-auto">
+              <Button onClick={() => goTo(step + 1)} className="ml-auto sm:ml-0 2xl:ml-auto">
                 Next: {STEPS[step + 1]!.title} <ChevronRight />
               </Button>
             )}
           </div>
         </section>
 
-        <div className="hidden xl:block">
+        <div className="hidden 2xl:block">
           <div className="sticky top-24">
-            <CostEstimate spec={spec} tenant={tenant} catalog={catalog} />
+            <CostEstimate spec={spec} tenant={tenant} used={used} previous={previous} catalog={catalog} audience={user.role} />
           </div>
         </div>
       </div>

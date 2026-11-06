@@ -7,8 +7,10 @@ Read this file before building or changing any page. Every page must follow it. 
 **AI Sandbox**: a shared, multi-tenant AI infrastructure prototype, presented by ShikshaLokam to partner organisations. Organisations use it to develop, test (functional + load), evaluate and pilot AI capabilities without building their own platform.
 
 - Audience for the demo: NGOs, social entrepreneurs, funders. It must feel **professional, calm, trustworthy and warm**, not like a hacker tool and not like a marketing site.
-- Two roles only: **Admin** (ShikshaLokam platform staff) and **User** (developer inside one organisation/tenant).
+- Three roles: **Super Admin** (neutral platform administrator in the system "Default" tenant; provides infrastructure and gives final approval for anything that adds it), **Tenant Admin** (manages everything inside one tenant; reviews requests and forwards infrastructure to the Super Admin) and **User** (developer inside one tenant).
+- Tenants: the hidden system "Default" tenant plus ShikshaLokam and Mantra4Change. ShikshaLokam is an ordinary tenant with no special status.
 - Every user, environment and request belongs to a **tenant** (organisation).
+- Never use the word "demo" in visible UI copy (the sample password `demo123` is the only exception).
 - No backend, no database. All data is mock data.
 
 ## 2. Tech stack (fixed)

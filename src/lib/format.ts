@@ -62,3 +62,5 @@ export function relativeTime(iso: string) {
   if (d < 14) return `${d} days ago`
   return formatDate(iso)
 }
+
+export const plural = (n: number, word: string) => `${formatInt(n)} ${word}${n === 1 ? '' : 's'}`

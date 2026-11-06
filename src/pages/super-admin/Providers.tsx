@@ -34,7 +34,7 @@ export default function Providers() {
   useEffect(() => () => timers.current.forEach(clearTimeout), [])
 
   const envsUsing = useMemo(() => {
-    const live = environments.filter((e) => e.status !== 'rejected')
+    const live = environments.filter((e) => e.status !== 'terminated')
     return (p: Provider) =>
       live.filter((e) => [...e.spec.llms.map((l) => l.id), ...e.spec.asr].some((id) => p.serves.includes(id))).length
   }, [environments])

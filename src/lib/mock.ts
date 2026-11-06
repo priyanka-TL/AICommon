@@ -23,7 +23,7 @@ export function envUsageSeries(env: Environment, days = 30): EnvUsagePoint[] {
   const rand = seededRandom(hashString(env.id + ':usage'))
   const created = new Date(env.createdAt).getTime()
   const activeDays = Math.max(1, Math.min(days, Math.ceil((Date.now() - created) / DAY)))
-  const stoppedAt = env.status === 'stopped' ? new Date(env.timeline[env.timeline.length - 1]!.at).getTime() : Infinity
+  const stoppedAt = ['stopped', 'suspended', 'terminated'].includes(env.status) ? new Date(env.history[env.history.length - 1]!.at).getTime() : Infinity
   const perDay = env.creditsUsed / Math.max(1, Math.ceil((Date.now() - created) / DAY))
   const out: EnvUsagePoint[] = []
   for (let i = days - 1; i >= 0; i--) {

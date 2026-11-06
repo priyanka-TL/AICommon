@@ -2,13 +2,17 @@ import { useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Bell, ChevronRight, LogOut, Menu, Monitor, Moon, RotateCcw, Search, Server, Sun } from 'lucide-react'
-import { useAppStore, useCurrentTenant, useCurrentUser } from '@/store/useAppStore'
+import { useAppStore, useCurrentTenant, useCurrentUser, useSessionStore } from '@/store/useAppStore'
+import { useScopedEnvironments, useVisibleTenants } from '@/store/selectors'
 import { useTheme, type ThemePref } from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
 import { relativeTime } from '@/lib/format'
+import { ROLE_LABELS } from '@/lib/labels'
+import { envPath } from '@/lib/paths'
 import { Avatar } from '@/components/shared/Avatar'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,7 +23,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent } from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { segmentLabel } from './nav'
 
 function Breadcrumb() {
@@ -28,6 +32,8 @@ function Breadcrumb() {
   const environments = useAppStore((s) => s.environments)
   const tenants = useAppStore((s) => s.tenants)
   const catalog = useAppStore((s) => s.catalog)
+  const requests = useAppStore((s) => s.requests)
+  const projects = useAppStore((s) => s.projects)
   if (!user) return null
 
   const segs = pathname.split('/').filter(Boolean)
@@ -37,19 +43,21 @@ function Breadcrumb() {
       const label =
         segmentLabel(seg, user.role) ??
         environments.find((e) => e.id === seg)?.spec.name ??
+        requests.find((r) => r.id === seg)?.spec.name ??
+        projects.find((p) => p.id === seg)?.name ??
         tenants.find((t) => t.id === seg)?.name ??
         catalog.find((c) => c.id === seg)?.name ??
         seg
-      return { to, label }
+      return { to, label, seg }
     })
-    .filter((_, i) => !(i === 1 && segs[0] === 'app' && segs[1] === 'environments'))
+    .filter((c, i) => !(i === 1 && c.seg === 'environments'))
 
   return (
     <nav aria-label="Breadcrumb" className="min-w-0">
       <ol className="flex items-center gap-1 text-sm">
         {crumbs.map((c, i) => (
           <li key={c.to} className={cn('flex min-w-0 items-center gap-1', i < crumbs.length - 2 && 'hidden md:flex')}>
-            {i > 0 && <ChevronRight className="size-4 shrink-0 text-text-muted" aria-hidden />}
+            {i > 0 && <ChevronRight className={cn('size-4 shrink-0 text-text-muted', i === crumbs.length - 2 && 'hidden md:block')} aria-hidden />}
             {i === crumbs.length - 1 ? (
               <span className="truncate font-semibold text-text-primary" aria-current="page">
                 {c.label}
@@ -66,9 +74,30 @@ function Breadcrumb() {
   )
 }
 
+function TenantFilter() {
+  const tenants = useVisibleTenants(true)
+  const filter = useSessionStore((s) => s.tenantFilter)
+  const setFilter = useSessionStore((s) => s.setTenantFilter)
+  return (
+    <Select value={filter} onValueChange={setFilter}>
+      <SelectTrigger className="h-10 w-44 sm:w-52" aria-label="Tenant filter">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">All tenants</SelectItem>
+        {tenants.map((t) => (
+          <SelectItem key={t.id} value={t.id}>
+            {t.name}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
 function GlobalSearch() {
   const user = useCurrentUser()
-  const environments = useAppStore((s) => s.environments)
+  const environments = useScopedEnvironments(true)
   const tenants = useAppStore((s) => s.tenants)
   const navigate = useNavigate()
   const [q, setQ] = useState('')
@@ -76,25 +105,20 @@ function GlobalSearch() {
 
   const results = useMemo(() => {
     const query = q.trim().toLowerCase()
-    if (!query || !user) return []
-    return environments
-      .filter((e) => (user.role === 'admin' ? true : e.tenantId === user.tenantId))
-      .filter((e) => e.spec.name.toLowerCase().includes(query) || e.spec.description.toLowerCase().includes(query))
-      .slice(0, 6)
-  }, [q, environments, user])
+    if (!query) return []
+    return environments.filter((e) => e.spec.name.toLowerCase().includes(query) || e.spec.description.toLowerCase().includes(query)).slice(0, 6)
+  }, [q, environments])
 
   if (!user) return null
 
   const go = (envId: string) => {
-    const env = environments.find((e) => e.id === envId)!
     setQ('')
     setOpen(false)
-    if (user.role === 'admin') navigate(`/admin/environments?focus=${envId}`)
-    else navigate(env.status === 'pending' || env.status === 'rejected' ? '/app/requests' : `/app/environments/${envId}`)
+    navigate(envPath(user.role, envId))
   }
 
   return (
-    <div className="relative hidden w-72 lg:block">
+    <div className="relative hidden w-64 xl:block">
       <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-muted" aria-hidden />
       <input
         type="search"
@@ -130,9 +154,7 @@ function GlobalSearch() {
                     <Server className="size-4 shrink-0 text-text-muted" aria-hidden />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-semibold text-text-primary">{e.spec.name}</span>
-                      {user.role === 'admin' && (
-                        <span className="block truncate text-caption text-text-muted">{tenants.find((t) => t.id === e.tenantId)?.name}</span>
-                      )}
+                      {user.role === 'super_admin' && <span className="block truncate text-caption text-text-muted">{tenants.find((t) => t.id === e.tenantId)?.name}</span>}
                     </span>
                     <StatusBadge status={e.status} />
                   </button>
@@ -147,13 +169,13 @@ function GlobalSearch() {
 }
 
 function Notifications() {
-  const userId = useAppStore((s) => s.currentUserId)
+  const userId = useSessionStore((s) => s.currentUserId)
   const all = useAppStore((s) => s.notifications)
   const markAll = useAppStore((s) => s.markNotificationsRead)
   const markOne = useAppStore((s) => s.markNotificationRead)
   const navigate = useNavigate()
-  const items = all.filter((n) => n.userId === userId).slice(0, 8)
-  const unread = items.filter((n) => !n.read).length
+  const items = all.filter((n) => n.userId === userId).slice(0, 10)
+  const unread = all.filter((n) => n.userId === userId && !n.read).length
 
   return (
     <DropdownMenu>
@@ -163,7 +185,7 @@ function Notifications() {
           {unread > 0 && <span className="absolute right-2.5 top-2.5 size-2 rounded-full bg-pink ring-2 ring-bg-surface" aria-hidden />}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-[min(360px,calc(100vw-32px))] p-0">
+      <DropdownMenuContent align="end" className="w-[min(380px,calc(100vw-32px))] p-0">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <p className="font-heading text-h3">Notifications</p>
           {unread > 0 && (
@@ -203,7 +225,7 @@ function UserMenu() {
   const user = useCurrentUser()
   const tenant = useCurrentTenant()
   const logout = useAppStore((s) => s.logout)
-  const resetDemo = useAppStore((s) => s.resetDemo)
+  const resetSampleData = useAppStore((s) => s.resetSampleData)
   const navigate = useNavigate()
   const { theme, setTheme } = useTheme()
   const [confirmReset, setConfirmReset] = useState(false)
@@ -217,7 +239,7 @@ function UserMenu() {
             <Avatar name={user.name} />
             <span className="hidden text-left leading-tight md:block">
               <span className="block text-sm font-semibold text-text-primary">{user.name}</span>
-              <span className="block text-caption text-text-muted">{user.role === 'admin' ? 'Admin' : 'User'}</span>
+              <span className="block text-caption text-text-muted">{ROLE_LABELS[user.role]}</span>
             </span>
           </button>
         </DropdownMenuTrigger>
@@ -228,7 +250,7 @@ function UserMenu() {
               <p className="truncate font-semibold text-text-primary">{user.name}</p>
               <p className="truncate text-caption text-text-secondary">{user.email}</p>
               <p className="truncate text-caption text-text-muted">
-                {tenant?.name ?? 'ShikshaLokam'} · {user.role === 'admin' ? 'Admin' : 'User'}
+                {tenant?.name} · {ROLE_LABELS[user.role]}
               </p>
             </div>
           </div>
@@ -247,7 +269,7 @@ function UserMenu() {
           </DropdownMenuRadioGroup>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => setConfirmReset(true)}>
-            <RotateCcw /> Reset demo data
+            <RotateCcw /> Reset sample data
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() => {
@@ -260,32 +282,25 @@ function UserMenu() {
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <AlertDialog open={confirmReset} onOpenChange={setConfirmReset}>
-        <AlertDialogContent
-          title="Reset demo data?"
-          description="This restores every organisation, request and environment to the starting state. Anything created in this session will be removed. You stay signed in."
-        >
-          <AlertDialogCancel asChild>
-            <Button variant="secondary">Keep my changes</Button>
-          </AlertDialogCancel>
-          <AlertDialogAction asChild>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                resetDemo()
-                toast.success('Demo data reset to the starting state.')
-              }}
-            >
-              Reset demo data
-            </Button>
-          </AlertDialogAction>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={confirmReset}
+        onOpenChange={setConfirmReset}
+        title="Reset sample data?"
+        description="This restores every tenant, request and environment to the starting state, in every open tab. Anything created since will be removed. You stay signed in."
+        confirmLabel="Reset sample data"
+        cancelLabel="Keep my changes"
+        destructive
+        onConfirm={() => {
+          resetSampleData()
+          toast.success('Sample data reset to the starting state.')
+        }}
+      />
     </>
   )
 }
 
 export function Topbar({ onOpenMenu }: { onOpenMenu: () => void }) {
+  const user = useCurrentUser()
   return (
     <header className="sticky top-0 z-30 flex h-16 shrink-0 items-center gap-3 border-b border-border bg-bg-surface/95 px-4 backdrop-blur md:px-8">
       <Button variant="ghost" size="icon" className="-ml-2 lg:hidden" onClick={onOpenMenu} aria-label="Open navigation">
@@ -294,6 +309,7 @@ export function Topbar({ onOpenMenu }: { onOpenMenu: () => void }) {
       <div className="min-w-0 flex-1">
         <Breadcrumb />
       </div>
+      {user?.role === 'super_admin' && <TenantFilter />}
       <GlobalSearch />
       <Notifications />
       <UserMenu />

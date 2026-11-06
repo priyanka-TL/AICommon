@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import { BrainCircuit, CheckCircle2, Loader2, Play, Plus, RotateCcw, Trash2, XCircle } from 'lucide-react'
 import type { Environment } from '@/data/types'
 import { DEFAULT_TEST_CASES, type TestCaseSeed } from '@/data/seed'
-import { useAppStore, useCurrentUser } from '@/store/useAppStore'
+import { useAppStore } from '@/store/useAppStore'
 import { runTestCase, type TestOutcome } from '@/lib/mock'
 import { formatInt, formatTime } from '@/lib/format'
 import { cn, uid } from '@/lib/utils'
@@ -34,10 +34,9 @@ const MATCH_LABELS: Record<TestCaseSeed['match'], string> = {
 const fresh = (): Case[] => DEFAULT_TEST_CASES.map((c) => ({ ...c, id: uid('tc') }))
 
 export function FunctionalTests({ env }: { env: Environment }) {
-  const user = useCurrentUser()!
   const catalog = useAppStore((s) => s.catalog)
   const providers = useAppStore((s) => s.providers)
-  const recordActivity = useAppStore((s) => s.recordActivity)
+  const recordTestRun = useAppStore((s) => s.recordTestRun)
   const models = env.spec.llms.map((l) => catalog.find((c) => c.id === l.id)!).filter(Boolean)
   const [modelId, setModelId] = useState(models[0]?.id ?? '')
   const [cases, setCases] = useState<Case[]>(fresh)
@@ -102,7 +101,7 @@ export function FunctionalTests({ env }: { env: Environment }) {
         if (i === cases.length - 1) {
           const p = Object.values(outcomes).filter((x) => x.passed).length
           setHistory((h) => [{ id: uid('run'), at: new Date().toISOString(), modelName: model.name, passed: p, total: cases.length }, ...h].slice(0, 5))
-          recordActivity('test', `${user.name} ran ${cases.length} functional tests on “${env.spec.name}” with ${model.name}: ${p} of ${cases.length} passed`)
+          recordTestRun({ envId: env.id, kind: 'functional', summary: `Ran ${cases.length} functional tests with ${model.name}: ${p} of ${cases.length} passed`, passed: p === cases.length })
           if (p === cases.length) toast.success(`All ${p} tests passed.`)
           else toast.warning(`${p} of ${cases.length} tests passed.`, { description: 'Open the failed rows to see what the model returned.' })
         }
@@ -216,7 +215,7 @@ export function FunctionalTests({ env }: { env: Environment }) {
                     ) : r ? (
                       <>
                         <div className="flex flex-wrap items-center gap-2">
-                          {r.passed ? <StatusBadge status="running" label="Passed" /> : <StatusBadge status="rejected" label="Failed" />}
+                          {r.passed ? <StatusBadge status="active" label="Passed" /> : <StatusBadge status="rejected" label="Failed" />}
                           <span className="text-caption text-text-secondary">{r.reason}</span>
                           <span className="tabular ml-auto text-caption text-text-muted">{formatInt(r.latencyMs)} ms</span>
                         </div>

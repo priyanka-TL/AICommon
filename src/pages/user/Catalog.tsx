@@ -1,8 +1,14 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { GitBranch, Lock, SearchX } from 'lucide-react'
-import type { CatalogCategory, CatalogItem, Language } from '@/data/types'
+import { Link, useSearchParams } from 'react-router-dom'
+import { GitBranch, GitPullRequestArrow, Lock, PencilLine, Plus, SearchX } from 'lucide-react'
+import type { CatalogCategory, CatalogItem, Language, Suggestion } from '@/data/types'
 import { useAppStore, useCurrentTenant } from '@/store/useAppStore'
+import { useScopedSuggestions, useTenantCatalog } from '@/store/selectors'
+import { relativeTime } from '@/lib/format'
+import { CATEGORY_SINGULAR } from '@/lib/labels'
+import { SuggestionBadge } from '@/components/shared/StatusBadge'
+import { SuggestionHistory } from '@/pages/shared/Suggestions'
+import { SuggestDialog } from './SuggestDialog'
 import { useSimulatedLoading } from '@/hooks/useSimulatedLoading'
 import { CATEGORY_LABELS, LANGUAGES } from '@/lib/labels'
 import { cn } from '@/lib/utils'
@@ -11,7 +17,7 @@ import { SearchInput } from '@/components/shared/SearchInput'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { CatalogStatusBadge, Tag } from '@/components/shared/StatusBadge'
 import { costLabel } from '@/components/shared/SelectableCard'
-import { ItemMark } from '@/pages/admin/Catalog'
+import { ItemMark } from '@/pages/super-admin/Catalog'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/controls'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -27,7 +33,7 @@ function CatalogCard({ item, allowed, inUse }: { item: CatalogItem; allowed: boo
         <div className="min-w-0 flex-1">
           <p className="truncate font-semibold text-text-primary">{item.name}</p>
           <p className="truncate text-caption text-text-muted">
-            {item.provider} · v{item.version}
+            {item.provider} · {/^\d/.test(item.version) ? `v${item.version}` : item.version}
           </p>
         </div>
         {item.status !== 'active' && <CatalogStatusBadge status={item.status} />}
@@ -56,10 +62,59 @@ function CatalogCard({ item, allowed, inUse }: { item: CatalogItem; allowed: boo
   )
 }
 
+function MySuggestions({ onEdit }: { onEdit: (s: Suggestion) => void }) {
+  const suggestions = useScopedSuggestions()
+  if (!suggestions.length) {
+    return (
+      <div className="card">
+        <EmptyState icon={GitPullRequestArrow} title="You haven’t suggested anything yet" description="Know an open-source project your team needs? Suggest it with its GitHub link." />
+      </div>
+    )
+  }
+  return (
+    <ul className="flex flex-col gap-4">
+      {suggestions.map((s) => (
+        <li key={s.id} className="card flex flex-col gap-4 p-5">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <p className="flex flex-wrap items-center gap-2 font-heading text-h3 text-text-primary">
+                {s.name} <Tag className="font-sans">{CATEGORY_SINGULAR[s.category]}</Tag>
+              </p>
+              <a href={s.githubUrl} target="_blank" rel="noreferrer" className="link mt-1 block truncate font-mono text-caption">
+                {s.githubUrl.replace('https://', '')}
+              </a>
+              <p className="mt-1 text-caption text-text-muted">Suggested {relativeTime(s.createdAt)}</p>
+            </div>
+            <SuggestionBadge status={s.status} forwarded={s.forwarded} />
+          </div>
+          <SuggestionHistory s={s} />
+          <div className="flex flex-wrap gap-2">
+            {s.status === 'needs_info' && (
+              <Button variant="secondary" size="compact" onClick={() => onEdit(s)}>
+                <PencilLine /> Add information
+              </Button>
+            )}
+            {s.catalogItemId && (s.status === 'approved_tenant' || s.status === 'published') && (
+              <Button asChild variant="ghost" size="compact">
+                <Link to={`/app/catalog/${s.catalogItemId}`}>Open in the marketplace</Link>
+              </Button>
+            )}
+          </div>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 export default function UserCatalog() {
   const loading = useSimulatedLoading()
   const tenant = useCurrentTenant()!
-  const catalog = useAppStore((s) => s.catalog)
+  const catalog = useTenantCatalog()
+  const [params, setParams] = useSearchParams()
+  const tab = params.get('tab') === 'suggestions' ? 'suggestions' : 'browse'
+  const [suggestOpen, setSuggestOpen] = useState(false)
+  const [editing, setEditing] = useState<Suggestion | undefined>()
+  const mySuggestions = useScopedSuggestions()
   const environments = useAppStore((s) => s.environments)
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<'all' | CatalogCategory>('all')
@@ -71,7 +126,7 @@ export default function UserCatalog() {
   const licences = useMemo(() => [...new Set(catalog.map((c) => c.licence))].sort(), [catalog])
   const inUse = useMemo(() => {
     const m = new Map<string, number>()
-    for (const e of environments.filter((x) => x.tenantId === tenant.id && x.status !== 'rejected'))
+    for (const e of environments.filter((x) => x.tenantId === tenant.id && x.status !== 'terminated'))
       for (const id of [...e.spec.llms.map((l) => l.id), ...e.spec.asr, ...e.spec.capabilities]) m.set(id, (m.get(id) ?? 0) + 1)
     return m
   }, [environments, tenant.id])
@@ -104,10 +159,49 @@ export default function UserCatalog() {
   return (
     <>
       <PageHeader
-        eyebrow="Build and test"
-        title="Capability catalog"
-        description="Models, speech providers and open-source tools you can add to your environments. Everything here is reviewed by the ShikshaLokam platform team."
+        eyebrow={tenant.name}
+        title="AI Capability Marketplace"
+        description="Models, speech providers and open-source tools you can add to your projects and environments. Missing something? Suggest it."
+        actions={
+          <Button
+            onClick={() => {
+              setEditing(undefined)
+              setSuggestOpen(true)
+            }}
+          >
+            <Plus /> Suggest a capability
+          </Button>
+        }
       />
+
+      <div className="mb-6 flex gap-1 border-b border-border" role="tablist">
+        {(
+          [
+            ['browse', 'Browse'],
+            ['suggestions', `My suggestions (${mySuggestions.length})`],
+          ] as const
+        ).map(([v, label]) => (
+          <button
+            key={v}
+            role="tab"
+            aria-selected={tab === v}
+            onClick={() => setParams(v === 'browse' ? {} : { tab: v })}
+            className={cn('-mb-px border-b-2 px-3 py-2.5 text-sm font-semibold', tab === v ? 'border-indigo text-indigo-text' : 'border-transparent text-text-secondary hover:text-text-primary')}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'suggestions' ? (
+        <MySuggestions
+          onEdit={(s) => {
+            setEditing(s)
+            setSuggestOpen(true)
+          }}
+        />
+      ) : (
+      <>
 
       <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3 lg:grid-cols-[1fr_170px_210px_170px]">
         <SearchInput value={query} onChange={setQuery} placeholder="Search models and tools" className="sm:col-span-3 lg:col-span-1" />
@@ -199,17 +293,19 @@ export default function UserCatalog() {
             <section key={g.category}>
               <h2 className="mb-3 flex items-center gap-2 font-heading text-h3 text-text-primary">
                 {CATEGORY_LABELS[g.category]} <span className="tabular font-sans text-caption font-normal text-text-muted">{g.items.length}</span>
-                {!tenant.allowedCapabilities.includes(g.category) && <Tag className="font-sans">Not enabled for {tenant.name}</Tag>}
               </h2>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {g.items.map((item) => (
-                  <CatalogCard key={item.id} item={item} allowed={tenant.allowedCapabilities.includes(item.category)} inUse={inUse.get(item.id) ?? 0} />
+                  <CatalogCard key={item.id} item={item} allowed={item.enabled} inUse={inUse.get(item.id) ?? 0} />
                 ))}
               </div>
             </section>
           ))}
         </div>
       )}
+      </>
+      )}
+      <SuggestDialog open={suggestOpen} onOpenChange={setSuggestOpen} existing={editing} />
     </>
   )
 }

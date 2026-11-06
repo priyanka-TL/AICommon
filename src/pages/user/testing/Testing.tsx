@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { FlaskConical } from 'lucide-react'
-import { useAppStore, useCurrentTenant } from '@/store/useAppStore'
+import { useScopedEnvironments } from '@/store/selectors'
 import { computeLabel } from '@/lib/labels'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { EmptyState } from '@/components/shared/EmptyState'
@@ -16,11 +16,10 @@ const TABS = ['playground', 'functional', 'load'] as const
 type Tab = (typeof TABS)[number]
 
 export default function Testing() {
-  const tenant = useCurrentTenant()!
-  const environments = useAppStore((s) => s.environments)
+  const environments = useScopedEnvironments()
   const [params, setParams] = useSearchParams()
 
-  const running = useMemo(() => environments.filter((e) => e.tenantId === tenant.id && e.status === 'running'), [environments, tenant.id])
+  const running = useMemo(() => environments.filter((e) => e.status === 'active'), [environments])
   const env = running.find((e) => e.id === params.get('env')) ?? running[0]
   const tabParam = params.get('tab') as Tab | null
   const tab: Tab = tabParam && TABS.includes(tabParam) ? tabParam : 'playground'
@@ -63,7 +62,7 @@ export default function Testing() {
           <EmptyState
             icon={FlaskConical}
             title="Start an environment to run tests"
-            description="Tests run against a running environment’s endpoint. Start a stopped environment, or wait for one that is being set up."
+            description="Tests run against an active environment’s endpoint. Start a stopped environment, or wait for one that is being set up."
             action={
               <Button asChild variant="secondary">
                 <Link to="/app">Go to your environments</Link>

@@ -54,6 +54,10 @@
     --st-change-fg: 153 69 154;
     --st-over-bg: 253 231 227;
     --st-over-fg: 181 48 31;
+    --st-review-bg: 243 234 247;
+    --st-review-fg: 123 52 128;
+    --st-terminated-bg: 91 85 102;
+    --st-terminated-fg: 255 255 255;
 
     color-scheme: light;
   }
@@ -92,6 +96,10 @@
     --st-change-fg: 226 166 227;
     --st-over-bg: 63 27 22;
     --st-over-fg: 255 154 139;
+    --st-review-bg: 52 28 56;
+    --st-review-fg: 230 170 232;
+    --st-terminated-bg: 18 14 24;
+    --st-terminated-fg: 185 178 198;
 
     color-scheme: dark;
   }

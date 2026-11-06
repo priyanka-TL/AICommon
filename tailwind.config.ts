@@ -12,6 +12,8 @@ const statuses = [
   'rejected',
   'change',
   'over',
+  'review',
+  'terminated',
 ] as const
 
 const statusColors = Object.fromEntries(

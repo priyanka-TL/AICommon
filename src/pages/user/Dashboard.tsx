@@ -1,57 +1,55 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { FileClock, Plus, ServerOff } from 'lucide-react'
+import { ArrowRight, Plus, ServerOff } from 'lucide-react'
 import type { EnvStatus } from '@/data/types'
 import { useAppStore, useCurrentTenant, useCurrentUser } from '@/store/useAppStore'
+import { useScopedEnvironments, useScopedRequests } from '@/store/selectors'
 import { useSimulatedLoading } from '@/hooks/useSimulatedLoading'
-import { formatDate, relativeTime } from '@/lib/format'
+import { relativeTime } from '@/lib/format'
+import { STATUS_LABELS } from '@/lib/labels'
+import { tenantAllocated } from '@/lib/quota'
+import { continueRequestPath, requestPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { QuotaBar } from '@/components/shared/QuotaBar'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { EnvironmentCard } from '@/components/shared/EnvironmentCard'
+import { ResourceQuota } from '@/components/shared/ResourceQuota'
 import { StatusBadge } from '@/components/shared/StatusBadge'
+import { CompactTimeline, futureSteps, mergedHistory } from '@/components/shared/LifecycleTimeline'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 
-const STATUS_ORDER: EnvStatus[] = ['pending', 'approved', 'provisioning', 'running', 'stopped', 'rejected']
-const STATUS_TITLES: Record<EnvStatus, string> = {
-  pending: 'Waiting for review',
-  approved: 'Approved',
-  provisioning: 'Being set up',
-  running: 'Running',
-  stopped: 'Stopped',
-  rejected: 'Not approved',
-}
+const STATUS_ORDER: EnvStatus[] = ['active', 'provisioning', 'provisioning_failed', 'suspended', 'stopped']
 
 export default function UserDashboard() {
   const loading = useSimulatedLoading()
   const user = useCurrentUser()!
   const tenant = useCurrentTenant()!
+  const envs = useScopedEnvironments()
+  const myRequests = useScopedRequests()
   const allEnvs = useAppStore((s) => s.environments)
   const requests = useAppStore((s) => s.requests)
   const users = useAppStore((s) => s.users)
+  const projects = useAppStore((s) => s.projects)
   const catalog = useAppStore((s) => s.catalog)
   const notifications = useAppStore((s) => s.notifications)
   const markAll = useAppStore((s) => s.markNotificationsRead)
   const markOne = useAppStore((s) => s.markNotificationRead)
-  const draft = useAppStore((s) => s.drafts[user.id])
   const navigate = useNavigate()
   const [filter, setFilter] = useState<'all' | EnvStatus>('all')
 
-  const envs = useMemo(() => allEnvs.filter((e) => e.tenantId === tenant.id), [allEnvs, tenant.id])
+  const inProgress = useMemo(() => myRequests.filter((r) => !['approved', 'rejected', 'cancelled'].includes(r.status)), [myRequests])
   const myNotifications = notifications.filter((n) => n.userId === user.id).slice(0, 5)
   const unread = myNotifications.filter((n) => !n.read).length
   const counts = Object.fromEntries(STATUS_ORDER.map((s) => [s, envs.filter((e) => e.status === s).length])) as Record<EnvStatus, number>
   const groups = STATUS_ORDER.filter((s) => (filter === 'all' || filter === s) && counts[s] > 0)
-  const nextReset = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1)
 
   return (
     <>
       <PageHeader
         eyebrow={tenant.name}
         title={`Welcome back, ${user.name.split(' ')[0]}`}
-        description="Your organisation’s environments, quota and latest updates."
+        description="Environments in your projects, requests in progress and your tenant’s quota."
         actions={
           <Button asChild>
             <Link to="/app/environments/new">
@@ -61,44 +59,11 @@ export default function UserDashboard() {
         }
       />
 
-      {draft && (
-        <div className="mb-6 flex flex-col gap-3 rounded-card border border-border bg-indigo-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <FileClock className="size-5 shrink-0 text-indigo-text" aria-hidden />
-            <p className="text-sm text-text-primary">
-              You have a saved draft{draft.name ? <>: <span className="font-semibold">“{draft.name}”</span></> : ''}.
-            </p>
-          </div>
-          <Button asChild variant="secondary" size="compact">
-            <Link to="/app/environments/new">Continue draft</Link>
-          </Button>
-        </div>
-      )}
-
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <section className="card p-6 lg:col-span-2">
-          <div className="mb-5 flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <h2 className="font-heading text-h3 text-text-primary">Organisation quota</h2>
-              <p className="mt-0.5 text-caption text-text-secondary">Shared by everyone at {tenant.name}. Resets on {formatDate(nextReset)}.</p>
-            </div>
-          </div>
-          {loading ? (
-            <div className="grid gap-6 md:grid-cols-2">
-              <Skeleton className="h-16" />
-              <Skeleton className="h-16" />
-            </div>
-          ) : (
-            <div className="grid gap-6 md:grid-cols-2">
-              <QuotaBar label="Credits" used={tenant.creditsUsed} total={tenant.creditQuota} unit="credits" />
-              <QuotaBar label="GPU-hours" used={tenant.gpuUsed} total={tenant.gpuQuota} unit="hours" />
-            </div>
-          )}
-          {tenant.creditsUsed / tenant.creditQuota > 0.8 && !loading && (
-            <p className="mt-5 rounded-control bg-status-pending-bg px-3 py-2 text-caption text-status-pending-fg">
-              Your organisation has used over 80% of this month’s credits. New requests may need a smaller setup or extra quota from your admin.
-            </p>
-          )}
+          <h2 className="font-heading text-h3 text-text-primary">Tenant quota</h2>
+          <p className="mb-5 mt-0.5 text-caption text-text-secondary">Shared by everyone at {tenant.name}. Your Tenant Admin can ask for more.</p>
+          {loading ? <Skeleton className="h-24" /> : <ResourceQuota used={tenantAllocated(allEnvs, tenant.id)} total={tenant.quota} />}
         </section>
 
         <section className="card flex flex-col p-6">
@@ -140,30 +105,58 @@ export default function UserDashboard() {
         </section>
       </div>
 
+      {inProgress.length > 0 && (
+        <section className="card mt-6 p-6">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h2 className="font-heading text-h3 text-text-primary">Your requests in progress</h2>
+            <Button asChild variant="ghost" size="compact">
+              <Link to="/app/requests">
+                All requests <ArrowRight />
+              </Link>
+            </Button>
+          </div>
+          <ul className="divide-y divide-border">
+            {inProgress.map((r) => {
+              const ev = mergedHistory(r, null)
+              const to = r.status === 'draft' || r.status === 'changes_requested' ? continueRequestPath('user', r.id) : requestPath('user', r.id)
+              return (
+                <li key={r.id}>
+                  <Link to={to} className="flex flex-col gap-2 py-3 hover:bg-bg-subtle sm:flex-row sm:items-center sm:gap-4">
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-semibold text-text-primary">{r.spec.name}</span>
+                      <span className="text-caption text-text-muted">
+                        {r.status === 'draft' ? 'Draft, not submitted' : r.status === 'changes_requested' ? 'Changes requested: edit and resubmit' : `Updated ${relativeTime(r.updatedAt)}`}
+                      </span>
+                    </span>
+                    <CompactTimeline events={ev} future={futureSteps(ev, r)} />
+                    <StatusBadge status={r.status} />
+                  </Link>
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      )}
+
       <section className="mt-8">
         <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <h2 className="font-heading text-h2 text-text-primary">Environments</h2>
           <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 md:mx-0 md:px-0 md:pb-0" role="group" aria-label="Filter by status">
-            {(['all', ...STATUS_ORDER] as const).map((s) => {
-              const count = s === 'all' ? envs.length : counts[s]
-              return (
-                <button
-                  key={s}
-                  type="button"
-                  aria-pressed={filter === s}
-                  onClick={() => setFilter(s)}
-                  className={cn(
-                    'flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-caption font-semibold transition-colors',
-                    filter === s
-                      ? 'border-indigo bg-indigo-50 text-indigo-text dark:border-indigo-text'
-                      : 'border-border bg-bg-surface text-text-secondary hover:border-border-strong',
-                  )}
-                >
-                  {s === 'all' ? 'All' : STATUS_TITLES[s]}
-                  <span className="tabular text-text-muted">{count}</span>
-                </button>
-              )
-            })}
+            {(['all', ...STATUS_ORDER] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                aria-pressed={filter === s}
+                onClick={() => setFilter(s)}
+                className={cn(
+                  'flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-caption font-semibold transition-colors',
+                  filter === s ? 'border-indigo bg-indigo-50 text-indigo-text dark:border-indigo-text' : 'border-border bg-bg-surface text-text-secondary hover:border-border-strong',
+                )}
+              >
+                {s === 'all' ? 'All' : STATUS_LABELS[s]}
+                <span className="tabular text-text-muted">{s === 'all' ? envs.length : counts[s]}</span>
+              </button>
+            ))}
           </div>
         </div>
 
@@ -177,13 +170,11 @@ export default function UserDashboard() {
           <div className="card">
             <EmptyState
               icon={ServerOff}
-              title="No environments yet"
-              description="Request your first environment. An admin reviews it, and it is usually ready the same day."
+              title="No environments in your projects yet"
+              description="Request one. Your Tenant Admin reviews it and the Super Admin approves the infrastructure."
               action={
-                <Button asChild>
-                  <Link to="/app/environments/new">
-                    <Plus /> Request environment
-                  </Link>
+                <Button asChild variant="secondary">
+                  <Link to="/app/environments/new">Request environment</Link>
                 </Button>
               }
             />
@@ -197,7 +188,7 @@ export default function UserDashboard() {
             {groups.map((status) => (
               <div key={status}>
                 <div className="mb-3 flex items-center gap-2">
-                  <StatusBadge status={status} label={STATUS_TITLES[status]} />
+                  <StatusBadge status={status} />
                   <span className="tabular text-caption text-text-muted">{counts[status]}</span>
                 </div>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -207,10 +198,11 @@ export default function UserDashboard() {
                       <EnvironmentCard
                         key={env.id}
                         env={env}
+                        role="user"
                         catalog={catalog}
                         owner={users.find((u) => u.id === env.ownerId)}
-                        request={requests.find((r) => r.id === env.requestId)}
-                        hasPendingChange={requests.some((r) => r.envId === env.id && r.type === 'change' && r.status === 'pending')}
+                        project={projects.find((p) => p.id === env.projectId)}
+                        hasPendingChange={requests.some((r) => r.envId === env.id && r.kind === 'change' && ['submitted', 'under_review', 'resubmitted', 'escalated'].includes(r.status))}
                       />
                     ))}
                 </div>
