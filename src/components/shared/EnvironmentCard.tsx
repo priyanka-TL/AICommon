@@ -1,9 +1,9 @@
 import { Link } from 'react-router-dom'
-import { Cpu, HardDrive } from 'lucide-react'
-import type { CatalogItem, Environment, EnvRequest, User } from '@/data/types'
-import { estimateCost } from '@/lib/cost'
-import { formatDate, formatInt, relativeTime } from '@/lib/format'
+import { Cpu, FolderKanban, HardDrive } from 'lucide-react'
+import type { CatalogItem, Environment, Project, Role, User } from '@/data/types'
+import { formatInt, relativeTime } from '@/lib/format'
 import { computeLabel, purposeLabel } from '@/lib/labels'
+import { envPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
 import { StatusBadge, Tag } from './StatusBadge'
 import { Avatar } from './Avatar'
@@ -11,28 +11,21 @@ import { Avatar } from './Avatar'
 interface Props {
   env: Environment
   catalog: CatalogItem[]
+  role: Role
   owner?: User
-  request?: EnvRequest
+  project?: Project
   hasPendingChange?: boolean
 }
 
-export function environmentLink(env: Environment) {
-  return env.status === 'pending' || env.status === 'rejected' ? '/app/requests' : `/app/environments/${env.id}`
-}
-
-export function EnvironmentCard({ env, catalog, owner, request, hasPendingChange }: Props) {
+export function EnvironmentCard({ env, catalog, role, owner, project, hasPendingChange }: Props) {
   const name = (id: string) => catalog.find((c) => c.id === id)?.name ?? id
   const models = [...env.spec.llms.map((l) => name(l.id)), ...env.spec.asr.map(name)]
   const shown = models.slice(0, 3)
   const extra = models.length - shown.length
-  const est = estimateCost(env.spec, catalog)
+  const last = env.history[env.history.length - 1]
 
   return (
-    <Link
-      to={environmentLink(env)}
-      className="card card-interactive flex flex-col gap-4 p-5"
-      aria-label={`${env.spec.name}, ${env.status}`}
-    >
+    <Link to={envPath(role, env.id)} className={cn('card card-interactive flex flex-col gap-4 p-5', env.status === 'terminated' && 'opacity-70')} aria-label={`${env.spec.name}, ${env.status}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="font-heading text-h3 text-text-primary">{env.spec.name}</h3>
@@ -40,13 +33,19 @@ export function EnvironmentCard({ env, catalog, owner, request, hasPendingChange
         </div>
         <div className="flex flex-col items-end gap-1.5">
           <StatusBadge status={env.status} />
-          {hasPendingChange && <StatusBadge status="change-requested" />}
+          {hasPendingChange && <StatusBadge status="under_review" label="Change pending" />}
         </div>
       </div>
 
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-caption text-text-secondary">
+        {project && (
+          <span className="flex items-center gap-1.5">
+            <FolderKanban className="size-3.5 text-text-muted" aria-hidden /> {project.name}
+          </span>
+        )}
         <span className="flex items-center gap-1.5">
           <Cpu className="size-3.5 text-text-muted" aria-hidden /> {computeLabel(env.spec.compute)}
+          {env.spec.compute !== 'cpu' && env.spec.gpuCount > 1 ? ` × ${env.spec.gpuCount}` : ''}
         </span>
         <span className="flex items-center gap-1.5">
           <HardDrive className="size-3.5 text-text-muted" aria-hidden /> {env.spec.storageGb} GB
@@ -63,11 +62,13 @@ export function EnvironmentCard({ env, catalog, owner, request, hasPendingChange
           <div className="relative h-1.5 overflow-hidden rounded-full bg-status-provisioning-bg">
             <div className="absolute inset-y-0 w-2/5 animate-indeterminate rounded-full bg-blue" />
           </div>
-          <p className="mt-2 text-caption text-status-provisioning-fg">Setting up compute, models and your API key…</p>
+          <p className="mt-2 text-caption text-status-provisioning-fg">{env.hold ? 'Waiting for a GPU in the shared pool…' : 'Setting up compute, models and your API key…'}</p>
         </div>
       )}
-      {env.status === 'rejected' && request?.rejectionReason && (
-        <p className="line-clamp-2 rounded-control bg-status-rejected-bg px-3 py-2 text-caption text-status-rejected-fg">{request.rejectionReason}</p>
+      {(env.status === 'suspended' || env.status === 'provisioning_failed') && last?.comment && (
+        <p className={cn('line-clamp-2 rounded-control px-3 py-2 text-caption', env.status === 'suspended' ? 'bg-status-pending-bg text-status-pending-fg' : 'bg-status-rejected-bg text-status-rejected-fg')}>
+          {last.comment}
+        </p>
       )}
 
       <div className="mt-auto flex items-center justify-between gap-3 border-t border-border pt-3 text-caption">
@@ -75,12 +76,12 @@ export function EnvironmentCard({ env, catalog, owner, request, hasPendingChange
           {owner && <Avatar name={owner.name} size="sm" />}
           <span className="truncate">{owner?.name}</span>
         </span>
-        <span className={cn('tabular shrink-0 text-right', env.status === 'running' ? 'font-semibold text-text-primary' : 'text-text-secondary')}>
-          {env.status === 'pending' && `Est. ${formatInt(est.credits)} credits / month`}
-          {env.status === 'approved' && `Approved · ${relativeTime(env.timeline[env.timeline.length - 1]!.at)}`}
-          {env.status === 'provisioning' && 'Ready in about a minute'}
-          {(env.status === 'running' || env.status === 'stopped') && `${formatInt(env.creditsUsed)} credits used`}
-          {env.status === 'rejected' && `Submitted ${formatDate(env.createdAt)}`}
+        <span className="tabular shrink-0 text-right text-text-secondary">
+          {env.status === 'active' || env.status === 'stopped' || env.status === 'suspended'
+            ? `${formatInt(env.creditsUsed)} credits used`
+            : last
+              ? relativeTime(last.at)
+              : ''}
         </span>
       </div>
     </Link>

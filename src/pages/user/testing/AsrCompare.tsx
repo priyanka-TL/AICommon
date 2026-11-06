@@ -217,7 +217,7 @@ export function AsrCompare({ env }: { env: Environment }) {
                       <p className="eyebrow">{i === 0 ? 'Provider A' : 'Provider B'}</p>
                       <h3 className="font-heading text-h3 text-text-primary">{item.name}</h3>
                     </div>
-                    {r && best === id && <StatusBadge status="running" label="More accurate" />}
+                    {r && best === id && <StatusBadge status="active" label="More accurate" />}
                   </header>
                   {!r ? (
                     <div className="flex flex-col gap-2">
@@ -226,7 +226,7 @@ export function AsrCompare({ env }: { env: Environment }) {
                     </div>
                   ) : providers.some((p) => p.serves.includes(id) && !p.enabled) ? (
                     <p className="rounded-control bg-status-stopped-bg px-3 py-2.5 text-sm text-status-stopped-fg">
-                      {item.name} is disabled by your admin, so it can’t transcribe right now.
+                      {item.name} is switched off by the Super Admin, so it can’t transcribe right now.
                     </p>
                   ) : !r.supported ? (
                     <p className="rounded-control bg-status-stopped-bg px-3 py-2.5 text-sm text-status-stopped-fg">

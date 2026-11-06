@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
-import { useAppStore } from '@/store/useAppStore'
 import { cn } from '@/lib/utils'
 import { FOOTER_NOTE } from '@/lib/brand'
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog'
@@ -19,14 +18,6 @@ export function AppShell() {
   })
   const [drawerOpen, setDrawerOpen] = useState(false)
   const { pathname } = useLocation()
-  const currentUserId = useAppStore((s) => s.currentUserId)
-  const environments = useAppStore((s) => s.environments)
-  const kickProvisioning = useAppStore((s) => s.kickProvisioning)
-
-  useEffect(() => {
-    kickProvisioning()
-  }, [currentUserId, environments, kickProvisioning])
-
   useEffect(() => {
     window.scrollTo(0, 0)
   }, [pathname])

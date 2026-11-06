@@ -9,7 +9,8 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/
 import { Button } from '@/components/ui/button'
 import { Field } from '@/components/ui/field'
 import { Input, Textarea } from '@/components/ui/input'
-import { RadioGroup, RadioGroupItem } from '@/components/ui/controls'
+import { Checkbox, RadioGroup, RadioGroupItem } from '@/components/ui/controls'
+import { useVisibleTenants } from '@/store/selectors'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 const COST_UNITS: CostUnit[] = ['per 1M tokens', 'per audio hour', 'per month', 'free']
@@ -30,6 +31,12 @@ interface FormState {
   languages: Language[]
   status: CatalogStatus
   description: string
+  availabilityMode: 'all' | 'selected'
+  availableTo: string[]
+  dependencies: string
+  installInstructions: string
+  resourceRequirements: string
+  runtimes: string
 }
 
 type Errors = Partial<Record<keyof FormState, string>>
@@ -49,6 +56,12 @@ const empty: FormState = {
   languages: [],
   status: 'beta',
   description: '',
+  availabilityMode: 'all',
+  availableTo: [],
+  dependencies: '',
+  installInstructions: '',
+  resourceRequirements: '',
+  runtimes: 'Python',
 }
 
 function fromItem(i: CatalogItem): FormState {
@@ -67,6 +80,12 @@ function fromItem(i: CatalogItem): FormState {
     languages: i.languages,
     status: i.status,
     description: i.description,
+    availabilityMode: i.availability === 'all' ? 'all' : 'selected',
+    availableTo: i.availability === 'all' ? [] : i.availability,
+    dependencies: i.dependencies,
+    installInstructions: i.installInstructions,
+    resourceRequirements: i.resourceRequirements,
+    runtimes: i.runtimes.join(', '),
   }
 }
 
@@ -85,6 +104,7 @@ const defaultUnit = (c: CatalogCategory): CostUnit =>
 export function CatalogFormSheet({ open, onOpenChange, item }: { open: boolean; onOpenChange: (o: boolean) => void; item?: CatalogItem }) {
   const catalog = useAppStore((s) => s.catalog)
   const upsert = useAppStore((s) => s.upsertCatalogItem)
+  const tenants = useVisibleTenants(true)
   const [form, setForm] = useState<FormState>(empty)
   const [errors, setErrors] = useState<Errors>({})
 
@@ -141,8 +161,14 @@ export function CatalogFormSheet({ open, onOpenChange, item }: { open: boolean; 
       languages: languageRelevant ? form.languages : [],
       status: form.status,
       description: form.description.trim(),
+      availability: form.availabilityMode === 'all' ? 'all' : form.availableTo,
+      origin: item?.origin ?? 'registry',
+      dependencies: form.dependencies.trim(),
+      installInstructions: form.installInstructions.trim(),
+      resourceRequirements: form.resourceRequirements.trim(),
+      runtimes: form.runtimes.split(',').map((r) => r.trim()).filter(Boolean),
     })
-    toast.success(item ? `Saved ${name}.` : `Added ${name} to the catalog.`, {
+    toast.success(item ? `Saved ${name}.` : `Added ${name} to the registry.`, {
       description: form.status === 'deprecated' ? 'It is hidden from new requests.' : 'Organisations can now select it in new requests.',
     })
     onOpenChange(false)
@@ -294,6 +320,45 @@ export function CatalogFormSheet({ open, onOpenChange, item }: { open: boolean; 
               </SelectContent>
             </Select>
           </Field>
+
+          <Field label="Available to">
+            <RadioGroup value={form.availabilityMode} onValueChange={(v) => set('availabilityMode', v as FormState['availabilityMode'])} className="gap-2">
+              <label className="flex cursor-pointer items-center gap-3 text-sm">
+                <RadioGroupItem value="all" /> All tenants
+              </label>
+              <label className="flex cursor-pointer items-center gap-3 text-sm">
+                <RadioGroupItem value="selected" /> Selected tenants
+              </label>
+            </RadioGroup>
+            {form.availabilityMode === 'selected' && (
+              <div className="mt-2 flex flex-col gap-2 pl-7">
+                {tenants.map((t) => (
+                  <label key={t.id} className="flex cursor-pointer items-center gap-3 text-sm">
+                    <Checkbox
+                      checked={form.availableTo.includes(t.id)}
+                      onCheckedChange={(v) => set('availableTo', v ? [...form.availableTo, t.id] : form.availableTo.filter((x) => x !== t.id))}
+                    />
+                    {t.name}
+                  </label>
+                ))}
+              </div>
+            )}
+          </Field>
+
+          <Field label="Dependencies" htmlFor="c-deps">
+            <Input id="c-deps" value={form.dependencies} onChange={(e) => set('dependencies', e.target.value)} placeholder="Python 3.10 or later" />
+          </Field>
+          <Field label="Install instructions" htmlFor="c-install">
+            <Textarea id="c-install" value={form.installInstructions} onChange={(e) => set('installInstructions', e.target.value)} className="min-h-[64px] font-mono text-caption" />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Resource requirements" htmlFor="c-res">
+              <Input id="c-res" value={form.resourceRequirements} onChange={(e) => set('resourceRequirements', e.target.value)} placeholder="1 vCPU and 2 GB RAM" />
+            </Field>
+            <Field label="Compatible runtimes" htmlFor="c-rt" helper="Separate with commas">
+              <Input id="c-rt" value={form.runtimes} onChange={(e) => set('runtimes', e.target.value)} />
+            </Field>
+          </div>
 
           <Field label="Description" htmlFor="c-desc" required error={errors.description} helper="One or two sentences. Shown on catalog cards.">
             <Textarea id="c-desc" value={form.description} onChange={(e) => set('description', e.target.value)} aria-invalid={!!errors.description} />

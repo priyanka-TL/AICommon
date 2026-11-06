@@ -85,7 +85,7 @@ function LlmCompare({ env }: { env: Environment }) {
     if (models.length < 2) return setError('Pick at least two models to compare.')
     if (!prompt.trim()) return setError('Write a prompt, or pick one of the samples.')
     const off = models.map((m) => disabledProvider(m)).find(Boolean)
-    if (off) return setError(`${off.name} is disabled by your admin, so its models can’t answer right now. Remove that model to continue.`)
+    if (off) return setError(`${off.name} is switched off by the Super Admin, so its models can’t answer right now. Remove that model to continue.`)
     setError(null)
     setPreferred(null)
     setFinished(new Set())
@@ -200,7 +200,7 @@ function LlmCompare({ env }: { env: Environment }) {
                     </p>
                   </div>
                   <div className="flex flex-col items-end gap-1">
-                    {fastest === r.modelId && <StatusBadge status="running" label="Fastest" />}
+                    {fastest === r.modelId && <StatusBadge status="active" label="Fastest" />}
                     {cheapest === r.modelId && <StatusBadge status="approved" label="Lowest cost" />}
                   </div>
                 </header>

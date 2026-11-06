@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import type { Role } from '@/data/types'
-import { useAppStore } from '@/store/useAppStore'
+import type { Role, User } from '@/data/types'
+import { useAppStore, useCurrentUser } from '@/store/useAppStore'
+import { useVisibleTenants } from '@/store/selectors'
 import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Field } from '@/components/ui/field'
@@ -12,90 +13,100 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** Edit this user; otherwise create. */
+  user?: User
   defaultTenantId?: string
 }
 
 type Errors = Partial<Record<'name' | 'email' | 'tenantId', string>>
 
-export function UserFormDialog({ open, onOpenChange, defaultTenantId }: Props) {
-  const tenants = useAppStore((s) => s.tenants)
-  const users = useAppStore((s) => s.users)
+const ROLE_OPTIONS: { value: Role; label: string; hint: string }[] = [
+  { value: 'user', label: 'User', hint: 'Requests and uses environments in their projects.' },
+  { value: 'tenant_admin', label: 'Tenant Admin', hint: 'Manages people, projects, infrastructure and approvals in this tenant.' },
+]
+
+export function UserFormDialog({ open, onOpenChange, user: editing, defaultTenantId }: Props) {
+  const me = useCurrentUser()!
+  const tenants = useVisibleTenants(true)
   const createUser = useAppStore((s) => s.createUser)
+  const updateUser = useAppStore((s) => s.updateUser)
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [title, setTitle] = useState('')
   const [role, setRole] = useState<Role>('user')
-  const [tenantId, setTenantId] = useState<string>('')
+  const [tenantId, setTenantId] = useState('')
   const [errors, setErrors] = useState<Errors>({})
+  const isSuper = me.role === 'super_admin'
 
   useEffect(() => {
-    if (open) {
-      setName('')
-      setEmail('')
-      setTitle('')
-      setRole('user')
-      setTenantId(defaultTenantId ?? '')
-      setErrors({})
-    }
-  }, [open, defaultTenantId])
+    if (!open) return
+    setName(editing?.name ?? '')
+    setEmail(editing?.email ?? '')
+    setTitle(editing?.title ?? '')
+    setRole(editing?.role ?? 'user')
+    setTenantId(editing?.tenantId ?? (isSuper ? (defaultTenantId ?? '') : me.tenantId))
+    setErrors({})
+  }, [open, editing, defaultTenantId, isSuper, me.tenantId])
 
   const submit = () => {
     const e: Errors = {}
     if (name.trim().length < 2) e.name = 'Enter the person’s full name.'
-    if (!/^\S+@\S+\.\S+$/.test(email.trim())) e.email = 'Enter a valid email address.'
-    else if (users.some((u) => u.email.toLowerCase() === email.trim().toLowerCase())) e.email = 'Someone with this email already has an account.'
-    if (role === 'user' && !tenantId) e.tenantId = 'Choose the organisation this person belongs to.'
+    if (!editing && !/^\S+@\S+\.\S+$/.test(email.trim())) e.email = 'Enter a valid email address.'
+    if (!editing && isSuper && !tenantId) e.tenantId = 'Choose the tenant this person belongs to.'
     setErrors(e)
     if (Object.values(e).some(Boolean)) return
 
-    createUser({
-      name: name.trim(),
-      email: email.trim(),
-      title: title.trim() || (role === 'admin' ? 'Platform team' : 'Developer'),
-      role,
-      tenantId: role === 'admin' ? null : tenantId,
-    })
-    toast.success(`Added ${name.trim()}.`, { description: `An invitation was sent to ${email.trim()}.` })
+    if (editing) {
+      updateUser(editing.id, { name: name.trim(), title: title.trim() || editing.title, role })
+      toast.success(`Saved changes to ${name.trim()}.`)
+    } else {
+      const res = createUser({ name: name.trim(), email: email.trim(), title: title.trim() || (role === 'tenant_admin' ? 'Tenant Admin' : 'Developer'), role, tenantId })
+      if (!res.ok) {
+        setErrors({ email: res.error })
+        return
+      }
+      toast.success(`Added ${name.trim()}.`, { description: `An invitation was sent to ${email.trim()}.` })
+    }
     onOpenChange(false)
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="md">
-        <DialogHeader title="Add user" description="They’ll get an email invitation to set a password." />
+        <DialogHeader
+          title={editing ? `Edit ${editing.name}` : 'Add user'}
+          description={editing ? 'Role changes take effect the next time they sign in.' : isSuper ? 'They’ll get an email invitation to set a password.' : `They’ll join ${tenants.find((t) => t.id === me.tenantId)?.name} and get an email invitation.`}
+        />
         <DialogBody className="flex flex-col gap-4">
           <Field label="Full name" htmlFor="u-name" required error={errors.name}>
             <Input id="u-name" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!errors.name} />
           </Field>
-          <Field label="Work email" htmlFor="u-email" required error={errors.email}>
-            <Input id="u-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} aria-invalid={!!errors.email} />
-          </Field>
+          {!editing && (
+            <Field label="Work email" htmlFor="u-email" required error={errors.email}>
+              <Input id="u-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} aria-invalid={!!errors.email} />
+            </Field>
+          )}
           <Field label="Job title" htmlFor="u-title" helper="Optional">
             <Input id="u-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="For example: Data scientist" />
           </Field>
           <Field label="Role">
             <RadioGroup value={role} onValueChange={(v) => setRole(v as Role)} className="gap-2">
-              <label className="flex cursor-pointer items-start gap-3 rounded-control border border-border p-3 hover:bg-bg-subtle">
-                <RadioGroupItem value="user" className="mt-0.5" />
-                <span>
-                  <span className="block text-sm font-semibold text-text-primary">User</span>
-                  <span className="block text-caption text-text-secondary">A developer in one organisation. Requests and uses environments.</span>
-                </span>
-              </label>
-              <label className="flex cursor-pointer items-start gap-3 rounded-control border border-border p-3 hover:bg-bg-subtle">
-                <RadioGroupItem value="admin" className="mt-0.5" />
-                <span>
-                  <span className="block text-sm font-semibold text-text-primary">Admin</span>
-                  <span className="block text-caption text-text-secondary">ShikshaLokam platform staff. Manages every organisation.</span>
-                </span>
-              </label>
+              {ROLE_OPTIONS.map((o) => (
+                <label key={o.value} className="flex cursor-pointer items-start gap-3 rounded-control border border-border p-3 hover:bg-bg-subtle">
+                  <RadioGroupItem value={o.value} className="mt-0.5" />
+                  <span>
+                    <span className="block text-sm font-semibold text-text-primary">{o.label}</span>
+                    <span className="block text-caption text-text-secondary">{o.hint}</span>
+                  </span>
+                </label>
+              ))}
             </RadioGroup>
           </Field>
-          {role === 'user' && (
-            <Field label="Organisation" htmlFor="u-tenant" required error={errors.tenantId}>
+          {isSuper && !editing && (
+            <Field label="Tenant" htmlFor="u-tenant" required error={errors.tenantId}>
               <Select value={tenantId} onValueChange={setTenantId}>
                 <SelectTrigger id="u-tenant" aria-invalid={!!errors.tenantId}>
-                  <SelectValue placeholder="Choose an organisation" />
+                  <SelectValue placeholder="Choose a tenant" />
                 </SelectTrigger>
                 <SelectContent>
                   {tenants
@@ -114,7 +125,7 @@ export function UserFormDialog({ open, onOpenChange, defaultTenantId }: Props) {
           <DialogClose asChild>
             <Button variant="secondary">Cancel</Button>
           </DialogClose>
-          <Button onClick={submit}>Add user</Button>
+          <Button onClick={submit}>{editing ? 'Save changes' : 'Add user'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

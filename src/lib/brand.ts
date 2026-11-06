@@ -1,3 +1,3 @@
 export const PRODUCT_NAME = 'AI Commons'
-export const ORG_NAME = 'ShikshaLokam'
+export const PRODUCT_TAGLINE = 'Shared AI infrastructure'
 export const FOOTER_NOTE = ''

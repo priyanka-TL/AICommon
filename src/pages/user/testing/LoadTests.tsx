@@ -4,7 +4,7 @@ import { toast } from 'sonner'
 import { Area, AreaChart, CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { CheckCircle2, Download, Gauge, Play, Square, XCircle } from 'lucide-react'
 import type { Environment } from '@/data/types'
-import { useAppStore, useCurrentUser } from '@/store/useAppStore'
+import { useAppStore } from '@/store/useAppStore'
 import {
   ERROR_THRESHOLD_PCT,
   LOAD_TICK_MS,
@@ -39,9 +39,8 @@ const DURATIONS = [1, 5, 10, 15, 30]
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 
 export function LoadTests({ env }: { env: Environment }) {
-  const user = useCurrentUser()!
   const catalog = useAppStore((s) => s.catalog)
-  const recordActivity = useAppStore((s) => s.recordActivity)
+  const recordTestRun = useAppStore((s) => s.recordTestRun)
   const [cfg, setCfg] = useState<LoadConfig>({ vus: 200, rampUpSec: 60, durationMin: 5 })
   const [phase, setPhase] = useState<Phase>('idle')
   const [points, setPoints] = useState<LoadPoint[]>([])
@@ -77,10 +76,12 @@ export function LoadTests({ env }: { env: Environment }) {
         setVerdict(v)
         setPhase('done')
         setHistory((h) => [{ id: uid('lt'), at: new Date().toISOString(), vus: run.vus, ...v }, ...h].slice(0, 6))
-        recordActivity(
-          'test',
-          `${user.name} ran a load test on “${env.spec.name}”: ${v.passed ? 'passed' : 'failed'} at ${formatInt(run.vus)} virtual users (p95 ${formatInt(v.p95)} ms)`,
-        )
+        recordTestRun({
+          envId: env.id,
+          kind: 'load',
+          summary: `Load test ${v.passed ? 'passed' : 'failed'} at ${formatInt(run.vus)} virtual users (p95 ${formatInt(v.p95)} ms)`,
+          passed: v.passed,
+        })
         if (v.passed) toast.success('Load test passed.', { description: `p95 latency ${formatInt(v.p95)} ms with ${formatInt(run.vus)} virtual users.` })
         else toast.error('Load test failed.', { description: 'See the result below for what went over the limits.' })
       }
@@ -195,7 +196,7 @@ export function LoadTests({ env }: { env: Environment }) {
               <span className="flex items-center gap-2 font-semibold text-text-primary">
                 {phase === 'running' && <StatusBadge status="provisioning" label="Running" />}
                 {phase === 'stopped' && <StatusBadge status="stopped" label="Stopped early" />}
-                {phase === 'done' && verdict && (verdict.passed ? <StatusBadge status="running" label="Passed" /> : <StatusBadge status="rejected" label="Failed" />)}
+                {phase === 'done' && verdict && (verdict.passed ? <StatusBadge status="active" label="Passed" /> : <StatusBadge status="rejected" label="Failed" />)}
                 {formatInt(ranWith.vus)} virtual users
               </span>
               <span className="tabular text-caption text-text-secondary">
@@ -344,7 +345,7 @@ export function LoadTests({ env }: { env: Environment }) {
                     <td className="tabular text-right">{formatInt(h.p95)} ms</td>
                     <td className="tabular text-right">{h.errorPct.toFixed(2)}%</td>
                     <td className="tabular text-right">{formatInt(h.peakRps)}</td>
-                    <td className="pl-4">{h.passed ? <StatusBadge status="running" label="Passed" /> : <StatusBadge status="rejected" label="Failed" />}</td>
+                    <td className="pl-4">{h.passed ? <StatusBadge status="active" label="Passed" /> : <StatusBadge status="rejected" label="Failed" />}</td>
                   </tr>
                 ))}
               </tbody>

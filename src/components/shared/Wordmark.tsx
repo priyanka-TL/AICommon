@@ -1,10 +1,7 @@
 import { cn } from '@/lib/utils'
-import { ORG_NAME, PRODUCT_NAME } from '@/lib/brand'
+import { PRODUCT_NAME, PRODUCT_TAGLINE } from '@/lib/brand'
 
-/**
- * Text wordmark. LOGO SLOT: replace the <span data-logo-slot> with the approved
- * ShikshaLokam logo once it is available.
- */
+/** Text wordmark. LOGO SLOT: replace the <span data-logo-slot> with the product logo once it is available. */
 export function Wordmark({ compact, onDark, className }: { compact?: boolean; onDark?: boolean; className?: string }) {
   return (
     <div className={cn('flex items-center gap-2.5', className)}>
@@ -24,7 +21,7 @@ export function Wordmark({ compact, onDark, className }: { compact?: boolean; on
           <span className={cn('font-heading text-[19px] font-bold', onDark ? 'text-white' : 'text-indigo-text')}>
             {PRODUCT_NAME}
           </span>
-          <span className={cn('mt-1 text-xs', onDark ? 'text-white/80' : 'text-text-muted')}>by {ORG_NAME}</span>
+          <span className={cn('mt-1 text-xs', onDark ? 'text-white/80' : 'text-text-muted')}>{PRODUCT_TAGLINE}</span>
         </span>
       )}
     </div>

@@ -54,19 +54,19 @@ export function SelectableCard({ item, selected, onToggle, disabled, disabledRea
         <div className="min-w-0">
           <p className="truncate font-semibold text-text-primary">{item.name}</p>
           <p className="truncate text-caption text-text-muted">
-            {item.provider} · v{item.version}
+            {item.provider} · {/^\d/.test(item.version) ? `v${item.version}` : item.version}
           </p>
         </div>
       </div>
       <p className="line-clamp-2 text-caption text-text-secondary">{item.description}</p>
-      <div className="mt-auto flex flex-wrap items-center gap-1.5">
+      <div className="mt-auto flex min-w-0 flex-wrap items-center gap-1.5 [&>span]:max-w-full [&>span]:truncate">
         <Tag>{item.hosting === 'hosted' ? 'Hosted API' : 'Open source'}</Tag>
         <Tag>{item.licence}</Tag>
         {item.languages.length > 0 && <Tag>{item.languages.length === 7 ? 'All 7 languages' : item.languages.join(', ')}</Tag>}
         {item.status === 'beta' && <Tag className="border-status-provisioning-bg bg-status-provisioning-bg text-status-provisioning-fg">Beta</Tag>}
       </div>
-      <div className="flex items-center justify-between gap-2 border-t border-border pt-3 text-caption">
-        <span className="tabular text-text-secondary">{costLabel(item)}</span>
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 border-t border-border pt-3 text-caption">
+        <span className="tabular min-w-0 text-text-secondary">{costLabel(item)}</span>
         {disabled && disabledReason ? (
           <span className="flex items-center gap-1 text-text-muted">
             <Lock className="size-3.5" aria-hidden /> {disabledReason}

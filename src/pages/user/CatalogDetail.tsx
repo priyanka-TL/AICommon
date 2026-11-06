@@ -1,13 +1,18 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { BookOpen, GitBranch, Lock, Plus } from 'lucide-react'
+import { BookOpen, FolderPlus, GitBranch, Lock, Plus } from 'lucide-react'
+import { toast } from 'sonner'
 import { useAppStore, useCurrentTenant } from '@/store/useAppStore'
+import { useScopedEnvironments, useScopedProjects, useTenantCatalog } from '@/store/selectors'
+import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Field } from '@/components/ui/field'
 import { CATEGORY_SINGULAR } from '@/lib/labels'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CatalogStatusBadge, StatusBadge, Tag } from '@/components/shared/StatusBadge'
 import { CodeBlock } from '@/components/shared/CodeBlock'
 import { costLabel } from '@/components/shared/SelectableCard'
-import { ItemMark } from '@/pages/admin/Catalog'
+import { ItemMark } from '@/pages/super-admin/Catalog'
 import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/tooltip'
 import NotFound from '@/pages/NotFound'
@@ -16,19 +21,21 @@ import { AddToEnvironmentDialog, useEligibleEnvironments } from './AddToEnvironm
 export default function CatalogDetail() {
   const { id } = useParams()
   const tenant = useCurrentTenant()!
-  const item = useAppStore((s) => s.catalog.find((c) => c.id === id))
-  const catalog = useAppStore((s) => s.catalog)
-  const environments = useAppStore((s) => s.environments)
+  const catalog = useTenantCatalog()
+  const item = catalog.find((c) => c.id === id)
+  const environments = useScopedEnvironments()
+  const projects = useScopedProjects(false)
+  const addProjectCapability = useAppStore((s) => s.addProjectCapability)
   const eligible = useEligibleEnvironments(item)
   const [addOpen, setAddOpen] = useState(false)
+  const [projectOpen, setProjectOpen] = useState(false)
+  const [projectId, setProjectId] = useState('')
 
-  if (!item) return <NotFound message="This item isn’t in the catalog. It may have been removed." />
+  if (!item) return <NotFound message="This item isn’t available to your tenant. It may have been removed or not published to you yet." />
 
-  const allowed = tenant.allowedCapabilities.includes(item.category)
+  const allowed = item.enabled
   const usedIn = environments.filter(
     (e) =>
-      e.tenantId === tenant.id &&
-      e.status !== 'rejected' &&
       (e.spec.llms.some((l) => l.id === item.id) || e.spec.asr.includes(item.id) || e.spec.capabilities.includes(item.id)),
   )
   const similar = catalog.filter((c) => c.category === item.category && c.id !== item.id && c.status !== 'deprecated').slice(0, 4)
@@ -36,7 +43,7 @@ export default function CatalogDetail() {
     item.status === 'deprecated'
       ? 'Deprecated items can’t be added to environments.'
       : !allowed
-        ? `${CATEGORY_SINGULAR[item.category]}s aren’t enabled for ${tenant.name}. Ask your admin.`
+        ? `${item.name} isn’t enabled for ${tenant.name}. Ask your Tenant Admin to switch it on.`
         : null
 
   const addButton = (
@@ -67,6 +74,16 @@ export default function CatalogDetail() {
                 </a>
               </Button>
             )}
+            <Button
+              variant="secondary"
+              disabled={!!blockedReason || projects.length === 0}
+              onClick={() => {
+                setProjectId(projects.find((p) => !p.capabilityIds.includes(item.id))?.id ?? projects[0]?.id ?? '')
+                setProjectOpen(true)
+              }}
+            >
+              <FolderPlus /> Add to project
+            </Button>
             {blockedReason ? (
               <Tooltip content={blockedReason}>
                 <span>{addButton}</span>
@@ -122,11 +139,11 @@ export default function CatalogDetail() {
               {item.versions.map((v) => (
                 <li key={v} className="flex items-center justify-between gap-3 px-4 py-3">
                   <code className="font-mono text-caption text-text-primary">{v}</code>
-                  {v === item.version ? <StatusBadge status="running" label="Current" /> : <Tag>Older, still available</Tag>}
+                  {v === item.version ? <StatusBadge status="active" label="Current" /> : <Tag>Older, still available</Tag>}
                 </li>
               ))}
             </ul>
-            <p className="mt-3 text-caption text-text-muted">New environments get the current version. Ask your admin if you need to pin an older one.</p>
+            <p className="mt-3 text-caption text-text-muted">New environments get the current version. Ask your Tenant Admin if you need to pin an older one.</p>
           </section>
 
           {(item.category === 'llm' || item.category === 'asr') && (
@@ -186,6 +203,47 @@ export default function CatalogDetail() {
       </div>
 
       <AddToEnvironmentDialog item={item} open={addOpen} onOpenChange={setAddOpen} />
+      <Dialog open={projectOpen} onOpenChange={setProjectOpen}>
+        <DialogContent size="sm">
+          <DialogHeader title={`Add ${item.name} to a project`} description="Project members see it in the project’s toolset. Adding it doesn’t need approval." />
+          <DialogBody>
+            <Field label="Project" htmlFor="ap-project">
+              <Select value={projectId} onValueChange={setProjectId}>
+                <SelectTrigger id="ap-project">
+                  <SelectValue placeholder="Choose a project" />
+                </SelectTrigger>
+                <SelectContent>
+                  {projects.map((p) => (
+                    <SelectItem key={p.id} value={p.id} disabled={p.capabilityIds.includes(item.id)}>
+                      {p.name}
+                      {p.capabilityIds.includes(item.id) ? ' · already added' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="secondary">Cancel</Button>
+            </DialogClose>
+            <Button
+              disabled={!projectId}
+              onClick={() => {
+                const res = addProjectCapability(projectId, item.id)
+                if (!res.ok) {
+                  toast.error(res.error)
+                  return
+                }
+                toast.success(`Added ${item.name} to ${projects.find((p) => p.id === projectId)?.name}.`)
+                setProjectOpen(false)
+              }}
+            >
+              Add to project
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

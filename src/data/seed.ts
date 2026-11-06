@@ -1,18 +1,40 @@
 import type {
-  Activity,
+  ActorRole,
+  AuditEntry,
   CatalogItem,
   EnvRequest,
   EnvSpec,
+  EnvStatus,
   Environment,
+  LifecycleEvent,
+  LifecycleStatus,
   Notification,
+  Project,
   Provider,
+  Quota,
+  QuotaRequest,
+  Role,
+  Suggestion,
   Tenant,
+  TestRun,
   UsagePoint,
   User,
 } from './types'
 
-export const DEMO_ADMIN_ID = 'u-rohan'
-export const DEMO_USER_ID = 'u-ananya'
+/** Bump to discard everyone's saved state and load this seed. */
+export const SEED_VERSION = 'v2'
+
+export const DEFAULT_TENANT_ID = 't-default'
+export const SUPER_ADMIN_ID = 'u-super'
+export const SAMPLE_PASSWORD = 'demo123'
+
+export const QUICK_SIGN_IN: { userId: string; label: string }[] = [
+  { userId: 'u-super', label: 'Super Admin' },
+  { userId: 'u-sl-ta', label: 'ShikshaLokam · Tenant Admin' },
+  { userId: 'u-sl-dev', label: 'ShikshaLokam · User' },
+  { userId: 'u-m4c-ta', label: 'Mantra4Change · Tenant Admin' },
+  { userId: 'u-m4c-dev', label: 'Mantra4Change · User' },
+]
 
 /* ---------- deterministic helpers ---------- */
 
@@ -38,15 +60,16 @@ export function hashString(s: string) {
 
 const DAY = 86_400_000
 
-function daysAgo(days: number, hour = 10, minute = 0) {
+function at(days: number, hour = 10, minute = 0) {
   const d = new Date(Date.now() - days * DAY)
   d.setHours(hour, minute, 0, 0)
+  if (d.getTime() > Date.now()) d.setTime(Date.now() - (days === 0 ? 20 * 60_000 : 0))
   return d.toISOString()
 }
 
-function daysAhead(days: number) {
-  return new Date(Date.now() + days * DAY).toISOString()
-}
+const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString()
+const plusMinutes = (iso: string, m: number) => new Date(new Date(iso).getTime() + m * 60_000).toISOString()
+const daysAhead = (days: number) => new Date(Date.now() + days * DAY).toISOString()
 
 function apiKey(seed: string) {
   const rand = seededRandom(hashString(seed))
@@ -56,105 +79,131 @@ function apiKey(seed: string) {
   return out
 }
 
-export function endpointFor(tenantSlug: string, envId: string) {
-  return `https://${tenantSlug}.aicommons.example/v1/envs/${envId}`
+export function endpointFor(tenantCode: string, envId: string) {
+  return `https://${tenantCode.toLowerCase()}.aicommons.example/v1/envs/${envId}`
 }
+
+const ev = (status: LifecycleStatus, when: string, actorId: string, actorRole: ActorRole, comment?: string): LifecycleEvent =>
+  comment ? { status, at: when, actorId, actorRole, comment } : { status, at: when, actorId, actorRole }
 
 /* ---------- tenants ---------- */
 
+const SL = 't-shikshalokam'
+const M4C = 't-mantra4change'
+
 export const seedTenants: Tenant[] = [
   {
-    id: 't-pratham',
-    name: 'Pratham Learning Labs',
-    shortName: 'pratham-labs',
-    orgType: 'NGO',
-    city: 'Mumbai',
-    state: 'Maharashtra',
-    contactName: 'Arjun Deshpande',
-    contactEmail: 'arjun.deshpande@prathamlabs.org',
-    creditQuota: 120000,
-    creditsUsed: 64800,
-    gpuQuota: 600,
-    gpuUsed: 310,
-    allowedCapabilities: ['llm', 'asr', 'agent-framework', 'vector-db', 'evaluation', 'low-code'],
+    id: DEFAULT_TENANT_ID,
+    name: 'Default',
+    code: 'SYS-000',
+    description: 'System tenant for platform administration.',
+    orgType: 'System',
+    city: '—',
+    state: '—',
+    contactName: 'Platform Administrator',
+    contactEmail: 'admin@sandbox.org',
+    quota: { vcpu: 0, ramGb: 0, gpus: 0, storageGb: 0 },
+    enabledItemIds: [],
     status: 'active',
-    createdAt: daysAgo(210),
+    isSystem: true,
+    createdAt: at(400),
   },
   {
-    id: 't-tfb',
-    name: 'Teach For Bharat',
-    shortName: 'teach-for-bharat',
+    id: SL,
+    name: 'ShikshaLokam',
+    code: 'SLK-101',
+    description: 'Works with education leaders and teachers to improve learning in government schools.',
     orgType: 'NGO',
-    city: 'Pune',
-    state: 'Maharashtra',
-    contactName: 'Kavya Iyer',
-    contactEmail: 'kavya.iyer@teachforbharat.org',
-    creditQuota: 80000,
-    creditsUsed: 31200,
-    gpuQuota: 300,
-    gpuUsed: 96,
-    allowedCapabilities: ['llm', 'agent-framework', 'vector-db', 'evaluation', 'low-code'],
-    status: 'active',
-    createdAt: daysAgo(160),
-  },
-  {
-    id: 't-kisan',
-    name: 'Kisan Voice Foundation',
-    shortName: 'kisan-voice',
-    orgType: 'Social enterprise',
-    city: 'Dharwad',
+    city: 'Bengaluru',
     state: 'Karnataka',
-    contactName: 'Ananya Rao',
-    contactEmail: 'ananya.rao@kisanvoice.org',
-    creditQuota: 60000,
-    creditsUsed: 49200,
-    gpuQuota: 400,
-    gpuUsed: 220,
-    allowedCapabilities: ['llm', 'asr', 'agent-framework', 'vector-db', 'evaluation'],
+    contactName: 'Ramya Krishnan',
+    contactEmail: 'tenantadmin@shikshalokam.org',
+    quota: { vcpu: 128, ramGb: 512, gpus: 6, storageGb: 3000 },
+    enabledItemIds: [
+      'llm-gpt', 'llm-claude', 'llm-gemini', 'llm-llama', 'llm-mistral', 'llm-gemma', 'llm-sarvam',
+      'asr-indicconformer', 'asr-bhashini', 'asr-sarvam', 'asr-whisper', 'asr-google', 'asr-azure',
+      'cap-langgraph', 'cap-crewai', 'cap-llamaindex', 'cap-qdrant', 'cap-pgvector', 'cap-chroma',
+      'cap-ragas', 'cap-deepeval', 'cap-promptfoo', 'cap-langflow',
+    ],
     status: 'active',
-    createdAt: daysAgo(120),
+    isSystem: false,
+    createdAt: at(210),
   },
   {
-    id: 't-anganwadi',
-    name: 'Anganwadi Digital',
-    shortName: 'anganwadi-digital',
-    orgType: 'Government partner',
-    city: 'Lucknow',
-    state: 'Uttar Pradesh',
-    contactName: 'Pooja Verma',
-    contactEmail: 'pooja.verma@anganwadidigital.in',
-    creditQuota: 50000,
-    creditsUsed: 47900,
-    gpuQuota: 200,
-    gpuUsed: 118,
-    allowedCapabilities: ['llm', 'asr', 'vector-db', 'evaluation'],
+    id: M4C,
+    name: 'Mantra4Change',
+    code: 'M4C-102',
+    description: 'Partners with school leaders and state systems to build school improvement programmes.',
+    orgType: 'NGO',
+    city: 'Hyderabad',
+    state: 'Telangana',
+    contactName: 'Sneha Kulkarni',
+    contactEmail: 'tenantadmin@mantra4change.org',
+    quota: { vcpu: 96, ramGb: 384, gpus: 4, storageGb: 2000 },
+    enabledItemIds: [
+      'llm-gpt', 'llm-claude', 'llm-gemini', 'llm-mistral', 'llm-gemma', 'llm-sarvam',
+      'asr-bhashini',
+      'cap-langgraph', 'cap-crewai', 'cap-llamaindex', 'cap-weaviate', 'cap-pgvector',
+      'cap-ragas', 'cap-promptfoo', 'cap-flowise', 'cap-haystack',
+    ],
     status: 'active',
-    createdAt: daysAgo(90),
+    isSystem: false,
+    createdAt: at(160),
   },
 ]
 
 /* ---------- users ---------- */
 
+const u = (id: string, name: string, email: string, title: string, tenantId: string, role: Role, lastActive: string, status: User['status'] = 'active'): User => ({
+  id,
+  name,
+  email,
+  title,
+  tenantId,
+  role,
+  status,
+  lastActiveAt: lastActive,
+})
+
 export const seedUsers: User[] = [
-  { id: 'u-rohan', name: 'Rohan Mehta', email: 'rohan.mehta@shikshalokam.org', title: 'Platform lead', tenantId: null, role: 'admin', status: 'active', lastActiveAt: daysAgo(0, 9, 12) },
-  { id: 'u-lakshmi', name: 'Lakshmi Narayanan', email: 'lakshmi.n@shikshalokam.org', title: 'Partner success', tenantId: null, role: 'admin', status: 'active', lastActiveAt: daysAgo(1, 17, 40) },
-  { id: 'u-ananya', name: 'Ananya Rao', email: 'ananya.rao@kisanvoice.org', title: 'ML engineer', tenantId: 't-kisan', role: 'user', status: 'active', lastActiveAt: daysAgo(0, 8, 55) },
-  { id: 'u-basavaraj', name: 'Basavaraj Patil', email: 'basavaraj.patil@kisanvoice.org', title: 'Backend developer', tenantId: 't-kisan', role: 'user', status: 'active', lastActiveAt: daysAgo(2, 14, 5) },
-  { id: 'u-shruti', name: 'Shruti Hegde', email: 'shruti.hegde@kisanvoice.org', title: 'Product manager', tenantId: 't-kisan', role: 'user', status: 'active', lastActiveAt: daysAgo(5, 11, 20) },
-  { id: 'u-arjun', name: 'Arjun Deshpande', email: 'arjun.deshpande@prathamlabs.org', title: 'Tech lead', tenantId: 't-pratham', role: 'user', status: 'active', lastActiveAt: daysAgo(0, 10, 30) },
-  { id: 'u-meera', name: 'Meera Kulkarni', email: 'meera.kulkarni@prathamlabs.org', title: 'Data scientist', tenantId: 't-pratham', role: 'user', status: 'active', lastActiveAt: daysAgo(1, 16, 45) },
-  { id: 'u-imran', name: 'Imran Shaikh', email: 'imran.shaikh@prathamlabs.org', title: 'Developer', tenantId: 't-pratham', role: 'user', status: 'deactivated', lastActiveAt: daysAgo(48, 12, 0) },
-  { id: 'u-kavya', name: 'Kavya Iyer', email: 'kavya.iyer@teachforbharat.org', title: 'Engineering manager', tenantId: 't-tfb', role: 'user', status: 'active', lastActiveAt: daysAgo(0, 7, 50) },
-  { id: 'u-siddharth', name: 'Siddharth Joshi', email: 'siddharth.joshi@teachforbharat.org', title: 'Developer', tenantId: 't-tfb', role: 'user', status: 'active', lastActiveAt: daysAgo(3, 15, 10) },
-  { id: 'u-pooja', name: 'Pooja Verma', email: 'pooja.verma@anganwadidigital.in', title: 'Programme technologist', tenantId: 't-anganwadi', role: 'user', status: 'active', lastActiveAt: daysAgo(1, 9, 25) },
-  { id: 'u-rahul', name: 'Rahul Srivastava', email: 'rahul.srivastava@anganwadidigital.in', title: 'Developer', tenantId: 't-anganwadi', role: 'user', status: 'active', lastActiveAt: daysAgo(4, 13, 35) },
+  u(SUPER_ADMIN_ID, 'Platform Administrator', 'admin@sandbox.org', 'Super Admin', DEFAULT_TENANT_ID, 'super_admin', hoursAgo(2)),
+
+  u('u-sl-ta', 'Ramya Krishnan', 'tenantadmin@shikshalokam.org', 'Programme technology lead', SL, 'tenant_admin', hoursAgo(3)),
+  u('u-sl-dev', 'Arjun Rao', 'developer@shikshalokam.org', 'ML engineer', SL, 'user', hoursAgo(5)),
+  u('u-sl-meera', 'Meera Iyer', 'meera.iyer@shikshalokam.org', 'Data scientist', SL, 'user', hoursAgo(26)),
+  u('u-sl-kiran', 'Kiran Hegde', 'kiran.hegde@shikshalokam.org', 'Backend developer', SL, 'user', hoursAgo(50)),
+  u('u-sl-fatima', 'Fatima Sheikh', 'fatima.sheikh@shikshalokam.org', 'Speech researcher', SL, 'user', hoursAgo(8)),
+  u('u-sl-vikram', 'Vikram Patil', 'vikram.patil@shikshalokam.org', 'Intern', SL, 'user', at(45), 'deactivated'),
+
+  u('u-m4c-ta', 'Sneha Kulkarni', 'tenantadmin@mantra4change.org', 'Head of technology', M4C, 'tenant_admin', hoursAgo(4)),
+  u('u-m4c-dev', 'Rahul Menon', 'developer@mantra4change.org', 'Full-stack developer', M4C, 'user', hoursAgo(6)),
+  u('u-m4c-divya', 'Divya Reddy', 'divya.reddy@mantra4change.org', 'Data analyst', M4C, 'user', hoursAgo(30)),
+  u('u-m4c-sanjay', 'Sanjay Gupta', 'sanjay.gupta@mantra4change.org', 'ML engineer', M4C, 'user', hoursAgo(12)),
+  u('u-m4c-aisha', 'Aisha Khan', 'aisha.khan@mantra4change.org', 'Product manager', M4C, 'user', hoursAgo(20)),
+  u('u-m4c-manoj', 'Manoj Das', 'manoj.das@mantra4change.org', 'Developer', M4C, 'user', at(60), 'deactivated'),
+]
+
+/* ---------- projects ---------- */
+
+const q = (vcpu: number, ramGb: number, gpus: number, storageGb: number): Quota => ({ vcpu, ramGb, gpus, storageGb })
+
+export const seedProjects: Project[] = [
+  { id: 'p-sl-edu', tenantId: SL, name: 'AI Education Assistant', description: 'Reading and maths help for children in Kannada and Hindi.', ownerId: 'u-sl-ta', memberIds: ['u-sl-dev', 'u-sl-meera'], status: 'active', limits: q(48, 192, 2, 1000), capabilityIds: ['cap-langgraph', 'cap-qdrant'], createdAt: at(200) },
+  { id: 'p-sl-teacher', tenantId: SL, name: 'Teacher Support Chatbot', description: 'Answers teachers’ questions on lesson planning and classroom practice.', ownerId: 'u-sl-ta', memberIds: ['u-sl-dev', 'u-sl-kiran'], status: 'active', limits: q(40, 160, 2, 800), capabilityIds: ['cap-llamaindex'], createdAt: at(180) },
+  { id: 'p-sl-speech', tenantId: SL, name: 'Multilingual Speech Recognition', description: 'Speech models for Indian languages, tested with classroom audio.', ownerId: 'u-sl-ta', memberIds: ['u-sl-fatima', 'u-sl-meera'], status: 'active', limits: q(40, 160, 2, 1200), capabilityIds: ['cap-deepeval'], createdAt: at(150) },
+
+  { id: 'p-m4c-coach', tenantId: M4C, name: 'School Leader Coaching Assistant', description: 'Helps school leaders plan improvement goals and reflect on progress.', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-dev', 'u-m4c-aisha'], status: 'active', limits: q(40, 160, 2, 800), capabilityIds: ['cap-crewai'], createdAt: at(150) },
+  { id: 'p-m4c-docs', tenantId: M4C, name: 'Document Intelligence', description: 'Reads scanned school records and forms into structured data.', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-sanjay', 'u-m4c-dev'], status: 'active', limits: q(32, 128, 1, 700), capabilityIds: ['cap-haystack', 'cap-pgvector'], createdAt: at(120) },
+  { id: 'p-m4c-feedback', tenantId: M4C, name: 'Feedback Analysis', description: 'Finds themes in feedback from teachers and parents.', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-divya', 'u-m4c-aisha'], status: 'active', limits: q(24, 96, 1, 500), capabilityIds: [], createdAt: at(100) },
 ]
 
 /* ---------- catalog ---------- */
 
+type BaseCatalogItem = Omit<CatalogItem, 'availability' | 'origin' | 'dependencies' | 'installInstructions' | 'resourceRequirements' | 'runtimes'>
+
 const ALL_LANGS: CatalogItem['languages'] = ['Hindi', 'Kannada', 'Tamil', 'Telugu', 'Marathi', 'Bengali', 'English']
 
-export const seedCatalog: CatalogItem[] = [
+const baseCatalog: BaseCatalogItem[] = [
   // LLMs
   { id: 'llm-gpt', name: 'GPT-5', category: 'llm', provider: 'OpenAI', hosting: 'hosted', version: '2025-08', versions: ['2025-08', '2025-05'], licence: 'Commercial API', gitUrl: 'https://github.com/openai/openai-python', docsUrl: 'https://platform.openai.com/docs', costPerUnit: 450, costUnit: 'per 1M tokens', languages: ALL_LANGS, status: 'active', description: 'General-purpose hosted model with strong reasoning and tool use.' },
   { id: 'llm-claude', name: 'Claude Sonnet 5.5', category: 'llm', provider: 'Anthropic', hosting: 'hosted', version: 'claude-sonnet-5-5', versions: ['claude-sonnet-5-5', 'claude-sonnet-5'], licence: 'Commercial API', gitUrl: 'https://github.com/anthropics/anthropic-sdk-python', docsUrl: 'https://docs.anthropic.com', costPerUnit: 500, costUnit: 'per 1M tokens', languages: ALL_LANGS, status: 'active', description: 'Hosted model suited to long documents, careful writing and agent workflows.' },
@@ -196,14 +245,77 @@ export const seedCatalog: CatalogItem[] = [
   { id: 'cap-dify', name: 'Dify', category: 'low-code', provider: 'LangGenius', hosting: 'open-source', version: '1.7', versions: ['1.7'], licence: 'Dify Open Source Licence', gitUrl: 'https://github.com/langgenius/dify', docsUrl: 'https://docs.dify.ai', costPerUnit: 350, costUnit: 'per month', languages: [], status: 'beta', description: 'App builder with prompt management, datasets and agent workflows.' },
 ]
 
+function registryDefaults(item: BaseCatalogItem): Pick<CatalogItem, 'dependencies' | 'installInstructions' | 'resourceRequirements' | 'runtimes'> {
+  if (item.category === 'llm' || item.category === 'asr') {
+    return item.hosting === 'hosted'
+      ? {
+          dependencies: 'None. Calls go through the environment endpoint.',
+          installInstructions: 'Nothing to install. Add it to an environment and call the endpoint with this model name.',
+          resourceRequirements: 'No GPU needed in your environment; the provider serves it.',
+          runtimes: ['Python', 'JavaScript', 'REST'],
+        }
+      : {
+          dependencies: 'Served from the shared cluster with vLLM or NVIDIA Triton.',
+          installInstructions: 'Nothing to install. The platform serves it; call it through your environment endpoint.',
+          resourceRequirements: 'Served centrally. Fine-tuning needs an A10 or A100 environment.',
+          runtimes: ['Python', 'JavaScript', 'REST'],
+        }
+  }
+  const pkg = item.name.toLowerCase().replace(/\s+/g, '-')
+  return {
+    dependencies: item.category === 'vector-db' ? 'Runs as a managed service next to your environment.' : 'Python 3.10 or later',
+    installInstructions: item.category === 'vector-db' ? 'Provisioned with the environment. Connection details appear on the environment page.' : `Pre-installed when attached. To use it locally: pip install ${pkg}`,
+    resourceRequirements: item.category === 'vector-db' ? '2 vCPU and 8 GB RAM from your environment' : '1 vCPU and 2 GB RAM',
+    runtimes: item.category === 'low-code' ? ['Web UI', 'REST'] : ['Python'],
+  }
+}
+
+const RESTRICTED: Record<string, string[]> = {
+  'asr-azure': [SL],
+}
+
+export const seedCatalog: CatalogItem[] = [
+  ...baseCatalog.map((c) => ({
+    ...c,
+    availability: RESTRICTED[c.id] ?? ('all' as const),
+    origin: 'registry' as const,
+    ...registryDefaults(c),
+  })),
+  {
+    id: 'cap-haystack',
+    name: 'Haystack',
+    category: 'agent-framework',
+    provider: 'deepset',
+    hosting: 'open-source',
+    version: '2.15',
+    versions: ['2.15'],
+    licence: 'Apache 2.0',
+    gitUrl: 'https://github.com/deepset-ai/haystack',
+    docsUrl: 'https://docs.haystack.deepset.ai',
+    costPerUnit: 0,
+    costUnit: 'free',
+    languages: [],
+    status: 'beta',
+    description: 'Framework for retrieval and document-processing pipelines.',
+    availability: [M4C],
+    origin: 'suggestion',
+    dependencies: 'Python 3.10 or later',
+    installInstructions: 'Pre-installed when attached. To use it locally: pip install haystack-ai',
+    resourceRequirements: '1 vCPU and 2 GB RAM',
+    runtimes: ['Python'],
+  },
+]
+
 /* ---------- environments and requests ---------- */
 
 const baseSpec: EnvSpec = {
   name: '',
   description: '',
+  projectId: '',
   purpose: 'development',
   durationWeeks: 8,
   compute: 't4',
+  gpuCount: 1,
   storageGb: 100,
   autoShutdownHours: 2,
   llms: [],
@@ -218,154 +330,271 @@ const baseSpec: EnvSpec = {
 
 const spec = (s: Partial<EnvSpec>): EnvSpec => ({ ...baseSpec, ...s })
 
+const TA: Record<string, string> = { [SL]: 'u-sl-ta', [M4C]: 'u-m4c-ta' }
+const CODE: Record<string, string> = { [SL]: 'SLK-101', [M4C]: 'M4C-102' }
+const FAILURE_REASON = 'Simulated: GPU capacity unavailable in pool'
+
 interface EnvSeed {
   id: string
   tenantId: string
   ownerId: string
-  status: Environment['status']
+  status: EnvStatus
   createdDaysAgo: number
   creditsUsed: number
   spec: EnvSpec
+  hold?: boolean
+  hot?: boolean
+  /** Events after the environment became active (stop, suspend, terminate). */
+  later?: LifecycleEvent[]
 }
-
-const tenantSlug = (tenantId: string) => seedTenants.find((t) => t.id === tenantId)!.shortName
 
 const envSeeds: EnvSeed[] = [
+  // ShikshaLokam
   {
-    id: 'env-kv-advisory', tenantId: 't-kisan', ownerId: 'u-ananya', status: 'running', createdDaysAgo: 34, creditsUsed: 18400,
-    spec: spec({ name: 'Crop advisory voice bot', description: 'Farmers ask questions by phone in Kannada and Hindi and get spoken advice on pests, sowing and weather.', purpose: 'development', compute: 'a10', storageGb: 200, llms: [{ id: 'llm-sarvam', tokenBudget: 4 }, { id: 'llm-llama', tokenBudget: 6 }], asr: ['asr-indicconformer', 'asr-bhashini'], languages: ['Kannada', 'Hindi'], asrHoursPerMonth: 40, capabilities: ['cap-langgraph', 'cap-qdrant'], justification: 'Core product for the kharif season. We need Kannada speech recognition close to our farmers.' }),
+    id: 'env-sl-tutor', tenantId: SL, ownerId: 'u-sl-dev', status: 'active', createdDaysAgo: 32, creditsUsed: 21400, hot: true,
+    spec: spec({ name: 'Kannada reading tutor', description: 'Listens to children read aloud in Kannada and Hindi and gives gentle feedback.', projectId: 'p-sl-edu', compute: 'a10', storageGb: 200, llms: [{ id: 'llm-sarvam', tokenBudget: 4 }, { id: 'llm-llama', tokenBudget: 6 }], asr: ['asr-indicconformer'], languages: ['Kannada', 'Hindi'], asrHoursPerMonth: 40, capabilities: ['cap-langgraph', 'cap-qdrant'], dataClassification: 'children', containsPii: true, justification: 'Reading levels in our partner schools need daily practice that teachers can’t give one to one.' }),
   },
   {
-    id: 'env-kv-mandi', tenantId: 't-kisan', ownerId: 'u-basavaraj', status: 'stopped', createdDaysAgo: 26, creditsUsed: 6200,
-    spec: spec({ name: 'Mandi price Q&A evaluation', description: 'Compare answer quality for mandi price questions across two hosted models.', purpose: 'evaluation', compute: 't4', storageGb: 50, durationWeeks: 4, llms: [{ id: 'llm-gpt', tokenBudget: 2 }, { id: 'llm-gemini', tokenBudget: 2 }], capabilities: ['cap-ragas', 'cap-pgvector'], dataClassification: 'public', justification: 'Choose a model for the price helpline before the rabi season.' }),
+    id: 'env-sl-lessonplan', tenantId: SL, ownerId: 'u-sl-kiran', status: 'stopped', createdDaysAgo: 40, creditsUsed: 9800,
+    spec: spec({ name: 'Lesson-plan assistant', description: 'Drafts activity-based lesson plans from the state textbook.', projectId: 'p-sl-teacher', purpose: 'evaluation', compute: 't4', storageGb: 100, llms: [{ id: 'llm-claude', tokenBudget: 3 }, { id: 'llm-gpt', tokenBudget: 2 }], capabilities: ['cap-llamaindex', 'cap-chroma', 'cap-promptfoo'], justification: 'Compare two models before the teacher training cycle.' }),
+    later: [ev('stopped', at(3, 18, 0), 'u-sl-kiran', 'user', 'Evaluation finished for this cycle.')],
   },
   {
-    id: 'env-kv-pilot', tenantId: 't-kisan', ownerId: 'u-shruti', status: 'rejected', createdDaysAgo: 12, creditsUsed: 0,
-    spec: spec({ name: 'Farmer helpline pilot, Dharwad', description: 'Pilot the voice bot with 500 farmers across three taluks in Dharwad district.', purpose: 'pilot', compute: 'a10', storageGb: 300, durationWeeks: 12, autoShutdownHours: 0, llms: [{ id: 'llm-sarvam', tokenBudget: 10 }], asr: ['asr-indicconformer'], languages: ['Kannada'], asrHoursPerMonth: 120, capabilities: ['cap-langgraph', 'cap-qdrant'], dataClassification: 'personal', containsPii: true, justification: 'Field pilot with farmer producer organisations.' }),
+    id: 'env-sl-asr-ft', tenantId: SL, ownerId: 'u-sl-fatima', status: 'provisioning', createdDaysAgo: 1, creditsUsed: 0, hold: true,
+    spec: spec({ name: 'IndicConformer fine-tuning', description: 'Fine-tune speech recognition on classroom recordings in three languages.', projectId: 'p-sl-speech', purpose: 'evaluation', compute: 'a100', storageGb: 500, asr: ['asr-indicconformer', 'asr-whisper'], languages: ['Kannada', 'Tamil', 'Telugu'], asrHoursPerMonth: 120, capabilities: ['cap-deepeval'], dataClassification: 'children', containsPii: true, justification: 'Classroom audio is noisy; off-the-shelf models miss too many words.' }),
   },
   {
-    id: 'env-pr-fluency', tenantId: 't-pratham', ownerId: 'u-meera', status: 'running', createdDaysAgo: 58, creditsUsed: 31200,
-    spec: spec({ name: 'Reading fluency assessment', description: 'Score oral reading recordings from children in Hindi and Marathi for words-correct-per-minute.', purpose: 'evaluation', compute: 'a100', storageGb: 250, durationWeeks: 12, llms: [{ id: 'llm-gemma', tokenBudget: 3 }], asr: ['asr-indicconformer', 'asr-whisper'], languages: ['Hindi', 'Marathi'], asrHoursPerMonth: 200, capabilities: ['cap-deepeval'], dataClassification: 'children', containsPii: true, justification: 'Replace manual scoring for the annual learning assessment.' }),
+    id: 'env-sl-whatsapp', tenantId: SL, ownerId: 'u-sl-dev', status: 'suspended', createdDaysAgo: 25, creditsUsed: 12600,
+    spec: spec({ name: 'Teacher WhatsApp helpline', description: 'Answers teachers’ questions over WhatsApp using the programme handbook.', projectId: 'p-sl-teacher', purpose: 'pilot', compute: 'a10', storageGb: 150, llms: [{ id: 'llm-gpt', tokenBudget: 5 }], capabilities: ['cap-langgraph', 'cap-pgvector'], dataClassification: 'personal', containsPii: true, justification: 'Pilot with 300 teachers in Dharwad district.' }),
+    later: [ev('suspended', at(2, 16, 40), SUPER_ADMIN_ID, 'super_admin', 'Paused: teachers’ phone numbers were sent to a hosted model without a consent record. Add the consent step and we’ll resume it.')],
   },
   {
-    id: 'env-pr-lessonplan', tenantId: 't-pratham', ownerId: 'u-arjun', status: 'running', createdDaysAgo: 44, creditsUsed: 14600,
-    spec: spec({ name: 'Teacher lesson-plan assistant', description: 'Helps teachers draft activity-based lesson plans from the state textbook.', purpose: 'development', compute: 't4', storageGb: 100, llms: [{ id: 'llm-claude', tokenBudget: 3 }, { id: 'llm-gpt', tokenBudget: 2 }], capabilities: ['cap-llamaindex', 'cap-chroma', 'cap-promptfoo'], dataClassification: 'internal', justification: 'Teachers asked for help planning combined-grade classes.' }),
+    id: 'env-sl-asr-eval', tenantId: SL, ownerId: 'u-sl-meera', status: 'provisioning_failed', createdDaysAgo: 2, creditsUsed: 0,
+    spec: spec({ name: 'Speech benchmark batch', description: 'Batch-score five hours of test audio across two providers.', projectId: 'p-sl-speech', purpose: 'evaluation', compute: 'a100', gpuCount: 2, storageGb: 300, asr: ['asr-whisper', 'asr-google'], languages: ['Hindi', 'Kannada'], asrHoursPerMonth: 60, justification: 'Need a baseline before the fine-tuning results come in.' }),
+  },
+
+  // Mantra4Change
+  {
+    id: 'env-m4c-coach', tenantId: M4C, ownerId: 'u-m4c-dev', status: 'active', createdDaysAgo: 28, creditsUsed: 17300, hot: true,
+    spec: spec({ name: 'Leader coaching assistant', description: 'Helps school leaders set goals and reflect after classroom walks, in Telugu and English.', projectId: 'p-m4c-coach', compute: 'a10', storageGb: 150, llms: [{ id: 'llm-claude', tokenBudget: 4 }, { id: 'llm-sarvam', tokenBudget: 2 }], asr: ['asr-bhashini'], languages: ['Telugu', 'English'], asrHoursPerMonth: 20, capabilities: ['cap-crewai', 'cap-weaviate'], justification: 'Coaches can meet each leader only once a month.' }),
   },
   {
-    id: 'env-pr-loadtest', tenantId: 't-pratham', ownerId: 'u-arjun', status: 'pending', createdDaysAgo: 1, creditsUsed: 0,
-    spec: spec({ name: 'Lesson-plan assistant load test', description: 'Check that the assistant holds up for 2,000 teachers during the training week.', purpose: 'load-testing', compute: 'a10', storageGb: 50, durationWeeks: 2, llms: [{ id: 'llm-claude', tokenBudget: 6 }], capabilities: ['cap-llamaindex', 'cap-chroma'], justification: 'District training starts on the 20th. We need to know our limits before then.' }),
+    id: 'env-m4c-docparse', tenantId: M4C, ownerId: 'u-m4c-sanjay', status: 'stopped', createdDaysAgo: 35, creditsUsed: 4200,
+    spec: spec({ name: 'Document parser evaluation', description: 'Extracts fields from school development plans.', projectId: 'p-m4c-docs', purpose: 'evaluation', compute: 'cpu', storageGb: 100, llms: [{ id: 'llm-mistral', tokenBudget: 3 }], capabilities: ['cap-llamaindex', 'cap-pgvector', 'cap-ragas'], dataClassification: 'internal', justification: 'Check extraction accuracy before scaling up.' }),
+    later: [ev('stopped', at(6, 19, 10), 'u-m4c-sanjay', 'user')],
   },
   {
-    id: 'env-tfb-coach', tenantId: 't-tfb', ownerId: 'u-kavya', status: 'running', createdDaysAgo: 70, creditsUsed: 9800,
-    spec: spec({ name: 'Fellow coaching chatbot', description: 'Answers fellows’ questions on classroom management using the programme handbook.', purpose: 'development', compute: 'cpu', storageGb: 50, llms: [{ id: 'llm-claude', tokenBudget: 1 }, { id: 'llm-mistral', tokenBudget: 4 }], capabilities: ['cap-crewai', 'cap-weaviate'], justification: 'Coaches can reach only a third of fellows each week.' }),
+    id: 'env-m4c-feedback', tenantId: M4C, ownerId: 'u-m4c-divya', status: 'provisioning', createdDaysAgo: 0, creditsUsed: 0, hold: true,
+    spec: spec({ name: 'Feedback theme classifier', description: 'Groups open-ended feedback from teachers into themes.', projectId: 'p-m4c-feedback', compute: 't4', storageGb: 100, llms: [{ id: 'llm-gemma', tokenBudget: 3 }], capabilities: ['cap-promptfoo'], justification: '12,000 survey responses arrive next month.' }),
   },
   {
-    id: 'env-tfb-observe', tenantId: 't-tfb', ownerId: 'u-siddharth', status: 'approved', createdDaysAgo: 3, creditsUsed: 0,
-    spec: spec({ name: 'Classroom observation summariser', description: 'Turns observation notes into a structured feedback summary for fellows.', purpose: 'functional-testing', compute: 't4', storageGb: 50, durationWeeks: 4, llms: [{ id: 'llm-gemini', tokenBudget: 2 }], capabilities: ['cap-promptfoo'], justification: 'Test with last term’s anonymised notes before rollout.' }),
+    id: 'env-m4c-visits', tenantId: M4C, ownerId: 'u-m4c-aisha', status: 'suspended', createdDaysAgo: 20, creditsUsed: 6100,
+    spec: spec({ name: 'School visit summariser', description: 'Turns field notes from school visits into short summaries.', projectId: 'p-m4c-coach', compute: 't4', storageGb: 80, llms: [{ id: 'llm-gemini', tokenBudget: 2 }], capabilities: ['cap-langgraph'], justification: 'Field coordinators spend an hour a day writing summaries.' }),
+    later: [ev('suspended', at(1, 11, 15), SUPER_ADMIN_ID, 'super_admin', 'Paused while we look into unusual token use over the weekend. We’ll resume it after a quick check with your team.')],
   },
   {
-    id: 'env-tfb-stories', tenantId: 't-tfb', ownerId: 'u-kavya', status: 'provisioning', createdDaysAgo: 2, creditsUsed: 0,
-    spec: spec({ name: 'Tamil storytelling generator', description: 'Generates short graded-level stories in Tamil for early readers.', purpose: 'development', compute: 't4', storageGb: 50, durationWeeks: 6, llms: [{ id: 'llm-gemma', tokenBudget: 3 }, { id: 'llm-sarvam', tokenBudget: 2 }], languages: ['Tamil'], capabilities: ['cap-promptfoo'], dataClassification: 'public', justification: 'Fellows in Chennai need more Tamil reading material.' }),
+    id: 'env-m4c-ocr', tenantId: M4C, ownerId: 'u-m4c-ta', status: 'provisioning_failed', createdDaysAgo: 1, creditsUsed: 0,
+    spec: spec({ name: 'Scanned forms OCR', description: 'Reads handwritten enrolment forms from 40 schools.', projectId: 'p-m4c-docs', compute: 'a10', storageGb: 200, llms: [{ id: 'llm-gpt', tokenBudget: 3 }], dataClassification: 'personal', containsPii: true, justification: 'Enrolment data entry takes field staff two weeks each term.' }),
   },
   {
-    id: 'env-ang-nutrition', tenantId: 't-anganwadi', ownerId: 'u-pooja', status: 'running', createdDaysAgo: 40, creditsUsed: 22100,
-    spec: spec({ name: 'Nutrition counselling assistant', description: 'Helps anganwadi workers counsel mothers on infant feeding, in Hindi.', purpose: 'pilot', compute: 'a10', storageGb: 150, durationWeeks: 12, llms: [{ id: 'llm-gpt', tokenBudget: 5 }], asr: ['asr-bhashini'], languages: ['Hindi'], asrHoursPerMonth: 30, capabilities: ['cap-pgvector', 'cap-ragas'], dataClassification: 'personal', containsPii: true, justification: 'Pilot in 40 anganwadi centres in Barabanki district.' }),
-  },
-  {
-    id: 'env-ang-growth', tenantId: 't-anganwadi', ownerId: 'u-rahul', status: 'stopped', createdDaysAgo: 30, creditsUsed: 5400,
-    spec: spec({ name: 'Growth-chart voice notes', description: 'Workers record child growth measurements by voice instead of on paper.', purpose: 'evaluation', compute: 't4', storageGb: 50, durationWeeks: 4, llms: [{ id: 'llm-mistral', tokenBudget: 2 }], asr: ['asr-bhashini', 'asr-whisper'], languages: ['Hindi'], asrHoursPerMonth: 15, dataClassification: 'children', containsPii: true, justification: 'Reduce register-keeping time for workers.' }),
-  },
-  {
-    id: 'env-ang-transcribe', tenantId: 't-anganwadi', ownerId: 'u-rahul', status: 'pending', createdDaysAgo: 0, creditsUsed: 0,
-    spec: spec({ name: 'Worker voice notes transcription', description: 'Transcribe daily voice notes from 300 workers to track home visits.', purpose: 'development', compute: 'a10', storageGb: 200, durationWeeks: 8, llms: [{ id: 'llm-gpt', tokenBudget: 4 }], asr: ['asr-indicconformer', 'asr-google'], languages: ['Hindi'], asrHoursPerMonth: 60, capabilities: ['cap-pgvector'], dataClassification: 'personal', containsPii: true, justification: 'Supervisors want visit data without extra paperwork.' }),
+    id: 'env-m4c-pilot-v0', tenantId: M4C, ownerId: 'u-m4c-dev', status: 'terminated', createdDaysAgo: 75, creditsUsed: 3900,
+    spec: spec({ name: 'Coaching chatbot v0', description: 'First prototype of the coaching assistant.', projectId: 'p-m4c-coach', compute: 'cpu', storageGb: 50, llms: [{ id: 'llm-mistral', tokenBudget: 1 }], justification: 'Early prototype.' }),
+    later: [ev('terminated', at(30, 12, 0), 'u-m4c-ta', 'tenant_admin', 'Replaced by the leader coaching assistant.')],
   },
 ]
 
-function timelineFor(e: EnvSeed): Environment['timeline'] {
+function approvalHistory(e: EnvSeed) {
   const d = e.createdDaysAgo
-  const t: Environment['timeline'] = [{ status: 'pending', at: daysAgo(d, 10, 5), note: 'Request submitted' }]
-  if (e.status === 'rejected') {
-    t.push({ status: 'rejected', at: daysAgo(Math.max(d - 1, 0), 15, 20), note: 'Rejected by Rohan Mehta' })
-    return t
+  const owner = seedUsers.find((x) => x.id === e.ownerId)!
+  const submitted = at(d + 1, 10, 5)
+  const req: LifecycleEvent[] = [ev('submitted', submitted, e.ownerId, owner.role)]
+  if (owner.role === 'tenant_admin') {
+    req.push(ev('escalated', plusMinutes(submitted, 1), 'system', 'system', 'Raised by a Tenant Admin, so it went straight to the Super Admin.'))
+  } else {
+    req.push(ev('under_review', at(d + 1, 11, 0), TA[e.tenantId]!, 'tenant_admin'))
+    req.push(ev('escalated', at(d + 1, 11, 20), TA[e.tenantId]!, 'tenant_admin', 'Within quota. Forwarding for approval.'))
   }
-  if (e.status === 'pending') return t
-  t.push({ status: 'approved', at: daysAgo(Math.max(d - 1, 0), 11, 30), note: 'Approved by Rohan Mehta' })
-  if (e.status === 'approved') return t
-  t.push({ status: 'provisioning', at: daysAgo(Math.max(d - 1, 0), 11, 31) })
-  if (e.status === 'provisioning') return t
-  t.push({ status: 'running', at: daysAgo(Math.max(d - 1, 0), 11, 36) })
-  if (e.status === 'stopped') t.push({ status: 'stopped', at: daysAgo(3, 18, 0), note: 'Stopped by owner' })
-  return t
+  const approvedAt = at(d, 10, 30)
+  req.push(ev('approved', approvedAt, SUPER_ADMIN_ID, 'super_admin'))
+
+  const env: LifecycleEvent[] = [ev('provisioning', approvedAt, 'system', 'system', e.hold ? 'Waiting for a GPU in the shared pool.' : undefined)]
+  if (e.status === 'provisioning_failed') {
+    env.push(ev('provisioning_failed', plusMinutes(approvedAt, 6), 'system', 'system', FAILURE_REASON))
+  } else if (e.status !== 'provisioning') {
+    env.push(ev('active', plusMinutes(approvedAt, 5), 'system', 'system'))
+    env.push(...(e.later ?? []))
+  }
+  return { req, env, submitted, approvedAt }
 }
 
-export const seedEnvironments: Environment[] = envSeeds.map((e) => ({
-  id: e.id,
-  tenantId: e.tenantId,
-  ownerId: e.ownerId,
-  requestId: `req-${e.id.slice(4)}`,
-  status: e.status,
-  spec: e.spec,
-  endpoint: endpointFor(tenantSlug(e.tenantId), e.id),
-  apiKey: apiKey(e.id),
-  creditsUsed: e.creditsUsed,
-  createdAt: daysAgo(e.createdDaysAgo, 10, 5),
-  expiresAt: e.status === 'pending' || e.status === 'rejected' ? null : daysAhead(e.spec.durationWeeks * 7 - e.createdDaysAgo),
-  timeline: timelineFor(e),
-}))
-
-export const seedRequests: EnvRequest[] = [
-  ...envSeeds.map((e): EnvRequest => {
-    const decided = e.status !== 'pending'
-    const rejected = e.status === 'rejected'
-    const base: EnvRequest = {
-      id: `req-${e.id.slice(4)}`,
-      type: 'new',
-      tenantId: e.tenantId,
-      requesterId: e.ownerId,
-      envId: e.id,
-      spec: e.spec,
-      previousSpec: null,
-      status: rejected ? 'rejected' : decided ? 'approved' : 'pending',
-      createdAt: daysAgo(e.createdDaysAgo, 10, 5),
-      decidedAt: decided ? daysAgo(Math.max(e.createdDaysAgo - 1, 0), rejected ? 15 : 11, rejected ? 20 : 30) : null,
-      decidedById: decided ? 'u-rohan' : null,
-      adminChanges: [],
-      rejectionReason: null,
-      comments: [],
-    }
-    if (e.id === 'env-kv-pilot') {
-      base.rejectionReason = 'A pilot with farmers’ personal data needs a signed data-processing agreement first. Attach the DPA and submit the request again.'
-    }
-    if (e.id === 'env-pr-fluency') {
-      base.spec = { ...e.spec }
-      base.adminChanges = [{ field: 'Storage', from: '500 GB', to: '250 GB' }]
-      base.comments = [
-        { id: 'c-1', authorId: 'u-rohan', text: 'Approved with 250 GB storage. Recordings older than 30 days can move to cold storage. Ask if you need more.', at: daysAgo(57, 11, 32) },
-        { id: 'c-2', authorId: 'u-meera', text: 'That works for us. Thank you.', at: daysAgo(57, 14, 2) },
-      ]
-    }
-    if (e.id === 'env-pr-loadtest') {
-      base.comments = [{ id: 'c-3', authorId: 'u-arjun', text: 'We only need the A10 for the training week. Happy to stop it right after.', at: daysAgo(1, 10, 20) }]
-    }
-    return base
-  }),
-  {
-    id: 'req-change-lessonplan',
-    type: 'change',
-    tenantId: 't-pratham',
-    requesterId: 'u-arjun',
-    envId: 'env-pr-lessonplan',
-    previousSpec: envSeeds.find((e) => e.id === 'env-pr-lessonplan')!.spec,
-    spec: { ...envSeeds.find((e) => e.id === 'env-pr-lessonplan')!.spec, llms: [{ id: 'llm-claude', tokenBudget: 8 }, { id: 'llm-gpt', tokenBudget: 2 }], justification: 'Usage tripled after the Nashik teacher workshop.' },
-    status: 'pending',
-    createdAt: daysAgo(0, 9, 40),
-    decidedAt: null,
-    decidedById: null,
-    adminChanges: [],
-    rejectionReason: null,
+const built = envSeeds.map((e) => {
+  const owner = seedUsers.find((x) => x.id === e.ownerId)!
+  const h = approvalHistory(e)
+  const requestId = `req-${e.id.slice(4)}`
+  const environment: Environment = {
+    id: e.id,
+    tenantId: e.tenantId,
+    projectId: e.spec.projectId,
+    ownerId: e.ownerId,
+    requestId,
+    status: e.status,
+    spec: e.spec,
+    endpoint: endpointFor(CODE[e.tenantId]!, e.id),
+    apiKey: apiKey(e.id),
+    creditsUsed: e.creditsUsed,
+    createdAt: h.approvedAt,
+    expiresAt: e.status === 'terminated' ? null : daysAhead(e.spec.durationWeeks * 7 - e.createdDaysAgo),
+    history: h.env,
+    failureReason: e.status === 'provisioning_failed' ? FAILURE_REASON : null,
+    provisionDueAt: null,
+    hold: !!e.hold,
+    loadProfile: e.hot ? 'hot' : 'normal',
+  }
+  const request: EnvRequest = {
+    id: requestId,
+    kind: 'new',
+    tenantId: e.tenantId,
+    requesterId: e.ownerId,
+    raisedByRole: owner.role,
+    envId: e.id,
+    spec: e.spec,
+    previousSpec: null,
+    status: 'approved',
+    createdAt: h.submitted,
+    updatedAt: h.approvedAt,
+    history: h.req,
     comments: [],
-  },
+    adminChanges: [],
+    simulateFailure: e.status === 'provisioning_failed',
+  }
+  return { environment, request }
+})
+
+export const seedEnvironments: Environment[] = built.map((b) => b.environment)
+
+interface OpenSeed {
+  id: string
+  tenantId: string
+  requesterId: string
+  spec: EnvSpec
+  history: LifecycleEvent[]
+  comments?: EnvRequest['comments']
+}
+
+const open = (o: OpenSeed): EnvRequest => {
+  const requester = seedUsers.find((x) => x.id === o.requesterId)!
+  return {
+    id: o.id,
+    kind: 'new',
+    tenantId: o.tenantId,
+    requesterId: o.requesterId,
+    raisedByRole: requester.role,
+    envId: null,
+    spec: o.spec,
+    previousSpec: null,
+    status: o.history[o.history.length - 1]!.status as EnvRequest['status'],
+    createdAt: o.history[0]!.at,
+    updatedAt: o.history[o.history.length - 1]!.at,
+    history: o.history,
+    comments: o.comments ?? [],
+    adminChanges: [],
+    simulateFailure: false,
+  }
+}
+
+const openRequests: EnvRequest[] = [
+  // ShikshaLokam
+  open({
+    id: 'req-sl-phonics', tenantId: SL, requesterId: 'u-sl-dev',
+    spec: spec({ name: 'Kannada phonics practice', description: 'Short phonics games with spoken feedback.', projectId: 'p-sl-edu', compute: 't4', llms: [{ id: 'llm-sarvam', tokenBudget: 2 }] }),
+    history: [ev('draft', hoursAgo(20), 'u-sl-dev', 'user')],
+  }),
+  open({
+    id: 'req-sl-feedback', tenantId: SL, requesterId: 'u-sl-meera',
+    spec: spec({ name: 'Teacher feedback summariser', description: 'Summarises observation notes into feedback for teachers.', projectId: 'p-sl-teacher', compute: 't4', llms: [{ id: 'llm-gemini', tokenBudget: 2 }], capabilities: ['cap-promptfoo'], justification: 'Mentors write 40 feedback notes a week by hand.' }),
+    history: [ev('submitted', hoursAgo(1), 'u-sl-meera', 'user')],
+  }),
+  open({
+    id: 'req-sl-labelling', tenantId: SL, requesterId: 'u-sl-kiran',
+    spec: spec({ name: 'Speech labelling workbench', description: 'A tool for volunteers to correct speech transcripts.', projectId: 'p-sl-speech', compute: 'a100', storageGb: 200, asr: ['asr-indicconformer'], languages: ['Kannada'], asrHoursPerMonth: 30, justification: 'Volunteers need a fast way to fix transcripts for training data.' }),
+    history: [
+      ev('submitted', at(3, 9, 30), 'u-sl-kiran', 'user'),
+      ev('under_review', at(3, 12, 0), 'u-sl-ta', 'tenant_admin'),
+      ev('changes_requested', at(3, 12, 10), 'u-sl-ta', 'tenant_admin', 'An A100 is more than labelling needs. Please switch to a T4 and resubmit.'),
+    ],
+  }),
+  open({
+    id: 'req-sl-benchmark', tenantId: SL, requesterId: 'u-sl-fatima',
+    spec: spec({ name: 'Multilingual ASR benchmark', description: 'Benchmark four speech models on 20 hours of classroom audio.', projectId: 'p-sl-speech', purpose: 'evaluation', compute: 'a100', gpuCount: 3, storageGb: 400, asr: ['asr-indicconformer', 'asr-sarvam', 'asr-whisper'], languages: ['Kannada', 'Hindi', 'Tamil'], asrHoursPerMonth: 80, capabilities: ['cap-deepeval'], dataClassification: 'children', containsPii: true, justification: 'The state wants benchmark numbers before choosing a provider.' }),
+    history: [
+      ev('submitted', at(2, 10, 0), 'u-sl-fatima', 'user'),
+      ev('under_review', at(2, 14, 0), 'u-sl-ta', 'tenant_admin'),
+      ev('escalated', at(2, 14, 20), 'u-sl-ta', 'tenant_admin', 'This needs 3 GPUs and we have 2 left. Forwarding so you can decide on the extra GPU.'),
+    ],
+  }),
+  open({
+    id: 'req-sl-attendance', tenantId: SL, requesterId: 'u-sl-kiran',
+    spec: spec({ name: 'Student face attendance', description: 'Marks attendance from classroom photos.', projectId: 'p-sl-edu', compute: 't4', dataClassification: 'children', containsPii: true, justification: 'Saves teachers ten minutes each morning.' }),
+    history: [
+      ev('submitted', at(9, 9, 0), 'u-sl-kiran', 'user'),
+      ev('under_review', at(9, 11, 0), 'u-sl-ta', 'tenant_admin'),
+      ev('rejected', at(9, 11, 30), 'u-sl-ta', 'tenant_admin', 'We don’t process photos of children’s faces. Please keep using the roll-call app.'),
+    ],
+  }),
+  open({
+    id: 'req-sl-faq', tenantId: SL, requesterId: 'u-sl-dev',
+    spec: spec({ name: 'Old FAQ bot migration', description: 'Move the old FAQ bot onto the platform.', projectId: 'p-sl-teacher', compute: 'cpu', llms: [{ id: 'llm-mistral', tokenBudget: 1 }] }),
+    history: [ev('submitted', at(14, 15, 0), 'u-sl-dev', 'user'), ev('cancelled', at(13, 10, 0), 'u-sl-dev', 'user', 'No longer needed; the helpline replaces it.')],
+  }),
+
+  // Mantra4Change
+  open({
+    id: 'req-m4c-voice', tenantId: M4C, requesterId: 'u-m4c-dev',
+    spec: spec({ name: 'Principal voice notes', description: 'Lets principals record reflections by voice.', projectId: 'p-m4c-coach', compute: 't4', asr: ['asr-bhashini'], languages: ['Telugu'], asrHoursPerMonth: 15 }),
+    history: [ev('draft', hoursAgo(30), 'u-m4c-dev', 'user')],
+  }),
+  open({
+    id: 'req-m4c-observation', tenantId: M4C, requesterId: 'u-m4c-divya',
+    spec: spec({ name: 'Classroom observation analytics', description: 'Finds patterns across 2,000 classroom observations.', projectId: 'p-m4c-feedback', purpose: 'evaluation', compute: 'a10', storageGb: 150, llms: [{ id: 'llm-claude', tokenBudget: 3 }], capabilities: ['cap-ragas'], justification: 'District teams want to see trends before the next review.' }),
+    history: [ev('submitted', at(2, 16, 0), 'u-m4c-divya', 'user'), ev('under_review', at(1, 10, 0), 'u-m4c-ta', 'tenant_admin')],
+  }),
+  open({
+    id: 'req-m4c-sip', tenantId: M4C, requesterId: 'u-m4c-aisha',
+    spec: spec({ name: 'School improvement plan generator', description: 'Drafts improvement plans from school data for leaders to edit.', projectId: 'p-m4c-coach', compute: 'a10', autoShutdownHours: 1, llms: [{ id: 'llm-claude', tokenBudget: 3 }], justification: 'Pilot in 25 schools in Nalgonda district.' }),
+    history: [
+      ev('submitted', at(5, 10, 0), 'u-m4c-aisha', 'user'),
+      ev('under_review', at(5, 15, 0), 'u-m4c-ta', 'tenant_admin'),
+      ev('changes_requested', at(5, 15, 10), 'u-m4c-ta', 'tenant_admin', 'Please add which schools are in the pilot and switch on auto-shutdown.'),
+      ev('resubmitted', at(4, 9, 40), 'u-m4c-aisha', 'user'),
+    ],
+  }),
+  open({
+    id: 'req-m4c-docscale', tenantId: M4C, requesterId: 'u-m4c-sanjay',
+    spec: spec({ name: 'Document intelligence at scale', description: 'Process scanned records from all partner schools.', projectId: 'p-m4c-docs', compute: 'a100', storageGb: 300, llms: [{ id: 'llm-gpt', tokenBudget: 4 }], capabilities: ['cap-haystack', 'cap-pgvector'], dataClassification: 'personal', containsPii: true, justification: 'The evaluation hit 94% field accuracy; we’re ready to scale.' }),
+    history: [
+      ev('submitted', at(1, 9, 0), 'u-m4c-sanjay', 'user'),
+      ev('under_review', at(1, 12, 0), 'u-m4c-ta', 'tenant_admin'),
+      ev('escalated', at(1, 12, 15), 'u-m4c-ta', 'tenant_admin', 'Within quota. Forwarding for approval.'),
+    ],
+  }),
+  open({
+    id: 'req-m4c-sentiment', tenantId: M4C, requesterId: 'u-m4c-dev',
+    spec: spec({ name: 'Feedback sentiment dashboard', description: 'Shows sentiment trends in parent feedback.', projectId: 'p-m4c-feedback', compute: 'cpu', llms: [{ id: 'llm-mistral', tokenBudget: 2 }], justification: 'Parents’ feedback is read by hand today.' }),
+    history: [ev('submitted', hoursAgo(3), 'u-m4c-dev', 'user')],
+  }),
+  open({
+    id: 'req-m4c-broadcast', tenantId: M4C, requesterId: 'u-m4c-aisha',
+    spec: spec({ name: 'Bulk WhatsApp broadcast', description: 'Send generated messages to all parents.', projectId: 'p-m4c-feedback', compute: 't4', llms: [{ id: 'llm-gpt', tokenBudget: 6 }], dataClassification: 'personal', containsPii: true, justification: 'Reach parents before the school year starts.' }),
+    history: [
+      ev('submitted', at(12, 10, 0), 'u-m4c-aisha', 'user'),
+      ev('under_review', at(12, 11, 0), 'u-m4c-ta', 'tenant_admin'),
+      ev('escalated', at(12, 11, 10), 'u-m4c-ta', 'tenant_admin'),
+      ev('rejected', at(11, 16, 0), SUPER_ADMIN_ID, 'super_admin', 'Bulk messaging to parents is outside the platform’s acceptable use. Please use your SMS provider for broadcasts.'),
+    ],
+  }),
 ]
+
+export const seedRequests: EnvRequest[] = [...openRequests, ...built.map((b) => b.request)]
 
 /* ---------- providers ---------- */
 
@@ -384,17 +613,15 @@ export const seedProviders: Provider[] = [
 /* ---------- usage (30 days) ---------- */
 
 const usageProfile: Record<string, { credits: number; gpu: number; calls: number }> = {
-  't-pratham': { credits: 2300, gpu: 11, calls: 14000 },
-  't-tfb': { credits: 1100, gpu: 3.5, calls: 6200 },
-  't-kisan': { credits: 1650, gpu: 7.5, calls: 9100 },
-  't-anganwadi': { credits: 1550, gpu: 4, calls: 7400 },
+  [SL]: { credits: 2100, gpu: 9, calls: 12500 },
+  [M4C]: { credits: 1350, gpu: 5, calls: 8100 },
 }
 
 export const seedUsage: UsagePoint[] = (() => {
   const out: UsagePoint[] = []
-  for (const tenant of seedTenants) {
-    const rand = seededRandom(hashString(tenant.id))
-    const p = usageProfile[tenant.id]
+  for (const tenantId of [SL, M4C]) {
+    const rand = seededRandom(hashString(tenantId))
+    const p = usageProfile[tenantId]!
     for (let i = 29; i >= 0; i--) {
       const d = new Date(Date.now() - i * DAY)
       const weekend = d.getDay() === 0 || d.getDay() === 6
@@ -402,7 +629,7 @@ export const seedUsage: UsagePoint[] = (() => {
       const f = (weekend ? 0.45 : 1) * growth * (0.85 + rand() * 0.3)
       out.push({
         date: d.toISOString().slice(0, 10),
-        tenantId: tenant.id,
+        tenantId,
         credits: Math.round(p.credits * f),
         gpuHours: Math.round(p.gpu * f * 10) / 10,
         apiCalls: Math.round(p.calls * f),
@@ -412,27 +639,165 @@ export const seedUsage: UsagePoint[] = (() => {
   return out
 })()
 
-/* ---------- activity and notifications ---------- */
+/* ---------- suggestions ---------- */
 
-export const seedActivity: Activity[] = [
-  { id: 'a-1', at: daysAgo(0, 9, 40), actorId: 'u-arjun', tenantId: 't-pratham', kind: 'request', text: 'Arjun Deshpande requested a change to “Teacher lesson-plan assistant”' },
-  { id: 'a-2', at: daysAgo(0, 8, 15), actorId: 'u-rahul', tenantId: 't-anganwadi', kind: 'request', text: 'Rahul Srivastava requested “Worker voice notes transcription”' },
-  { id: 'a-3', at: daysAgo(1, 17, 5), actorId: 'u-lakshmi', tenantId: null, kind: 'provider', text: 'Lakshmi Narayanan disabled Azure AI Speech after repeated timeouts' },
-  { id: 'a-4', at: daysAgo(1, 11, 31), actorId: 'u-rohan', tenantId: 't-tfb', kind: 'approval', text: 'Rohan Mehta approved “Tamil storytelling generator” for Teach For Bharat' },
-  { id: 'a-5', at: daysAgo(1, 10, 5), actorId: 'u-arjun', tenantId: 't-pratham', kind: 'request', text: 'Arjun Deshpande requested “Lesson-plan assistant load test”' },
-  { id: 'a-6', at: daysAgo(2, 11, 30), actorId: 'u-rohan', tenantId: 't-tfb', kind: 'approval', text: 'Rohan Mehta approved “Classroom observation summariser” for Teach For Bharat' },
-  { id: 'a-7', at: daysAgo(3, 18, 0), actorId: 'u-basavaraj', tenantId: 't-kisan', kind: 'environment', text: 'Basavaraj Patil stopped “Mandi price Q&A evaluation”' },
-  { id: 'a-8', at: daysAgo(4, 16, 20), actorId: 'u-meera', tenantId: 't-pratham', kind: 'test', text: 'Meera Kulkarni ran a load test on “Reading fluency assessment”: passed at 200 virtual users' },
-  { id: 'a-9', at: daysAgo(6, 12, 10), actorId: 'u-rohan', tenantId: null, kind: 'catalog', text: 'Rohan Mehta marked GPT-4o mini as deprecated' },
-  { id: 'a-10', at: daysAgo(11, 15, 20), actorId: 'u-rohan', tenantId: 't-kisan', kind: 'rejection', text: 'Rohan Mehta rejected “Farmer helpline pilot, Dharwad”: data-processing agreement needed' },
+export const seedSuggestions: Suggestion[] = [
+  {
+    id: 's-sl-langfuse',
+    tenantId: SL,
+    suggestedById: 'u-sl-meera',
+    githubUrl: 'https://github.com/langfuse/langfuse',
+    name: 'Langfuse',
+    category: 'evaluation',
+    description: 'Open-source tracing and evaluation for LLM applications.',
+    useCase: 'We need to trace tutor conversations and score answer quality school by school.',
+    licence: 'MIT',
+    docsUrl: 'https://langfuse.com/docs',
+    status: 'submitted',
+    forwarded: false,
+    history: [{ status: 'submitted', at: hoursAgo(18), actorId: 'u-sl-meera', actorRole: 'user' }],
+    catalogItemId: null,
+    createdAt: hoursAgo(18),
+  },
+  {
+    id: 's-m4c-haystack',
+    tenantId: M4C,
+    suggestedById: 'u-m4c-sanjay',
+    githubUrl: 'https://github.com/deepset-ai/haystack',
+    name: 'Haystack',
+    category: 'agent-framework',
+    description: 'Framework for retrieval and document-processing pipelines.',
+    useCase: 'Our document intelligence project needs pipelines for scanned school records.',
+    licence: 'Apache 2.0',
+    docsUrl: 'https://docs.haystack.deepset.ai',
+    status: 'approved_tenant',
+    forwarded: false,
+    history: [
+      { status: 'submitted', at: at(8, 10, 0), actorId: 'u-m4c-sanjay', actorRole: 'user' },
+      { status: 'under_review', at: at(8, 14, 0), actorId: 'u-m4c-ta', actorRole: 'tenant_admin' },
+      { status: 'approved_tenant', at: at(7, 11, 0), actorId: 'u-m4c-ta', actorRole: 'tenant_admin', comment: 'Approved for Mantra4Change. Try it in Document Intelligence first.' },
+    ],
+    catalogItemId: 'cap-haystack',
+    createdAt: at(8, 10, 0),
+  },
 ]
 
+/* ---------- quota requests ---------- */
+
+export const seedQuotaRequests: QuotaRequest[] = [
+  {
+    id: 'qr-m4c-gpu',
+    tenantId: M4C,
+    requestedById: 'u-m4c-ta',
+    current: { vcpu: 96, ramGb: 384, gpus: 4, storageGb: 2000 },
+    requested: { vcpu: 128, ramGb: 512, gpus: 6, storageGb: 2500 },
+    reason: 'Two district pilots start in January and both need GPU environments.',
+    status: 'pending',
+    createdAt: hoursAgo(28),
+    decidedAt: null,
+    decidedById: null,
+    comment: null,
+  },
+]
+
+/* ---------- test runs ---------- */
+
+export const seedTestRuns: TestRun[] = [
+  { id: 'tr-1', envId: 'env-sl-tutor', tenantId: SL, actorId: 'u-sl-dev', kind: 'functional', at: at(4, 15, 0), summary: '4 of 5 functional tests passed with Sarvam-M', passed: false },
+  { id: 'tr-2', envId: 'env-sl-tutor', tenantId: SL, actorId: 'u-sl-dev', kind: 'load', at: at(3, 16, 30), summary: 'Load test passed at 200 virtual users (p95 640 ms)', passed: true },
+  { id: 'tr-3', envId: 'env-m4c-coach', tenantId: M4C, actorId: 'u-m4c-dev', kind: 'functional', at: at(5, 12, 0), summary: '5 of 5 functional tests passed with Claude Sonnet 5.5', passed: true },
+  { id: 'tr-4', envId: 'env-m4c-coach', tenantId: M4C, actorId: 'u-m4c-dev', kind: 'load', at: at(2, 17, 0), summary: 'Load test failed at 400 virtual users (p95 2,810 ms)', passed: false },
+]
+
+/* ---------- platform capacity ---------- */
+
+export const seedCapacity: Quota = { vcpu: 512, ramGb: 2048, gpus: 16, storageGb: 10000 }
+
+/* ---------- audit log (derived from seeded histories, plus platform events) ---------- */
+
+const STATUS_VERB: Partial<Record<LifecycleStatus, string>> = {
+  submitted: 'submitted',
+  under_review: 'started reviewing',
+  escalated: 'forwarded to the Super Admin',
+  approved: 'approved',
+  rejected: 'rejected',
+  changes_requested: 'requested changes to',
+  resubmitted: 'resubmitted',
+  cancelled: 'cancelled',
+  stopped: 'stopped',
+  suspended: 'suspended',
+  terminated: 'terminated',
+  active: 'marked active',
+  provisioning_failed: 'marked provisioning failed for',
+}
+
+const userName = (id: string) => (id === 'system' ? 'System' : (seedUsers.find((x) => x.id === id)?.name ?? 'Someone'))
+
+export const seedAudit: AuditEntry[] = (() => {
+  const out: AuditEntry[] = []
+  let n = 0
+  const push = (e: Omit<AuditEntry, 'id'>) => out.push({ ...e, id: `a-${++n}` })
+  for (const r of seedRequests) {
+    for (const h of r.history) {
+      if (h.status === 'draft') continue
+      push({
+        at: h.at,
+        actorId: h.actorId,
+        actorRole: h.actorRole,
+        tenantId: r.tenantId,
+        action: `request.${h.status}`,
+        entityType: 'request',
+        entityId: r.id,
+        summary:
+          h.status === 'escalated'
+            ? h.actorId === 'system'
+              ? `“${r.spec.name}” went straight to the Super Admin`
+              : `${userName(h.actorId)} forwarded “${r.spec.name}” to the Super Admin`
+            : `${userName(h.actorId)} ${STATUS_VERB[h.status] ?? h.status} “${r.spec.name}”`,
+        comment: h.comment,
+      })
+    }
+  }
+  for (const e of seedEnvironments) {
+    for (const h of e.history) {
+      if (h.status === 'provisioning' || h.actorId === 'system') continue
+      push({
+        at: h.at,
+        actorId: h.actorId,
+        actorRole: h.actorRole,
+        tenantId: e.tenantId,
+        action: `environment.${h.status}`,
+        entityType: 'environment',
+        entityId: e.id,
+        summary: `${userName(h.actorId)} ${STATUS_VERB[h.status] ?? h.status} “${e.spec.name}”`,
+        comment: h.comment,
+      })
+    }
+  }
+  push({ at: at(7, 11, 0), actorId: 'u-m4c-ta', actorRole: 'tenant_admin', tenantId: M4C, action: 'suggestion.approved_tenant', entityType: 'suggestion', entityId: 's-m4c-haystack', summary: 'Sneha Kulkarni approved the suggestion “Haystack” for Mantra4Change' })
+  push({ at: hoursAgo(28), actorId: 'u-m4c-ta', actorRole: 'tenant_admin', tenantId: M4C, action: 'quota.requested', entityType: 'quota', entityId: 'qr-m4c-gpu', summary: 'Sneha Kulkarni asked for a quota increase to 6 GPUs' })
+  push({ at: at(1, 17, 5), actorId: SUPER_ADMIN_ID, actorRole: 'super_admin', tenantId: null, action: 'provider.disabled', entityType: 'provider', entityId: 'p-azure', summary: 'Platform Administrator disabled Azure AI Speech after repeated timeouts' })
+  push({ at: at(6, 12, 10), actorId: SUPER_ADMIN_ID, actorRole: 'super_admin', tenantId: null, action: 'catalog.deprecated', entityType: 'catalog', entityId: 'llm-gpt4o-mini', summary: 'Platform Administrator marked GPT-4o mini as deprecated' })
+  push({ at: at(4, 15, 0), actorId: 'u-sl-dev', actorRole: 'user', tenantId: SL, action: 'test.functional', entityType: 'test', entityId: 'tr-1', summary: 'Arjun Rao ran 5 functional tests on “Kannada reading tutor”: 4 passed' })
+  push({ at: at(2, 17, 0), actorId: 'u-m4c-dev', actorRole: 'user', tenantId: M4C, action: 'test.load', entityType: 'test', entityId: 'tr-4', summary: 'Rahul Menon ran a load test on “Leader coaching assistant”: failed at 400 virtual users' })
+  return out.sort((a, b) => b.at.localeCompare(a.at))
+})()
+
+/* ---------- notifications ---------- */
+
 export const seedNotifications: Notification[] = [
-  { id: 'n-1', userId: 'u-ananya', at: daysAgo(3, 18, 0), text: 'Basavaraj Patil stopped “Mandi price Q&A evaluation”.', link: '/app/environments/env-kv-mandi', read: false },
-  { id: 'n-2', userId: 'u-ananya', at: daysAgo(11, 15, 20), text: '“Farmer helpline pilot, Dharwad” was rejected. A data-processing agreement is needed.', link: '/app/requests', read: true },
-  { id: 'n-3', userId: 'u-ananya', at: daysAgo(20, 9, 0), text: 'Your organisation has used 80% of this month’s credits.', link: null, read: true },
-  { id: 'n-4', userId: 'u-rohan', at: daysAgo(0, 9, 40), text: 'New change request from Pratham Learning Labs.', link: '/admin/requests', read: false },
-  { id: 'n-5', userId: 'u-rohan', at: daysAgo(0, 8, 15), text: 'New request from Anganwadi Digital exceeds its credit quota.', link: '/admin/requests', read: false },
+  { id: 'n-1', userId: 'u-sl-dev', at: at(2, 16, 40), text: '“Teacher WhatsApp helpline” was suspended by the Super Admin. Open it to see why.', link: '/app/environments/env-sl-whatsapp', read: false },
+  { id: 'n-2', userId: 'u-sl-dev', at: at(13, 10, 0), text: 'You cancelled “Old FAQ bot migration”.', link: '/app/requests/req-sl-faq', read: true },
+  { id: 'n-3', userId: 'u-sl-ta', at: hoursAgo(1), text: 'New request from Meera Iyer: “Teacher feedback summariser”.', link: '/tenant-admin/requests/req-sl-feedback', read: false },
+  { id: 'n-4', userId: 'u-sl-ta', at: at(2, 16, 40), text: 'The Super Admin suspended “Teacher WhatsApp helpline”.', link: '/tenant-admin/infrastructure/env-sl-whatsapp', read: false },
+  { id: 'n-5', userId: 'u-sl-kiran', at: at(3, 12, 10), text: 'Ramya Krishnan asked for changes to “Speech labelling workbench”.', link: '/app/requests/req-sl-labelling', read: false },
+  { id: 'n-6', userId: SUPER_ADMIN_ID, at: at(2, 14, 20), text: 'Escalated from ShikshaLokam: “Multilingual ASR benchmark” is over quota.', link: '/super-admin/requests/req-sl-benchmark', read: false },
+  { id: 'n-7', userId: SUPER_ADMIN_ID, at: at(1, 12, 15), text: 'Escalated from Mantra4Change: “Document intelligence at scale”.', link: '/super-admin/requests/req-m4c-docscale', read: false },
+  { id: 'n-8', userId: SUPER_ADMIN_ID, at: hoursAgo(28), text: 'Mantra4Change asked for a quota increase.', link: '/super-admin/requests?tab=quota', read: true },
+  { id: 'n-9', userId: 'u-m4c-dev', at: at(30, 12, 0), text: 'Sneha Kulkarni terminated “Coaching chatbot v0”.', link: '/app/environments/env-m4c-pilot-v0', read: true },
+  { id: 'n-10', userId: 'u-m4c-ta', at: at(4, 9, 40), text: 'Aisha Khan resubmitted “School improvement plan generator”.', link: '/tenant-admin/requests/req-m4c-sip', read: false },
+  { id: 'n-11', userId: 'u-m4c-ta', at: hoursAgo(3), text: 'New request from Rahul Menon: “Feedback sentiment dashboard”.', link: '/tenant-admin/requests/req-m4c-sentiment', read: false },
+  { id: 'n-12', userId: 'u-m4c-aisha', at: at(1, 11, 15), text: '“School visit summariser” was suspended by the Super Admin.', link: '/app/environments/env-m4c-visits', read: false },
 ]
 
 /* ---------- testing samples ---------- */
@@ -563,25 +928,37 @@ export const DEFAULT_TEST_CASES: TestCaseSeed[] = [
 export interface SeedState {
   tenants: Tenant[]
   users: User[]
+  projects: Project[]
   environments: Environment[]
   requests: EnvRequest[]
   catalog: CatalogItem[]
   providers: Provider[]
   usage: UsagePoint[]
-  activity: Activity[]
+  audit: AuditEntry[]
   notifications: Notification[]
+  suggestions: Suggestion[]
+  quotaRequests: QuotaRequest[]
+  testRuns: TestRun[]
+  capacity: Quota
+  alertKeys: string[]
 }
 
 export function createSeed(): SeedState {
   return structuredClone({
     tenants: seedTenants,
     users: seedUsers,
+    projects: seedProjects,
     environments: seedEnvironments,
     requests: seedRequests,
     catalog: seedCatalog,
     providers: seedProviders,
     usage: seedUsage,
-    activity: seedActivity,
+    audit: seedAudit,
     notifications: seedNotifications,
+    suggestions: seedSuggestions,
+    quotaRequests: seedQuotaRequests,
+    testRuns: seedTestRuns,
+    capacity: seedCapacity,
+    alertKeys: [],
   })
 }

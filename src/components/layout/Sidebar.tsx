@@ -1,7 +1,9 @@
 import { NavLink } from 'react-router-dom'
+import { useShallow } from 'zustand/react/shallow'
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { useAppStore, useCurrentTenant, useCurrentUser } from '@/store/useAppStore'
 import { cn } from '@/lib/utils'
+import { ROLE_LABELS } from '@/lib/labels'
 import { Wordmark } from '@/components/shared/Wordmark'
 import { Tooltip } from '@/components/ui/tooltip'
 import { NAV } from './nav'
@@ -15,7 +17,19 @@ interface SidebarProps {
 export function Sidebar({ collapsed = false, onToggleCollapse, onNavigate }: SidebarProps) {
   const user = useCurrentUser()
   const tenant = useCurrentTenant()
-  const pendingRequests = useAppStore((s) => s.requests.filter((r) => r.status === 'pending').length)
+  const counts = useAppStore(
+    useShallow((s) => {
+    if (!user) return { tenantReviews: 0, escalated: 0, suggestions: 0 }
+    const mine = (tenantId: string) => user.role === 'super_admin' || tenantId === user.tenantId
+    return {
+      tenantReviews: s.requests.filter((r) => mine(r.tenantId) && ['submitted', 'under_review', 'resubmitted'].includes(r.status) && r.raisedByRole !== 'tenant_admin').length,
+      escalated: s.requests.filter((r) => r.status === 'escalated').length + s.quotaRequests.filter((q) => q.status === 'pending').length,
+      suggestions: s.suggestions.filter((x) =>
+        user.role === 'super_admin' ? x.forwarded && ['submitted', 'under_review'].includes(x.status) : mine(x.tenantId) && !x.forwarded && ['submitted', 'under_review'].includes(x.status),
+      ).length,
+      }
+    }),
+  )
   if (!user) return null
   const sections = NAV[user.role]
 
@@ -31,7 +45,7 @@ export function Sidebar({ collapsed = false, onToggleCollapse, onNavigate }: Sid
             {!collapsed && <p className="eyebrow mb-1.5 px-3">{section.label}</p>}
             <ul className="flex flex-col gap-0.5">
               {section.items.map((item) => {
-                const badge = item.badge === 'pendingRequests' && pendingRequests > 0 ? pendingRequests : null
+                const badge = item.badge && counts[item.badge] > 0 ? counts[item.badge] : null
                 const link = (
                   <NavLink
                     to={item.to}
@@ -79,9 +93,9 @@ export function Sidebar({ collapsed = false, onToggleCollapse, onNavigate }: Sid
       <div className="border-t border-border p-3">
         {!collapsed && (
           <div className="mb-2 rounded-control bg-bg-subtle px-3 py-2.5">
-            <p className="eyebrow">{user.role === 'admin' ? 'Platform team' : 'Organisation'}</p>
-            <p className="mt-0.5 truncate text-sm font-semibold text-text-primary">{tenant?.name ?? 'ShikshaLokam'}</p>
-            <p className="text-caption text-text-secondary">{user.role === 'admin' ? 'Admin' : 'User'}</p>
+            <p className="eyebrow">{user.role === 'super_admin' ? 'Platform' : 'Tenant'}</p>
+            <p className="mt-0.5 truncate text-sm font-semibold text-text-primary">{user.role === 'super_admin' ? 'All tenants' : tenant?.name}</p>
+            <p className="text-caption text-text-secondary">{ROLE_LABELS[user.role]}</p>
           </div>
         )}
         {onToggleCollapse && (

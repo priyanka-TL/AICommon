@@ -1,8 +1,9 @@
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import type { Role } from '@/data/types'
 import { useCurrentUser } from '@/store/useAppStore'
+import { homeFor } from '@/lib/paths'
 
-export const homeFor = (role: Role) => (role === 'admin' ? '/admin' : '/app')
+export { homeFor }
 
 export function RequireRole({ role }: { role: Role }) {
   const user = useCurrentUser()

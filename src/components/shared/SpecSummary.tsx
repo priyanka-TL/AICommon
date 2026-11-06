@@ -1,5 +1,6 @@
 import { Pencil } from 'lucide-react'
-import type { CatalogItem, EnvSpec } from '@/data/types'
+import type { CatalogItem, EnvSpec, Project } from '@/data/types'
+import { allocationOf } from '@/lib/quota'
 import { autoShutdownLabel, COMPUTE_TIERS, dataClassLabel, purposeLabel } from '@/lib/labels'
 import { cn } from '@/lib/utils'
 import { Tag } from './StatusBadge'
@@ -7,6 +8,7 @@ import { Tag } from './StatusBadge'
 interface SpecSummaryProps {
   spec: EnvSpec
   catalog: CatalogItem[]
+  projects?: Project[]
   onEdit?: (step: number) => void
   className?: string
 }
@@ -46,7 +48,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   )
 }
 
-export function SpecSummary({ spec, catalog, onEdit, className }: SpecSummaryProps) {
+export function SpecSummary({ spec, catalog, projects = [], onEdit, className }: SpecSummaryProps) {
   const name = (id: string) => catalog.find((c) => c.id === id)?.name ?? id
   const tier = COMPUTE_TIERS.find((t) => t.value === spec.compute)!
   const caps = spec.capabilities
@@ -55,6 +57,7 @@ export function SpecSummary({ spec, catalog, onEdit, className }: SpecSummaryPro
     <div className={cn('flex flex-col', className)}>
       <Section title="Purpose" step={0} onEdit={onEdit}>
         <dl>
+          <Row label="Project">{projects.find((p) => p.id === spec.projectId)?.name ?? 'Not set'}</Row>
           <Row label="Purpose">{purposeLabel(spec.purpose)}</Row>
           <Row label="Duration">{spec.durationWeeks} weeks</Row>
           {spec.description && <Row label="Description">{spec.description}</Row>}
@@ -65,6 +68,13 @@ export function SpecSummary({ spec, catalog, onEdit, className }: SpecSummaryPro
         <dl>
           <Row label="Tier">
             {tier.label} <span className="text-text-muted">· {tier.detail}</span>
+          </Row>
+          {tier.gpu && <Row label="GPU count">{spec.gpuCount}</Row>}
+          <Row label="Allocation">
+            {(() => {
+              const a = allocationOf(spec)
+              return `${a.vcpu} vCPU · ${a.ramGb} GB RAM${a.gpus ? ` · ${a.gpus} GPU${a.gpus > 1 ? 's' : ''}` : ''}`
+            })()}
           </Row>
           <Row label="Storage">{spec.storageGb} GB</Row>
           <Row label="Auto-shutdown">{autoShutdownLabel(spec.autoShutdownHours)}</Row>

@@ -1,69 +1,58 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import type { CatalogCategory, OrgType, Tenant } from '@/data/types'
+import type { OrgType, Quota, Tenant } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
-import { CATEGORY_LABELS, INDIAN_STATES, ORG_TYPES } from '@/lib/labels'
-import { slugify } from '@/lib/utils'
+import { INDIAN_STATES, ORG_TYPES } from '@/lib/labels'
+import { RESOURCES } from '@/lib/quota'
 import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Field } from '@/components/ui/field'
-import { Input } from '@/components/ui/input'
-import { Checkbox } from '@/components/ui/controls'
+import { Input, Textarea } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 interface FormState {
   name: string
+  code: string
+  description: string
   orgType: OrgType
   city: string
   state: string
   contactName: string
   contactEmail: string
-  creditQuota: string
-  gpuQuota: string
-  allowedCapabilities: CatalogCategory[]
+  quota: Record<keyof Quota, string>
 }
 
-type Errors = Partial<Record<keyof FormState, string>>
-
-const ALL_CATEGORIES = Object.keys(CATEGORY_LABELS) as CatalogCategory[]
+type Errors = Partial<Record<keyof FormState | keyof Quota, string>>
 
 const empty: FormState = {
   name: '',
+  code: '',
+  description: '',
   orgType: 'NGO',
   city: '',
   state: 'Karnataka',
   contactName: '',
   contactEmail: '',
-  creditQuota: '50000',
-  gpuQuota: '200',
-  allowedCapabilities: ['llm', 'agent-framework', 'vector-db', 'evaluation'],
+  quota: { vcpu: '64', ramGb: '256', gpus: '2', storageGb: '1000' },
 }
 
-function fromTenant(t: Tenant): FormState {
-  return {
-    name: t.name,
-    orgType: t.orgType,
-    city: t.city,
-    state: t.state,
-    contactName: t.contactName,
-    contactEmail: t.contactEmail,
-    creditQuota: String(t.creditQuota),
-    gpuQuota: String(t.gpuQuota),
-    allowedCapabilities: t.allowedCapabilities,
-  }
-}
+const fromTenant = (t: Tenant): FormState => ({
+  name: t.name,
+  code: t.code,
+  description: t.description,
+  orgType: t.orgType,
+  city: t.city,
+  state: t.state,
+  contactName: t.contactName,
+  contactEmail: t.contactEmail,
+  quota: { vcpu: String(t.quota.vcpu), ramGb: String(t.quota.ramGb), gpus: String(t.quota.gpus), storageGb: String(t.quota.storageGb) },
+})
 
-interface Props {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  tenant?: Tenant
-  onCreated?: (id: string) => void
-}
-
-export function TenantFormDialog({ open, onOpenChange, tenant, onCreated }: Props) {
+export function TenantFormDialog({ open, onOpenChange, tenant, onCreated }: { open: boolean; onOpenChange: (o: boolean) => void; tenant?: Tenant; onCreated?: (id: string) => void }) {
   const tenants = useAppStore((s) => s.tenants)
   const createTenant = useAppStore((s) => s.createTenant)
   const updateTenant = useAppStore((s) => s.updateTenant)
+  const setTenantQuota = useAppStore((s) => s.setTenantQuota)
   const [form, setForm] = useState<FormState>(empty)
   const [errors, setErrors] = useState<Errors>({})
 
@@ -82,41 +71,40 @@ export function TenantFormDialog({ open, onOpenChange, tenant, onCreated }: Prop
   const submit = () => {
     const e: Errors = {}
     const name = form.name.trim()
-    if (name.length < 3) e.name = 'Enter the organisation’s name.'
-    else if (tenants.some((t) => t.id !== tenant?.id && t.name.toLowerCase() === name.toLowerCase()))
-      e.name = 'An organisation with this name already exists.'
-    if (!form.city.trim()) e.city = 'Enter the city where the organisation is based.'
+    const code = form.code.trim().toUpperCase()
+    if (name.length < 3) e.name = 'Enter the tenant’s name.'
+    else if (tenants.some((t) => t.id !== tenant?.id && t.name.toLowerCase() === name.toLowerCase())) e.name = 'A tenant with this name already exists.'
+    if (!tenant) {
+      if (!/^[A-Z0-9]{2,5}-\d{3}$/.test(code)) e.code = 'Use a short code like ABC-103.'
+      else if (tenants.some((t) => t.code === code)) e.code = 'This code is already used.'
+    }
+    if (!form.city.trim()) e.city = 'Enter the city where the tenant is based.'
     if (!form.contactName.trim()) e.contactName = 'Enter a contact person.'
     if (!/^\S+@\S+\.\S+$/.test(form.contactEmail.trim())) e.contactEmail = 'Enter a valid email address.'
-    const credits = Number(form.creditQuota)
-    const gpu = Number(form.gpuQuota)
-    if (!Number.isFinite(credits) || credits <= 0) e.creditQuota = 'Enter a credit quota above 0.'
-    else if (tenant && credits < tenant.creditsUsed) e.creditQuota = `This organisation has already used ${tenant.creditsUsed.toLocaleString('en-IN')} credits this month.`
-    if (!Number.isFinite(gpu) || gpu < 0) e.gpuQuota = 'Enter a GPU-hour quota of 0 or more.'
-    if (!form.allowedCapabilities.length) e.allowedCapabilities = 'Allow at least one capability.'
+    const quota = Object.fromEntries(RESOURCES.map((r) => [r.key, Number(form.quota[r.key])])) as unknown as Quota
+    for (const r of RESOURCES) if (!Number.isFinite(quota[r.key]) || quota[r.key] < 0) e[r.key] = 'Enter 0 or more.'
     setErrors(e)
     if (Object.values(e).some(Boolean)) return
 
-    const payload = {
+    const profile = {
       name,
-      shortName: slugify(name),
+      description: form.description.trim(),
       orgType: form.orgType,
       city: form.city.trim(),
       state: form.state,
       contactName: form.contactName.trim(),
       contactEmail: form.contactEmail.trim(),
-      creditQuota: Math.round(credits),
-      gpuQuota: Math.round(gpu),
-      allowedCapabilities: form.allowedCapabilities,
     }
-
     if (tenant) {
-      updateTenant(tenant.id, payload)
+      updateTenant(tenant.id, profile)
+      if (RESOURCES.some((r) => tenant.quota[r.key] !== quota[r.key])) setTenantQuota(tenant.id, quota)
       toast.success(`Saved changes to ${name}.`)
     } else {
-      const id = createTenant(payload)
-      toast.success(`Created ${name}.`, { description: 'Add people to the organisation from the Users page.' })
-      onCreated?.(id)
+      const id = createTenant({ ...profile, code, quota })
+      if (id) {
+        toast.success(`Created ${name}.`, { description: 'Add a Tenant Admin from the Users page.' })
+        onCreated?.(id)
+      }
     }
     onOpenChange(false)
   }
@@ -124,16 +112,19 @@ export function TenantFormDialog({ open, onOpenChange, tenant, onCreated }: Prop
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="lg">
-        <DialogHeader
-          title={tenant ? `Edit ${tenant.name}` : 'Create organisation'}
-          description={tenant ? 'Changes apply straight away. Quota changes affect this month.' : 'Set up a new partner organisation and its monthly quota.'}
-        />
+        <DialogHeader title={tenant ? `Edit ${tenant.name}` : 'Create tenant'} description={tenant ? 'Quota changes apply straight away.' : 'Set up a new partner organisation and its quota.'} />
         <DialogBody className="flex flex-col gap-5">
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Organisation name" htmlFor="t-name" required error={errors.name} className="sm:col-span-2">
-              <Input id="t-name" value={form.name} onChange={(e) => set('name', e.target.value)} aria-invalid={!!errors.name} placeholder="For example: Shiksha Setu Trust" />
+            <Field label="Tenant name" htmlFor="t-name" required error={errors.name}>
+              <Input id="t-name" value={form.name} onChange={(e) => set('name', e.target.value)} aria-invalid={!!errors.name} />
             </Field>
-            <Field label="Organisation type" htmlFor="t-type">
+            <Field label="Code" htmlFor="t-code" required={!tenant} error={errors.code} helper={tenant ? 'The code can’t be changed.' : 'Used in endpoints, for example ABC-103.'}>
+              <Input id="t-code" value={form.code} onChange={(e) => set('code', e.target.value)} disabled={!!tenant} className="font-mono uppercase" aria-invalid={!!errors.code} />
+            </Field>
+            <Field label="Description" htmlFor="t-desc" className="sm:col-span-2">
+              <Textarea id="t-desc" value={form.description} onChange={(e) => set('description', e.target.value)} className="min-h-[64px]" />
+            </Field>
+            <Field label="Type" htmlFor="t-type">
               <Select value={form.orgType} onValueChange={(v) => set('orgType', v as OrgType)}>
                 <SelectTrigger id="t-type">
                   <SelectValue />
@@ -147,7 +138,6 @@ export function TenantFormDialog({ open, onOpenChange, tenant, onCreated }: Prop
                 </SelectContent>
               </Select>
             </Field>
-            <div className="hidden sm:block" />
             <Field label="City" htmlFor="t-city" required error={errors.city}>
               <Input id="t-city" value={form.city} onChange={(e) => set('city', e.target.value)} aria-invalid={!!errors.city} />
             </Field>
@@ -168,41 +158,33 @@ export function TenantFormDialog({ open, onOpenChange, tenant, onCreated }: Prop
             <Field label="Contact person" htmlFor="t-contact" required error={errors.contactName}>
               <Input id="t-contact" value={form.contactName} onChange={(e) => set('contactName', e.target.value)} aria-invalid={!!errors.contactName} />
             </Field>
-            <Field label="Contact email" htmlFor="t-email" required error={errors.contactEmail}>
+            <Field label="Contact email" htmlFor="t-email" required error={errors.contactEmail} className="sm:col-span-2">
               <Input id="t-email" type="email" value={form.contactEmail} onChange={(e) => set('contactEmail', e.target.value)} aria-invalid={!!errors.contactEmail} />
             </Field>
-            <Field label="Credit quota per month" htmlFor="t-credits" required error={errors.creditQuota} helper="1 credit = ₹1">
-              <Input id="t-credits" type="number" min={0} step={1000} value={form.creditQuota} onChange={(e) => set('creditQuota', e.target.value)} aria-invalid={!!errors.creditQuota} />
-            </Field>
-            <Field label="GPU-hour quota per month" htmlFor="t-gpu" required error={errors.gpuQuota}>
-              <Input id="t-gpu" type="number" min={0} step={10} value={form.gpuQuota} onChange={(e) => set('gpuQuota', e.target.value)} aria-invalid={!!errors.gpuQuota} />
-            </Field>
           </div>
-
-          <Field label="Allowed capabilities" required error={errors.allowedCapabilities} helper="People in this organisation can only request what is allowed here.">
-            <div className="grid gap-2 sm:grid-cols-2">
-              {ALL_CATEGORIES.map((c) => {
-                const checked = form.allowedCapabilities.includes(c)
-                return (
-                  <label key={c} className="flex cursor-pointer items-center gap-3 rounded-control border border-border px-3 py-2.5 text-sm hover:bg-bg-subtle">
-                    <Checkbox
-                      checked={checked}
-                      onCheckedChange={(v) =>
-                        set('allowedCapabilities', v ? [...form.allowedCapabilities, c] : form.allowedCapabilities.filter((x) => x !== c))
-                      }
-                    />
-                    {CATEGORY_LABELS[c]}
-                  </label>
-                )
-              })}
+          <div>
+            <p className="mb-3 text-sm font-semibold text-text-primary">Quota</p>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              {RESOURCES.map((r) => (
+                <Field key={r.key} label={r.unit === 'GB' ? `${r.label} (GB)` : r.label} htmlFor={`t-q-${r.key}`} error={errors[r.key]}>
+                  <Input
+                    id={`t-q-${r.key}`}
+                    type="number"
+                    min={0}
+                    value={form.quota[r.key]}
+                    onChange={(e) => set('quota', { ...form.quota, [r.key]: e.target.value })}
+                    aria-invalid={!!errors[r.key]}
+                  />
+                </Field>
+              ))}
             </div>
-          </Field>
+          </div>
         </DialogBody>
         <DialogFooter>
           <DialogClose asChild>
             <Button variant="secondary">Cancel</Button>
           </DialogClose>
-          <Button onClick={submit}>{tenant ? 'Save changes' : 'Create organisation'}</Button>
+          <Button onClick={submit}>{tenant ? 'Save changes' : 'Create tenant'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

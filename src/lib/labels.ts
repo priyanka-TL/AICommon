@@ -1,4 +1,15 @@
-import type { CatalogCategory, ComputeTier, DataClassification, Language, OrgType, Purpose } from '@/data/types'
+import type {
+  ActorRole,
+  CatalogCategory,
+  ComputeTier,
+  DataClassification,
+  Language,
+  LifecycleStatus,
+  OrgType,
+  Purpose,
+  Role,
+  SuggestionStatus,
+} from '@/data/types'
 
 export const ORG_TYPES: OrgType[] = ['NGO', 'Social enterprise', 'Foundation', 'Government partner']
 
@@ -19,12 +30,55 @@ export const PURPOSES: { value: Purpose; label: string; description: string }[] 
 
 export const purposeLabel = (p: Purpose) => PURPOSES.find((x) => x.value === p)!.label
 
-export const COMPUTE_TIERS: { value: ComputeTier; label: string; detail: string; gpu: boolean }[] = [
-  { value: 'cpu', label: 'CPU only', detail: '8 vCPU · 32 GB RAM', gpu: false },
-  { value: 't4', label: 'NVIDIA T4', detail: '16 GB GPU · 8 vCPU · 32 GB RAM', gpu: true },
-  { value: 'a10', label: 'NVIDIA A10', detail: '24 GB GPU · 16 vCPU · 64 GB RAM', gpu: true },
-  { value: 'a100', label: 'NVIDIA A100', detail: '80 GB GPU · 32 vCPU · 128 GB RAM', gpu: true },
+export const COMPUTE_TIERS: {
+  value: ComputeTier
+  label: string
+  detail: string
+  gpu: boolean
+  vcpu: number
+  ramGb: number
+  gpuMemGb: number
+}[] = [
+  { value: 'cpu', label: 'CPU only', detail: '8 vCPU · 32 GB RAM', gpu: false, vcpu: 8, ramGb: 32, gpuMemGb: 0 },
+  { value: 't4', label: 'NVIDIA T4', detail: '16 GB GPU · 8 vCPU · 32 GB RAM', gpu: true, vcpu: 8, ramGb: 32, gpuMemGb: 16 },
+  { value: 'a10', label: 'NVIDIA A10', detail: '24 GB GPU · 16 vCPU · 64 GB RAM', gpu: true, vcpu: 16, ramGb: 64, gpuMemGb: 24 },
+  { value: 'a100', label: 'NVIDIA A100', detail: '80 GB GPU · 32 vCPU · 128 GB RAM', gpu: true, vcpu: 32, ramGb: 128, gpuMemGb: 80 },
 ]
+
+export const ROLE_LABELS: Record<Role, string> = {
+  super_admin: 'Super Admin',
+  tenant_admin: 'Tenant Admin',
+  user: 'User',
+}
+
+export const roleLabel = (r: ActorRole) => (r === 'system' ? 'System' : ROLE_LABELS[r])
+
+export const STATUS_LABELS: Record<LifecycleStatus, string> = {
+  draft: 'Draft',
+  submitted: 'Submitted',
+  under_review: 'Under review',
+  changes_requested: 'Changes requested',
+  resubmitted: 'Resubmitted',
+  escalated: 'Escalated',
+  approved: 'Approved',
+  rejected: 'Rejected',
+  cancelled: 'Cancelled',
+  provisioning: 'Provisioning',
+  active: 'Active',
+  stopped: 'Stopped',
+  suspended: 'Suspended',
+  provisioning_failed: 'Provisioning failed',
+  terminated: 'Terminated',
+}
+
+export const SUGGESTION_LABELS: Record<SuggestionStatus, string> = {
+  submitted: 'Submitted',
+  under_review: 'Under review',
+  needs_info: 'Needs info',
+  approved_tenant: 'Approved (tenant only)',
+  published: 'Published',
+  rejected: 'Rejected',
+}
 
 export const computeLabel = (c: ComputeTier) => COMPUTE_TIERS.find((x) => x.value === c)!.label
 
