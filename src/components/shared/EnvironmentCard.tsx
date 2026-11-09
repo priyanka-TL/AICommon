@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 import { spendToDate } from '@/lib/cost'
 import { needsMigration } from '@/lib/providers'
 import { MigrateBadge } from './TenantProviders'
+import { TENANT_OWNER } from '@/lib/ownership'
 import { useAppStore } from '@/store/useAppStore'
 import { useCostContext } from '@/store/selectors'
 import { useMemo } from 'react'
@@ -47,6 +48,7 @@ export function EnvironmentCard({ env, catalog, role, owner, projects = [], hasP
           <StatusBadge status={env.status} />
           {migrate && <MigrateBadge />}
           {hasPendingChange && <StatusBadge status="under_review" label="Change pending" />}
+          {env.adminCreated && <Tag>Admin-created</Tag>}
         </div>
       </div>
 
@@ -91,7 +93,7 @@ export function EnvironmentCard({ env, catalog, role, owner, projects = [], hasP
       <div className="flex items-center justify-between gap-3 border-t border-border pt-3 text-caption">
         <span className="flex min-w-0 items-center gap-2 text-text-secondary">
           {owner && <Avatar name={owner.name} size="sm" />}
-          <span className="truncate">{owner?.name}</span>
+          <span className="truncate">{env.ownerId === TENANT_OWNER ? 'Tenant-owned' : owner?.name}</span>
         </span>
         <span className="tabular shrink-0 text-right text-text-secondary">
           {env.status === 'active' || env.status === 'stopped' || env.status === 'suspended'

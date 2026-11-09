@@ -14,6 +14,8 @@ export const envListPath = (role: Role) => (role === 'user' ? '/app' : role === 
 export const envPath = (role: Role, id: string) =>
   role === 'user' ? `/app/environments/${id}` : role === 'qa' ? `/qa/environments/${id}` : `${BASE[role]}/infrastructure/${id}`
 export const newEnvPath = (role: Role) => (role === 'user' ? '/app/environments/new' : role === 'qa' ? '/qa' : `${BASE[role]}/infrastructure/new`)
+/** Admin "Create infrastructure" (Super Admin and Tenant Admin only). */
+export const adminCreatePath = (role: Role, tenantId?: string) => `${BASE[role]}/infrastructure/create${tenantId ? `?tenant=${encodeURIComponent(tenantId)}` : ''}`
 export const editEnvPath = (role: Role, id: string) => `${envPath(role, id)}/edit`
 /** Opens the wizard on an existing draft or changes-requested request. */
 export const continueRequestPath = (role: Role, requestId: string) => `${newEnvPath(role)}?request=${requestId}`

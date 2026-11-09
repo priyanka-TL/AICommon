@@ -47,9 +47,10 @@ export function canSeeEnvironment(scope: Scope, env: Environment, memberProjectI
   if (env.tenantId !== scope.user.tenantId) return false
   if (scope.role === 'tenant_admin') return true
   const inProject = hostedProjectIds.some((p) => memberProjectIds.includes(p))
-  // QA Engineers see Active environments in the projects they test, read-only.
-  if (scope.role === 'qa') return env.status === 'active' && inProject
-  return env.ownerId === scope.user.id || inProject
+  const granted = !!env.accessUserIds?.includes(scope.user.id)
+  // QA Engineers see Active environments in the projects they test (or that they were given access to), read-only.
+  if (scope.role === 'qa') return env.status === 'active' && (inProject || granted)
+  return env.ownerId === scope.user.id || granted || inProject
 }
 
 /** Project ids deployed on each environment. */
@@ -164,17 +165,17 @@ export function useScopedSuggestions() {
   }, [suggestions, scope])
 }
 
-/** Catalog items the current tenant can see (published to it), with an `enabled` flag. */
-export function useTenantCatalog(): (CatalogItem & { enabled: boolean })[] {
+/** Catalog items a tenant can see (published to it), with an `enabled` flag. Defaults to the current person's tenant. */
+export function useTenantCatalog(tenantId?: string): (CatalogItem & { enabled: boolean })[] {
   const scope = useScope()
   const catalog = useAppStore((s) => s.catalog)
   const tenants = useAppStore((s) => s.tenants)
   return useMemo(() => {
     if (!scope) return []
-    const tenant = tenants.find((t) => t.id === scope.user.tenantId)
+    const tenant = tenants.find((t) => t.id === (tenantId ?? scope.user.tenantId))
     if (!tenant || tenant.isSystem) return catalog.map((c) => ({ ...c, enabled: true }))
     return catalog.filter((c) => isVisibleTo(c, tenant.id)).map((c) => ({ ...c, enabled: isEnabledFor(c, tenant) }))
-  }, [catalog, tenants, scope])
+  }, [catalog, tenants, scope, tenantId])
 }
 
 /** Environment requests and capability suggestions in one list, scoped like their own hooks. */

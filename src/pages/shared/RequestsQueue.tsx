@@ -224,6 +224,7 @@ export default function RequestsQueue() {
           <div className="flex items-center gap-2">
             <span className="truncate font-semibold text-text-primary">{i.name}</span>
             {i.type === 'environment' && i.source.kind === 'change' && <Tag>Change</Tag>}
+            {i.type === 'environment' && i.source.origin === 'admin' && <Tag>Admin-created</Tag>}
           </div>
           <span className="text-caption text-text-muted">
             {requesterName(i)} · <span className="font-mono text-xs">{i.id}</span>

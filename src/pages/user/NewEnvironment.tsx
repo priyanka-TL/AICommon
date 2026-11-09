@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, Info, MessageSquareWarning, Save, Scale, Send, ShieldAlert, Sparkles } from 'lucide-react'
-import type { CatalogCategory, CatalogItem, EnvSpec, InfraProvider, Language, Project, Role, Tenant } from '@/data/types'
+import { AlertTriangle, ArrowUpRight, Check, ChevronLeft, ChevronRight, Info, MessageSquareWarning, Plus, Save, Scale, Send, ShieldAlert, Sparkles } from 'lucide-react'
+import type { CatalogCategory, CatalogItem, EnvSpec, InfraProvider, Language, Project, Role, Tenant, User } from '@/data/types'
 import { useAppStore, useCurrentTenant, useCurrentUser } from '@/store/useAppStore'
 import { useTenantCatalog } from '@/store/selectors'
 import { activeHoursPerMonth, costBreakdown, providerBudget, rateCardAt } from '@/lib/cost'
@@ -12,6 +12,13 @@ import { allocationOf, checkQuota, quotaMessage, subQuota, tenantAllocated } fro
 import { addsInfrastructure } from '@/lib/spec'
 import { envPath, requestPath } from '@/lib/paths'
 import { formatDate, formatInt } from '@/lib/format'
+import { adminCreateCheck, MAX_COPIES, type AdminCreateCheck } from '@/lib/adminCreate'
+import { batchName, TENANT_OWNER } from '@/lib/ownership'
+import { isAdmin } from '@/lib/roles'
+import { ROLE_LABELS } from '@/lib/labels'
+import { RESOURCES } from '@/lib/quota'
+import { envListPath, requestsPath } from '@/lib/paths'
+import { Tooltip } from '@/components/ui/tooltip'
 import { AUTO_SHUTDOWN_OPTIONS, CATEGORY_LABELS, DATA_CLASSES, LANGUAGES, PURPOSES } from '@/lib/labels'
 import { diffSpecs } from '@/lib/spec'
 import { cn } from '@/lib/utils'
@@ -71,7 +78,7 @@ export const DEFAULT_SPEC: EnvSpec = {
   justification: '',
 }
 
-type Errors = Partial<Record<'name' | 'regionId' | 'dataClassification' | 'languages' | 'justification' | 'changes', string>>
+type Errors = Partial<Record<'name' | 'regionId' | 'dataClassification' | 'languages' | 'justification' | 'changes' | 'owner' | 'reason' | 'expiry', string>>
 
 function validate(spec: EnvSpec, step: number, providers: InfraProvider[]): Errors {
   const e: Errors = {}
@@ -195,8 +202,32 @@ function StepPurpose({ spec, set, errors, projects, editing }: StepProps) {
   )
 }
 
-function OtherProviders({ others, role, onAsk, dialog, pending }: { others: InfraProvider[]; role: Role; onAsk: (pid: string) => void; dialog: React.ReactNode; pending: string[] }) {
+function OtherProviders({ others, role, onAsk, dialog, pending, tenant, onEnable }: { others: InfraProvider[]; role: Role; onAsk: (pid: string) => void; dialog: React.ReactNode; pending: string[]; tenant: Tenant; onEnable?: (pid: string) => void }) {
   if (!others.length) return null
+  if (onEnable) {
+    return (
+      <details className="rounded-card border border-border p-4" open>
+        <summary className="cursor-pointer text-sm font-semibold text-text-primary">Not enabled for {tenant.name} ({others.length})</summary>
+        <p className="mt-2 text-caption text-text-secondary">You can approve a provider for {tenant.name} here, with a monthly budget cap. It is logged as a provider approval.</p>
+        <ul className="mt-3 divide-y divide-border rounded-control border border-border">
+          {others.map((p) => (
+            <li key={p.id} className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-text-primary">{p.name}</span>
+                <span className="text-caption text-text-muted">
+                  {PROVIDER_TYPE_LABELS[p.type]} · {p.regions.map((r) => r.name).join(', ')}
+                </span>
+              </span>
+              <Button type="button" variant="secondary" size="compact" onClick={() => onEnable(p.id)} aria-label={`Enable ${p.name} for ${tenant.name}`}>
+                <Plus /> Enable provider for this tenant
+              </Button>
+            </li>
+          ))}
+        </ul>
+        {dialog}
+      </details>
+    )
+  }
   return (
     <details className="rounded-card border border-border p-4">
       <summary className="cursor-pointer text-sm font-semibold text-text-primary">Not enabled for your organisation ({others.length})</summary>
@@ -251,7 +282,7 @@ function placementChange(from: EnvSpec, to: EnvSpec, providerName: string): stri
   return `Changed the instance from ${from.instance.name} (${gpu(from.instance.gpuType)}) to ${to.instance.name} (${gpu(to.instance.gpuType)}) because ${providerName} doesn’t offer ${from.instance.name} there.`
 }
 
-function StepProvider({ spec, set, providers, tenant, errors, editing, role, placementNote, setPlacementNote }: StepProps) {
+function StepProvider({ spec, set, providers, tenant, errors, editing, role, placementNote, setPlacementNote, adminMode }: StepProps) {
   const environments = useAppStore((s) => s.environments)
   const catalog = useAppStore((s) => s.catalog)
   const allProviderRequests = useAppStore((s) => s.providerRequests)
@@ -260,7 +291,9 @@ function StepProvider({ spec, set, providers, tenant, errors, editing, role, pla
   const sensitive = isSensitive(spec)
   const approval = approvalFor(tenant, spec.providerId)
   const approvedRegions = (provider?.regions ?? []).filter((r) => !approval || approval.regionIds.includes(r.id))
-  const others = providersOfferedTo(providers, tenant.id).filter((p) => !approvalFor(tenant, p.id))
+  const superCreate = adminMode && role === 'super_admin'
+  const others = (superCreate ? providers.filter((p) => p.status === 'active') : providersOfferedTo(providers, tenant.id)).filter((p) => !approvalFor(tenant, p.id))
+  const [enableFor, setEnableFor] = useState<string | null>(null)
   const [askFor, setAskFor] = useState<string | undefined>()
   const [askOpen, setAskOpen] = useState(false)
   const [compareOpen, setCompareOpen] = useState(false)
@@ -282,6 +315,13 @@ function StepProvider({ spec, set, providers, tenant, errors, editing, role, pla
     setPlacementNote(placementChange(spec, next, providerName))
     set(next)
   }
+  /** After enabling a provider inline, place the spec on it using the tenant's fresh approvals. */
+  const chooseProviderFor = (pid: string) => {
+    const fresh = useAppStore.getState().tenants.find((t) => t.id === tenant.id)
+    const p = providers.find((x) => x.id === pid)
+    const eq = p && fresh && equivalentSpec(spec, p, fresh)
+    if (eq && p) apply(eq.spec, p.name)
+  }
   const chooseProvider = (pid: string) => {
     const p = providers.find((x) => x.id === pid)
     const eq = p && equivalentSpec(spec, p, tenant)
@@ -299,15 +339,33 @@ function StepProvider({ spec, set, providers, tenant, errors, editing, role, pla
     if ('providerId' in rec) apply(rec.spec, providers.find((p) => p.id === rec.providerId)?.name ?? '')
   }
 
-  const otherProviders = (
+  // Tenant Admins creating infrastructure only see approved providers.
+  const otherProviders = adminMode && !superCreate ? null : (
     <OtherProviders
       others={others}
       role={role}
+      tenant={tenant}
       onAsk={(pid) => {
         setAskFor(pid)
         setAskOpen(true)
       }}
-      dialog={<ProviderRequestDialog open={askOpen} onOpenChange={setAskOpen} providerId={askFor} />}
+      onEnable={superCreate ? setEnableFor : undefined}
+      dialog={
+        superCreate ? (
+          <EnableProviderDialog
+            provider={providers.find((p) => p.id === enableFor)}
+            tenant={tenant}
+            sensitive={sensitive}
+            onClose={() => setEnableFor(null)}
+            onEnabled={(pid) => {
+              setEnableFor(null)
+              chooseProviderFor(pid)
+            }}
+          />
+        ) : (
+          <ProviderRequestDialog open={askOpen} onOpenChange={setAskOpen} providerId={askFor} />
+        )
+      }
       pending={pendingProviders}
     />
   )
@@ -357,7 +415,10 @@ function StepProvider({ spec, set, providers, tenant, errors, editing, role, pla
       {!allowed.length ? (
         <div className="flex gap-3 rounded-card border border-border bg-bg-subtle p-4 text-sm text-text-secondary" role="alert">
           <ShieldAlert className="mt-0.5 size-5 shrink-0 text-text-muted" aria-hidden />
-          <p>No infrastructure providers are approved for {tenant.name} yet, so an environment can’t be requested.</p>
+          <p>
+            No infrastructure providers are approved for {tenant.name} yet, so an environment can’t be {adminMode ? 'created' : 'requested'}.
+            {adminMode && role === 'super_admin' ? ' Enable one below.' : ''}
+          </p>
         </div>
       ) : (
         <>
@@ -813,7 +874,18 @@ function StepData({ spec, set, errors }: StepProps) {
   )
 }
 
-function StepReview({ spec, set, catalog, projects, errors, goTo, editing, quotaNote, role }: StepProps & { goTo: (s: number) => void; editing: boolean; quotaNote: string | null }) {
+function StepReview({ spec, set, catalog, projects, errors, goTo, editing, quotaNote, role, adminMode, adminExtras }: StepProps & { goTo: (s: number) => void; editing: boolean; quotaNote: string | null; adminExtras?: React.ReactNode }) {
+  if (adminMode) {
+    return (
+      <div className="flex flex-col gap-6">
+        <div className="rounded-card border border-border p-5">
+          <p className="mb-4 font-heading text-h3 text-text-primary">{spec.name || 'Untitled environment'}</p>
+          <SpecSummary spec={spec} catalog={catalog} projects={projects} onEdit={goTo} />
+        </div>
+        {adminExtras}
+      </div>
+    )
+  }
   return (
     <div className="flex flex-col gap-6">
       <div className="rounded-card border border-border p-5">
@@ -875,35 +947,337 @@ interface StepProps {
   /** What changed in the compute choice after switching provider or region. */
   placementNote: string | null
   setPlacementNote: (n: string | null) => void
+  /** Admin "Create infrastructure" flow: no approval, admin extras. */
+  adminMode: boolean
+}
+
+/* ---------- admin create: extra step and panels ---------- */
+
+interface Ownership {
+  ownerId: string
+  accessUserIds: string[]
+  reason: string
+}
+
+function StepOwnership({
+  role,
+  tenant,
+  tenants,
+  onTenant,
+  people,
+  value,
+  onChange,
+  errors,
+}: {
+  role: Role
+  tenant: Tenant
+  tenants: Tenant[]
+  onTenant: (id: string) => void
+  people: User[]
+  value: Ownership
+  onChange: (patch: Partial<Ownership>) => void
+  errors: Errors
+}) {
+  const owners = people.filter((u) => u.role === 'user' || u.role === 'tenant_admin')
+  const accessible = people.filter((u) => (u.role === 'user' || u.role === 'qa') && u.id !== value.ownerId)
+  return (
+    <div className="flex flex-col gap-6">
+      <Field label="Tenant" htmlFor="admin-tenant" required helper={role === 'super_admin' ? 'The organisation this infrastructure is for. It counts against their quota and provider budget.' : 'You can create infrastructure only for your own organisation.'}>
+        {role === 'super_admin' ? (
+          <Select value={tenant.id} onValueChange={onTenant}>
+            <SelectTrigger id="admin-tenant" className="sm:max-w-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {tenants.map((t) => (
+                <SelectItem key={t.id} value={t.id}>
+                  {t.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <Input id="admin-tenant" value={tenant.name} readOnly aria-readonly className="sm:max-w-sm bg-bg-subtle" />
+        )}
+      </Field>
+
+      <Field label="Owner" htmlFor="admin-owner" required error={errors.owner} helper="The person responsible for it. Tenant-owned means no single owner; the Tenant Admin manages it.">
+        <Select value={value.ownerId} onValueChange={(v) => onChange({ ownerId: v, accessUserIds: value.accessUserIds.filter((id) => id !== v) })}>
+          <SelectTrigger id="admin-owner" className="sm:max-w-sm" aria-invalid={!!errors.owner}>
+            <SelectValue placeholder="Choose an owner" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={TENANT_OWNER}>Tenant-owned (managed by the Tenant Admin)</SelectItem>
+            {owners.map((u) => (
+              <SelectItem key={u.id} value={u.id}>
+                {u.name} · {ROLE_LABELS[u.role]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+
+      <fieldset aria-describedby="admin-access-help">
+        <legend className="text-sm font-semibold text-text-primary">
+          Access <span className="ml-1 font-normal text-text-muted">Optional</span>
+        </legend>
+        <p id="admin-access-help" className="mb-3 mt-0.5 text-caption text-text-secondary">
+          Users and QA Engineers in {tenant.name} who can use this environment. Users can deploy projects to it; QA Engineers can test it once active.
+        </p>
+        {accessible.length === 0 ? (
+          <p className="rounded-control bg-bg-subtle px-3 py-2.5 text-caption text-text-secondary">No other active Users or QA Engineers in {tenant.name}.</p>
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {accessible.map((u) => {
+              const on = value.accessUserIds.includes(u.id)
+              return (
+                <label key={u.id} className={cn('card flex cursor-pointer items-start gap-3 p-3 hover:border-border-strong', on && 'border-indigo dark:border-indigo-text')}>
+                  <Checkbox
+                    checked={on}
+                    onCheckedChange={(c) => onChange({ accessUserIds: c === true ? [...value.accessUserIds, u.id] : value.accessUserIds.filter((id) => id !== u.id) })}
+                    aria-label={`Give ${u.name} access`}
+                    className="mt-0.5"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold text-text-primary">{u.name}</span>
+                    <span className="block text-caption text-text-secondary">
+                      {ROLE_LABELS[u.role]} · {u.title}
+                    </span>
+                  </span>
+                </label>
+              )
+            })}
+          </div>
+        )}
+      </fieldset>
+
+      <Field label="Reason for creation" htmlFor="admin-reason" required error={errors.reason} helper="Recorded on the timeline and in the audit log.">
+        <Textarea
+          id="admin-reason"
+          value={value.reason}
+          onChange={(e) => onChange({ reason: e.target.value })}
+          placeholder="For example: Workshop for 20 teachers in Dharwad, or Shared staging for all projects."
+          aria-invalid={!!errors.reason}
+        />
+      </Field>
+    </div>
+  )
+}
+
+function EnableProviderDialog({ provider, tenant, sensitive, onClose, onEnabled }: { provider: InfraProvider | undefined; tenant: Tenant; sensitive: boolean; onClose: () => void; onEnabled: (pid: string) => void }) {
+  const enable = useAppStore((s) => s.enableProviderForTenant)
+  const [regionIds, setRegionIds] = useState<string[]>([])
+  const [cap, setCap] = useState('50000')
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    if (!provider) return
+    setRegionIds(provider.regions.filter((r) => !sensitive || r.indiaResident).map((r) => r.id))
+    setCap('50000')
+    setError(null)
+  }, [provider, sensitive])
+  const confirm = () => {
+    if (!provider) return
+    const res = enable(tenant.id, provider.id, regionIds, Number(cap))
+    if (!res.ok) return setError(res.error)
+    toast.success(`${provider.name} enabled for ${tenant.name}.`, { description: `Monthly budget cap ${formatInt(Number(cap))} credits. Logged as a provider approval.` })
+    onEnabled(provider.id)
+  }
+  return (
+    <Dialog open={!!provider} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader title={`Enable ${provider?.name ?? 'provider'} for ${tenant.name}`} description="Approve the regions this organisation may use and a monthly budget cap. It is logged as a provider approval." />
+        <DialogBody className="flex flex-col gap-5">
+          <fieldset>
+            <legend className="mb-2 text-sm font-semibold text-text-primary">Regions</legend>
+            <div className="flex flex-col gap-2">
+              {provider?.regions.map((r) => (
+                <label key={r.id} className="flex items-center gap-2.5 text-sm text-text-primary">
+                  <Checkbox checked={regionIds.includes(r.id)} onCheckedChange={(c) => setRegionIds((ids) => (c === true ? [...ids, r.id] : ids.filter((x) => x !== r.id)))} />
+                  {r.name} <span className="text-caption text-text-muted">{r.indiaResident ? 'India' : 'Outside India'}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <Field label="Monthly budget cap (credits)" htmlFor="enable-cap" required>
+            <Input id="enable-cap" type="number" min={1} step={1000} value={cap} onChange={(e) => setCap(e.target.value)} className="sm:max-w-xs" />
+          </Field>
+          {error && (
+            <p className="flex items-start gap-1.5 text-caption text-red-text" role="alert">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden /> {error}
+            </p>
+          )}
+        </DialogBody>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="secondary">Cancel</Button>
+          </DialogClose>
+          <Button onClick={confirm}>Enable provider</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+interface AdminExtras {
+  count: number
+  expiresAt: string
+  simulateFailure: boolean
+}
+
+function AdminReviewPanel({
+  spec,
+  tenant,
+  value,
+  onChange,
+  check,
+  errors,
+  role,
+}: {
+  spec: EnvSpec
+  tenant: Tenant
+  value: AdminExtras
+  onChange: (patch: Partial<AdminExtras>) => void
+  check: AdminCreateCheck
+  errors: Errors
+  role: Role
+}) {
+  const names = Array.from({ length: Math.min(value.count, 4) }, (_, i) => batchName(spec.name || 'environment', i, value.count))
+  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+  const b = check.budget
+  return (
+    <div className="flex flex-col gap-6">
+      <section className="rounded-card border border-border p-5" aria-labelledby="admin-impact">
+        <h3 id="admin-impact" className="mb-1 font-heading text-h3 text-text-primary">
+          Quota and budget, before and after
+        </h3>
+        <p className="mb-4 text-caption text-text-secondary">
+          {value.count > 1 ? `For all ${value.count} environments together.` : 'For this environment.'} Created straight away; no approval is needed.
+        </p>
+        <div className="overflow-x-auto rounded-control border border-border">
+          <table className="w-full min-w-[420px] text-sm" aria-label="Tenant quota before and after">
+            <thead className="bg-bg-subtle text-caption text-text-secondary">
+              <tr>
+                <th className="px-3 py-2 text-left font-semibold">{tenant.name}</th>
+                <th className="px-3 py-2 text-right font-semibold">Before</th>
+                <th className="px-3 py-2 text-right font-semibold">After</th>
+                <th className="px-3 py-2 text-right font-semibold">Quota</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {RESOURCES.map((r) => {
+                const over = check.quotaOver.some((o) => o.key === r.key)
+                return (
+                  <tr key={r.key}>
+                    <th scope="row" className="px-3 py-2 text-left font-normal text-text-primary">
+                      {r.label}
+                    </th>
+                    <td className="tabular px-3 py-2 text-right text-text-secondary">{formatInt(check.usedBefore[r.key])}</td>
+                    <td className={cn('tabular px-3 py-2 text-right', over ? 'font-semibold text-status-over-fg' : 'text-text-primary')}>{formatInt(check.usedAfter[r.key])}</td>
+                    <td className="tabular px-3 py-2 text-right text-text-secondary">
+                      {formatInt(tenant.quota[r.key])} {r.unit === 'GB' ? 'GB' : ''}
+                    </td>
+                  </tr>
+                )
+              })}
+              {b && (
+                <tr>
+                  <th scope="row" className="px-3 py-2 text-left font-normal text-text-primary">
+                    {b.providerName} budget / month
+                  </th>
+                  <td className="tabular px-3 py-2 text-right text-text-secondary">{formatInt(b.committed)}</td>
+                  <td className={cn('tabular px-3 py-2 text-right', check.budgetOver ? 'font-semibold text-status-over-fg' : 'text-text-primary')}>{formatInt(b.after)}</td>
+                  <td className="tabular px-3 py-2 text-right text-text-secondary">{formatInt(b.cap)}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {check.over && (
+          <div className="mt-4 flex gap-3 rounded-card bg-status-over-bg p-4 text-sm text-status-over-fg" role="status">
+            <AlertTriangle className="mt-0.5 size-5 shrink-0" aria-hidden />
+            <p>
+              {overageSummary(check, tenant)}{' '}
+              {role === 'tenant_admin' ? 'You can’t create this directly. Escalate it to the Super Admin, or reduce the configuration.' : 'You can still create it, with an override reason.'}
+            </p>
+          </div>
+        )}
+      </section>
+
+      <section className="flex flex-col gap-5 rounded-card border border-border p-5" aria-labelledby="admin-extras">
+        <h3 id="admin-extras" className="font-heading text-h3 text-text-primary">
+          Options
+        </h3>
+        <Field label="Create identical environments" htmlFor="admin-count" helper={value.count > 1 ? `Named ${names.join(', ')}${value.count > 4 ? '…' : ''}. Useful for workshops and cohorts.` : `Between 1 and ${MAX_COPIES}. Names get -01, -02… when you create more than one.`}>
+          <Input
+            id="admin-count"
+            type="number"
+            min={1}
+            max={MAX_COPIES}
+            value={value.count}
+            onChange={(e) => onChange({ count: Math.min(MAX_COPIES, Math.max(1, Math.round(Number(e.target.value) || 1))) })}
+            className="sm:max-w-[120px]"
+          />
+        </Field>
+        <Field label="Expiry date" htmlFor="admin-expiry" error={errors.expiry} helper="Optional. It terminates automatically on this date; the owner gets a reminder 3 days before.">
+          <Input id="admin-expiry" type="date" min={tomorrow} value={value.expiresAt} onChange={(e) => onChange({ expiresAt: e.target.value })} className="sm:max-w-[200px]" aria-invalid={!!errors.expiry} />
+        </Field>
+        <label className="flex items-start gap-3 rounded-control border border-border p-3">
+          <Checkbox checked={value.simulateFailure} onCheckedChange={(v) => onChange({ simulateFailure: !!v })} className="mt-0.5" />
+          <span>
+            <span className="block text-sm font-semibold text-text-primary">Simulate provisioning failure</span>
+            <span className="block text-caption text-text-secondary">Provisioning fails after a few seconds, so you can try the retry flow.</span>
+          </span>
+        </label>
+      </section>
+    </div>
+  )
+}
+
+function overageSummary(check: AdminCreateCheck, tenant: Tenant) {
+  const parts = check.quotaOver.map((o) => `${o.label} by ${formatInt(o.need - o.left)} ${o.unit}`)
+  if (check.budgetOver && check.budget) parts.push(`${check.budget.providerName} budget by ${formatInt(check.budget.after - check.budget.cap)} credits a month`)
+  return parts.length ? `This takes ${tenant.name} over: ${parts.join('; ')}.` : ''
 }
 
 /* ---------- page ---------- */
 
-export default function NewEnvironment() {
+export default function NewEnvironment({ admin = false }: { admin?: boolean }) {
   const { id: editId } = useParams()
   const [params] = useSearchParams()
-  const requestId = params.get('request')
+  const requestId = admin ? null : params.get('request')
   const user = useCurrentUser()!
-  const tenant = useCurrentTenant()!
+  const ownTenant = useCurrentTenant()!
+  const allTenants = useAppStore((s) => s.tenants)
+  const realTenants = useMemo(() => allTenants.filter((t) => !t.isSystem && t.status === 'active'), [allTenants])
+  const [targetTenantId, setTargetTenantId] = useState(() => {
+    if (!admin) return ownTenant.id
+    if (user.role !== 'super_admin') return user.tenantId
+    const wanted = params.get('tenant')
+    return realTenants.find((t) => t.id === wanted)?.id ?? realTenants[0]?.id ?? ''
+  })
+  const tenant = (admin ? allTenants.find((t) => t.id === targetTenantId) : ownTenant) ?? ownTenant
   const catalog = useAppStore((s) => s.catalog)
   const environments = useAppStore((s) => s.environments)
   const allProjects = useAppStore((s) => s.projects)
   const users = useAppStore((s) => s.users)
-  const tenantItems = useTenantCatalog()
+  const tenantItems = useTenantCatalog(tenant.id)
   const editingEnv = useAppStore((s) => (editId ? s.environments.find((e) => e.id === editId) : undefined))
   const existing = useAppStore((s) => (requestId ? s.requests.find((r) => r.id === requestId) : undefined))
   const saveDraft = useAppStore((s) => s.saveDraft)
   const submitRequest = useAppStore((s) => s.submitRequest)
   const transitionRequest = useAppStore((s) => s.transitionRequest)
   const editEnvironment = useAppStore((s) => s.editEnvironment)
+  const createInfrastructure = useAppStore((s) => s.createInfrastructure)
+  const escalateAdminCreate = useAppStore((s) => s.escalateAdminCreate)
   const navigate = useNavigate()
 
-  const mode: 'new' | 'draft' | 'resubmit' | 'edit' = editId ? 'edit' : existing?.status === 'draft' ? 'draft' : existing?.status === 'changes_requested' ? 'resubmit' : 'new'
+  const mode: 'new' | 'draft' | 'resubmit' | 'edit' | 'admin' = admin ? 'admin' : editId ? 'edit' : existing?.status === 'draft' ? 'draft' : existing?.status === 'changes_requested' ? 'resubmit' : 'new'
   const editing = mode === 'edit'
   const projects = useMemo(
-    () => allProjects.filter((p) => p.tenantId === tenant.id && p.status === 'active' && (user.role === 'tenant_admin' || p.memberIds.includes(user.id) || p.ownerId === user.id)),
+    () => allProjects.filter((p) => p.tenantId === tenant.id && p.status === 'active' && (isAdmin(user.role) || p.memberIds.includes(user.id) || p.ownerId === user.id)),
     [allProjects, tenant.id, user],
   )
+  const people = useMemo(() => users.filter((u) => u.tenantId === tenant.id && u.status === 'active'), [users, tenant.id])
   const [draftId, setDraftId] = useState<string | undefined>(mode === 'draft' ? existing?.id : undefined)
   const infraProviders = useAppStore((s) => s.infraProviders)
   const costCtx = useCostContext(tenant.id)
@@ -914,8 +1288,15 @@ export default function NewEnvironment() {
         ? ensurePlacement(structuredClone(existing.spec), infraProviders, tenant)
         : ensurePlacement({ ...DEFAULT_SPEC, projectIds: projects.some((p) => p.id === params.get('project')) ? [params.get('project')!] : [] }, infraProviders, tenant),
   )
+  const [ownership, setOwnership] = useState<Ownership>({ ownerId: '', accessUserIds: [], reason: '' })
+  const [extras, setExtras] = useState<AdminExtras>({ count: 1, expiresAt: '', simulateFailure: false })
+  const [overrideOpen, setOverrideOpen] = useState(false)
+  const [overrideReason, setOverrideReason] = useState('')
+  const [overrideError, setOverrideError] = useState<string | null>(null)
+  const offset = admin ? 1 : 0
+  const steps = admin ? [{ title: 'Tenant & ownership', hint: 'Who it is for' }, ...STEPS.slice(0, -1), { title: 'Review', hint: 'Check and create' }] : STEPS
   const [step, setStep] = useState(0)
-  const [maxStep, setMaxStep] = useState(mode === 'new' ? 0 : STEPS.length - 1)
+  const [maxStep, setMaxStep] = useState(mode === 'new' || mode === 'admin' ? 0 : steps.length - 1)
   const [errors, setErrors] = useState<Errors>({})
   const [placementNote, setPlacementNote] = useState<string | null>(null)
   const headingRef = useRef<HTMLHeadingElement>(null)
@@ -930,9 +1311,20 @@ export default function NewEnvironment() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [step])
 
+  // Keep the placement valid when providers are enabled inline or approvals change.
+  useEffect(() => {
+    if (admin) setSpec((cur) => ensurePlacement(cur, infraProviders, tenant))
+  }, [admin, tenant, infraProviders])
+
   const est = useMemo(() => costBreakdown(spec, costCtx), [spec, costCtx])
   const used = useMemo(() => tenantAllocated(environments, tenant.id), [environments, tenant.id])
+  const adminCheck = useMemo(
+    () => adminCreateCheck(spec, extras.count, tenant, environments, { providers: infraProviders, catalog }),
+    [spec, extras.count, tenant, environments, infraProviders, catalog],
+  )
 
+  if (admin && !isAdmin(user.role)) return <NotFound message="Only admins can create infrastructure directly. Request an environment instead." />
+  if (admin && !realTenants.some((t) => t.id === tenant.id)) return <NotFound message="There is no active organisation to create infrastructure for." />
   if (editing && (!editingEnv || editingEnv.tenantId !== tenant.id || (user.role === 'user' && editingEnv.ownerId !== user.id))) {
     return <NotFound message="This environment doesn’t exist or you can’t change it." />
   }
@@ -961,10 +1353,43 @@ export default function NewEnvironment() {
     })
   }
 
+  const setOwnershipPatch = (patch: Partial<Ownership>) => {
+    setOwnership((o) => ({ ...o, ...patch }))
+    if ('reason' in patch) setSpec((sp) => ({ ...sp, justification: patch.reason ?? '' }))
+    setErrors((e) => {
+      const next = { ...e }
+      if ('ownerId' in patch) delete next.owner
+      if ('reason' in patch) delete next.reason
+      return next
+    })
+  }
+
+  const changeTenant = (id: string) => {
+    const next = allTenants.find((t) => t.id === id)
+    if (!next) return
+    setTargetTenantId(id)
+    setOwnership((o) => ({ ...o, ownerId: '', accessUserIds: [] }))
+    setSpec((sp) => ensurePlacement({ ...sp, projectIds: [] }, infraProviders, next))
+    setPlacementNote(null)
+  }
+
+  /** Validation for an absolute step index (the admin step comes first in admin mode). */
+  const validateAt = (abs: number): Errors => {
+    if (admin && abs === 0) {
+      const e: Errors = {}
+      if (!ownership.ownerId) e.owner = 'Choose an owner, or make it tenant-owned.'
+      if (ownership.reason.trim().length < 10) e.reason = 'Give a reason for creating this, in a sentence or two.'
+      return e
+    }
+    const e = validate(spec, abs - offset, infraProviders)
+    if (admin) delete e.justification
+    return e
+  }
+
   const goTo = (target: number) => {
     if (target > step) {
       for (let s = step; s < target; s++) {
-        const e = validate(spec, s, infraProviders)
+        const e = validateAt(s)
         if (Object.keys(e).length) {
           setErrors(e)
           setStep(s)
@@ -977,15 +1402,70 @@ export default function NewEnvironment() {
     setMaxStep((m) => Math.max(m, target))
   }
 
-  const submit = () => {
-    for (let s = 0; s < STEPS.length; s++) {
-      const e = validate(spec, s, infraProviders)
+  const validateAll = () => {
+    for (let s = 0; s < steps.length; s++) {
+      const e = validateAt(s)
       if (Object.keys(e).length) {
         setErrors(e)
         setStep(s)
-        return
+        return false
       }
     }
+    return true
+  }
+
+  const adminInput = (override?: string) => ({
+    tenantId: tenant.id,
+    spec,
+    ownerId: ownership.ownerId,
+    accessUserIds: ownership.accessUserIds,
+    reason: ownership.reason,
+    count: extras.count,
+    expiresAt: extras.expiresAt || null,
+    overrideReason: override,
+    simulateFailure: extras.simulateFailure,
+  })
+
+  const create = (override?: string) => {
+    const res = createInfrastructure(adminInput(override))
+    if (!res.ok) {
+      if (override !== undefined) setOverrideError(res.error)
+      else toast.error(res.error)
+      return
+    }
+    setOverrideOpen(false)
+    toast.success(res.envIds.length > 1 ? `Created ${res.envIds.length} environments.` : `Created “${spec.name}”.`, {
+      description: 'No approval was needed. Provisioning has started.',
+    })
+    navigate(res.envIds.length === 1 ? envPath(user.role, res.envIds[0]!) : envListPath(user.role))
+  }
+
+  const onCreate = () => {
+    if (!validateAll()) return
+    if (adminCheck.over) {
+      if (user.role !== 'super_admin') return
+      setOverrideError(null)
+      setOverrideOpen(true)
+      return
+    }
+    create()
+  }
+
+  const onEscalate = () => {
+    if (!validateAll()) return
+    const res = escalateAdminCreate(adminInput())
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    toast.success(res.requestIds.length > 1 ? `Escalated ${res.requestIds.length} requests to the Super Admin.` : `Escalated “${spec.name}” to the Super Admin.`, {
+      description: 'It is in the Super Admin’s approval queue with this configuration.',
+    })
+    navigate(res.requestIds.length === 1 ? requestPath(user.role, res.requestIds[0]!) : requestsPath(user.role))
+  }
+
+  const submit = () => {
+    if (!validateAll()) return
     if (editing && editingEnv) {
       if (diffSpecs(editingEnv.spec, { ...spec, justification: editingEnv.spec.justification }, catalog).length === 0) {
         setErrors({ changes: 'Nothing has changed yet. Edit at least one setting first.' })
@@ -1032,20 +1512,39 @@ export default function NewEnvironment() {
     toast.success('Draft saved.', { description: 'Continue it any time from My requests.' })
   }
 
-  const props: StepProps = { spec, set, catalog, selectable, projects, tenant, role: user.role, errors, providers: infraProviders, editing, goTo, placementNote, setPlacementNote }
-  const last = step === STEPS.length - 1
+  const props: StepProps = {
+    spec,
+    set,
+    catalog,
+    selectable,
+    projects,
+    tenant,
+    role: user.role,
+    errors,
+    providers: infraProviders,
+    editing,
+    goTo: (s) => goTo(s + offset),
+    placementNote,
+    setPlacementNote,
+    adminMode: admin,
+  }
+  const rel = step - offset
+  const last = step === steps.length - 1
+  const taBlocked = admin && adminCheck.over && user.role === 'tenant_admin'
 
   return (
     <>
       <PageHeader
         eyebrow={editing ? 'Edit configuration' : mode === 'resubmit' ? 'Edit and resubmit' : tenant.name}
-        title={editing ? `Edit “${editingEnv!.spec.name}”` : mode === 'resubmit' ? `Resubmit “${existing!.spec.name}”` : 'New environment'}
+        title={admin ? 'Create infrastructure' : editing ? `Edit “${editingEnv!.spec.name}”` : mode === 'resubmit' ? `Resubmit “${existing!.spec.name}”` : 'New environment'}
         description={
-          editing
-            ? 'Changes that add no infrastructure apply straight away. More GPUs, a bigger tier or more storage needs the Super Admin’s approval.'
-            : user.role === 'tenant_admin'
-              ? 'Requests for new infrastructure go to the Super Admin for approval.'
-              : 'Tell us what you are building. Your Tenant Admin reviews it, then the Super Admin approves new infrastructure.'
+          admin
+            ? 'Create environments directly for an organisation. No approval is needed while it stays within quota and provider budget.'
+            : editing
+              ? 'Changes that add no infrastructure apply straight away. More GPUs, a bigger tier or more storage needs the Super Admin’s approval.'
+              : user.role === 'tenant_admin'
+                ? 'Requests for new infrastructure go to the Super Admin for approval.'
+                : 'Tell us what you are building. Your Tenant Admin reviews it, then the Super Admin approves new infrastructure.'
         }
       />
 
@@ -1073,11 +1572,11 @@ export default function NewEnvironment() {
       <div className="mb-4 lg:hidden">
         <div className="flex items-baseline justify-between text-sm">
           <span className="font-semibold text-text-primary">
-            Step {step + 1} of {STEPS.length} · {STEPS[step]!.title}
+            Step {step + 1} of {steps.length} · {steps[step]!.title}
           </span>
         </div>
         <div className="mt-2 flex gap-1" aria-hidden>
-          {STEPS.map((_, i) => (
+          {steps.map((_, i) => (
             <span key={i} className={cn('h-1.5 flex-1 rounded-full', i <= step ? 'bg-indigo dark:bg-indigo-text' : 'bg-bg-subtle')} />
           ))}
         </div>
@@ -1086,13 +1585,13 @@ export default function NewEnvironment() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[200px_minmax(0,1fr)] 2xl:grid-cols-[200px_minmax(0,1fr)_320px]">
         <nav aria-label="Wizard steps" className="hidden lg:block">
           <ol className="sticky top-24 flex flex-col">
-            {STEPS.map((s, i) => {
+            {steps.map((s, i) => {
               const done = i < step || (i <= maxStep && i !== step)
               const current = i === step
               const reachable = i <= maxStep + 1
               return (
                 <li key={s.title} className="relative pb-5 last:pb-0">
-                  {i < STEPS.length - 1 && (
+                  {i < steps.length - 1 && (
                     <span className={cn('absolute left-[13px] top-8 h-[calc(100%-28px)] w-0.5', i < step ? 'bg-indigo dark:bg-indigo-text' : 'bg-border')} aria-hidden />
                   )}
                   <button
@@ -1128,25 +1627,39 @@ export default function NewEnvironment() {
         <section className="card flex min-w-0 flex-col">
           <div className="border-b border-border px-5 py-5 sm:px-6">
             <p className="eyebrow">
-              Step {step + 1} of {STEPS.length}
+              Step {step + 1} of {steps.length}
             </p>
             <h2 ref={headingRef} tabIndex={-1} className="mt-1 font-heading text-h2 text-text-primary outline-none">
-              {STEPS[step]!.title}
+              {steps[step]!.title}
             </h2>
           </div>
           <div className="flex-1 px-5 py-6 sm:px-6">
-            {step === 0 && <StepPurpose {...props} />}
-            {step === STEP.provider && <StepProvider {...props} />}
-            {step === STEP.compute && <StepCompute {...props} />}
-            {step === STEP.llms && <StepLlms {...props} />}
-            {step === STEP.asr && <StepAsr {...props} />}
-            {step === STEP.caps && <StepCapabilities {...props} />}
-            {step === STEP.data && <StepData {...props} />}
-            {step === STEP.review && <StepReview {...props} goTo={goTo} editing={editing} quotaNote={quotaNote} />}
+            {admin && step === 0 && (
+              <StepOwnership role={user.role} tenant={tenant} tenants={realTenants} onTenant={changeTenant} people={people} value={ownership} onChange={setOwnershipPatch} errors={errors} />
+            )}
+            {rel === STEP.purpose && <StepPurpose {...props} />}
+            {rel === STEP.provider && <StepProvider {...props} />}
+            {rel === STEP.compute && <StepCompute {...props} />}
+            {rel === STEP.llms && <StepLlms {...props} />}
+            {rel === STEP.asr && <StepAsr {...props} />}
+            {rel === STEP.caps && <StepCapabilities {...props} />}
+            {rel === STEP.data && <StepData {...props} />}
+            {rel === STEP.review && (
+              <StepReview
+                {...props}
+                editing={editing}
+                quotaNote={quotaNote}
+                adminExtras={
+                  admin && (
+                    <AdminReviewPanel spec={spec} tenant={tenant} value={extras} onChange={(patch) => setExtras((x) => ({ ...x, ...patch }))} check={adminCheck} errors={errors} role={user.role} />
+                  )
+                }
+              />
+            )}
           </div>
 
           <div className="2xl:hidden">
-            <CostEstimate spec={spec} tenant={tenant} used={used} previous={previous} catalog={catalog} audience={user.role} editingEnvId={editingEnv?.id} className="mx-5 mb-6 sm:mx-6" />
+            <CostEstimate spec={spec} tenant={tenant} used={used} previous={previous} catalog={catalog} audience={user.role} editingEnvId={editingEnv?.id} count={admin ? extras.count : undefined} adminCreate={admin} className="mx-5 mb-6 sm:mx-6" />
           </div>
 
           <div className="sticky bottom-0 flex flex-wrap items-center gap-2 rounded-b-card border-t border-border bg-bg-surface px-5 py-4 sm:px-6">
@@ -1163,14 +1676,35 @@ export default function NewEnvironment() {
                 <Link to={envPath(user.role, editId!)}>Cancel</Link>
               </Button>
             )}
-            <span className="tabular ml-auto hidden text-caption text-text-secondary xl:inline 2xl:hidden">{formatInt(est.total)} credits / month</span>
-            {last ? (
+            <span className="tabular ml-auto hidden text-caption text-text-secondary xl:inline 2xl:hidden">
+              {formatInt(est.total * (admin ? extras.count : 1))} credits / month
+            </span>
+            {last && admin ? (
+              taBlocked ? (
+                <>
+                  <Tooltip content="This goes over your organisation’s quota or provider budget, so it needs the Super Admin.">
+                    <span className="ml-auto sm:ml-0">
+                      <Button variant="secondary" disabled>
+                        <Plus /> Create infrastructure
+                      </Button>
+                    </span>
+                  </Tooltip>
+                  <Button onClick={onEscalate}>
+                    <ArrowUpRight /> Escalate to Super Admin
+                  </Button>
+                </>
+              ) : (
+                <Button onClick={onCreate} className="ml-auto sm:ml-0">
+                  <Plus /> {extras.count > 1 ? `Create ${extras.count} environments` : 'Create infrastructure'}
+                </Button>
+              )
+            ) : last ? (
               <Button onClick={submit} className="ml-auto sm:ml-0">
                 <Send /> {editing ? (needsApproval ? 'Send for approval' : 'Save changes') : mode === 'resubmit' ? 'Resubmit request' : 'Submit request'}
               </Button>
             ) : (
               <Button onClick={() => goTo(step + 1)} className="ml-auto sm:ml-0 2xl:ml-auto">
-                Next: {STEPS[step + 1]!.title} <ChevronRight />
+                Next: {steps[step + 1]!.title} <ChevronRight />
               </Button>
             )}
           </div>
@@ -1178,10 +1712,44 @@ export default function NewEnvironment() {
 
         <div className="hidden 2xl:block">
           <div className="sticky top-24">
-            <CostEstimate spec={spec} tenant={tenant} used={used} previous={previous} catalog={catalog} audience={user.role} editingEnvId={editingEnv?.id} />
+            <CostEstimate spec={spec} tenant={tenant} used={used} previous={previous} catalog={catalog} audience={user.role} editingEnvId={editingEnv?.id} count={admin ? extras.count : undefined} adminCreate={admin} />
           </div>
         </div>
       </div>
+
+      <Dialog open={overrideOpen} onOpenChange={setOverrideOpen}>
+        <DialogContent>
+          <DialogHeader title="Create over quota or budget?" description={overageSummary(adminCheck, tenant)} />
+          <DialogBody className="flex flex-col gap-4">
+            <p className="text-sm text-text-secondary">No approval is needed, but the override is recorded on the timeline and in the audit logs of the platform and {tenant.name}.</p>
+            <Field label="Override reason" htmlFor="override-reason" required error={overrideError ?? undefined}>
+              <Textarea
+                id="override-reason"
+                value={overrideReason}
+                onChange={(e) => {
+                  setOverrideReason(e.target.value)
+                  setOverrideError(null)
+                }}
+                placeholder="For example: Quota increase for the workshop is agreed; it lands next week."
+                aria-invalid={!!overrideError}
+              />
+            </Field>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="secondary">Cancel</Button>
+            </DialogClose>
+            <Button
+              onClick={() => {
+                if (overrideReason.trim().length < 5) return setOverrideError('Give an override reason. It is recorded with the environment.')
+                create(overrideReason.trim())
+              }}
+            >
+              <Plus /> Create anyway
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

@@ -199,6 +199,21 @@ export interface EnvRequest {
   /** Allocation edits an approver made before forwarding or approving. */
   adminChanges: SpecChange[]
   simulateFailure: boolean
+  /** 'admin': created directly by a Super Admin or Tenant Admin (or escalated from that flow). */
+  origin?: 'admin'
+  admin?: AdminCreation
+}
+
+/** Ownership and reasons an admin chose when creating infrastructure directly. */
+export interface AdminCreation {
+  /** A user id, or TENANT_OWNER for a tenant-owned environment. */
+  ownerId: string
+  accessUserIds: string[]
+  reason: string
+  overrideReason?: string
+  batchId?: string
+  expiresAt?: string | null
+  autoTerminate: boolean
 }
 
 /** A shared service or library installed on an environment, available to every project on it. */
@@ -232,6 +247,12 @@ export interface Environment {
   loadProfile: 'normal' | 'hot'
   /** Environment-level capabilities (shared services such as a vector database). Projects are linked through deployments. */
   capabilities: EnvCapability[]
+  /** Extra people (Users and QA Engineers) who can use the environment. */
+  accessUserIds?: string[]
+  /** Set when an admin created it directly, without the approval flow. */
+  adminCreated?: { byId: string; byRole: 'super_admin' | 'tenant_admin'; reason: string; overrideReason?: string }
+  /** Terminates automatically at expiresAt (admin-set expiry). */
+  autoTerminate?: boolean
 }
 
 export type CatalogStatus = 'active' | 'beta' | 'deprecated'

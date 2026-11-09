@@ -38,6 +38,8 @@ import NotFound from '@/pages/NotFound'
 import { isAdmin } from '@/lib/roles'
 import { needsMigration } from '@/lib/providers'
 import { MigrateBadge } from '@/components/shared/TenantProviders'
+import { ChangeOwnerDialog } from '@/components/shared/ChangeOwnerDialog'
+import { isTenantOwned } from '@/lib/ownership'
 import { OpenTerminalButton } from '@/components/shared/OpenTerminalButton'
 
 function snippets(env: Environment, model: string, kind: 'chat' | 'asr') {
@@ -228,6 +230,7 @@ export default function EnvironmentDetail() {
   const [reveal, setReveal] = useState(false)
   const [snippetKind, setSnippetKind] = useState<'chat' | 'asr'>('chat')
   const [extendOpen, setExtendOpen] = useState(false)
+  const [ownerOpen, setOwnerOpen] = useState(false)
   const [extendWeeks, setExtendWeeks] = useState('4')
   const costCtx = useCostContext(env?.tenantId)
   const tenants = useAppStore((s) => s.tenants)
@@ -337,6 +340,7 @@ export default function EnvironmentDetail() {
       <div className="mb-6 flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={env.status} />
+          {env.adminCreated && <Tag>Admin-created</Tag>}
           {needsMigration(env, tenants) && <MigrateBadge />}
           {pendingChange && <StatusBadge status={pendingChange.status} label={`Change ${pendingChange.status === 'escalated' ? 'with Super Admin' : 'under review'}`} />}
           <Tag>
@@ -568,7 +572,9 @@ export default function EnvironmentDetail() {
                 <dl className="flex flex-col gap-2.5 text-sm">
                   {(
                     [
-                      ['Owner', `${owner?.name ?? ''}${owner ? ` · ${roleLabel(owner.role)}` : ''}`],
+                      ['Owner', isTenantOwned(env) ? 'Tenant-owned · managed by the Tenant Admin' : `${owner?.name ?? ''}${owner ? ` · ${roleLabel(owner.role)}` : ''}`],
+                      ...(env.accessUserIds?.length ? ([['Access', env.accessUserIds.map((uid) => users.find((u) => u.id === uid)?.name).filter(Boolean).join(', ')]] as const) : []),
+                      ...(env.autoTerminate && env.expiresAt ? ([['Expiry', `Auto-terminates on ${formatDate(env.expiresAt)}`]] as const) : []),
                       ['Provider', est.provider ? `${est.provider.name} · ${est.region?.name ?? ''}` : '—'],
                       ['Instance', `${env.spec.instance.name}${env.spec.instanceCount > 1 ? ` × ${env.spec.instanceCount}` : ''} · ${tier.label}`],
                       ['Rate card', `v${env.rateCardVersion} at provisioning${est.rateCard && est.rateCard.version !== env.rateCardVersion ? ` · v${est.rateCard.version} now` : ''}`],
@@ -583,6 +589,12 @@ export default function EnvironmentDetail() {
                     </div>
                   ))}
                 </dl>
+                {isAdmin(scope.role) && env.status !== 'terminated' && (
+                  <Button variant="ghost" size="compact" className="mt-3" onClick={() => setOwnerOpen(true)}>
+                    Change owner
+                  </Button>
+                )}
+                <ChangeOwnerDialog env={env} open={ownerOpen} onOpenChange={setOwnerOpen} />
               </section>
 
               <section className="card p-6">

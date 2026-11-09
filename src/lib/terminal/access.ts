@@ -21,7 +21,7 @@ export function terminalAccess(user: User, env: Environment, projects: Project[]
     const member = env.ownerId === user.id || projects.some((p) => projectIds.has(p.id) && (p.memberIds.includes(user.id) || p.ownerId === user.id))
     if (!member) return { allowed: false, reason: 'Only the owner, members of a project on this environment and admins can open a terminal.' }
   } else if (user.role === 'qa') {
-    const assigned = projects.some((p) => projectIds.has(p.id) && p.status === 'active' && (user.qa?.tenantWideAllowed || user.qa?.projectIds.includes(p.id)))
+    const assigned = !!env.accessUserIds?.includes(user.id) || projects.some((p) => projectIds.has(p.id) && p.status === 'active' && (user.qa?.tenantWideAllowed || user.qa?.projectIds.includes(p.id)))
     if (!assigned) return { allowed: false, reason: 'You aren’t assigned to a project on this environment.' }
     readOnly = true
   } else {

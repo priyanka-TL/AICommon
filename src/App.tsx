@@ -80,6 +80,7 @@ export default function App() {
             <Route path="/super-admin/projects" element={<Projects />} />
             <Route path="/super-admin/projects/:id" element={<ProjectDetail />} />
             <Route path="/super-admin/infrastructure" element={<Infrastructure />} />
+            <Route path="/super-admin/infrastructure/create" element={<NewEnvironment admin key="sa-create" />} />
             <Route path="/super-admin/infrastructure/:id" element={<EnvironmentDetail />} />
             <Route path="/super-admin/infrastructure/:id/edit" element={<NewEnvironment />} />
             <Route path="/super-admin/registry" element={<Registry />} />
@@ -106,6 +107,7 @@ export default function App() {
             <Route path="/tenant-admin/projects/:id" element={<ProjectDetail />} />
             <Route path="/tenant-admin/infrastructure" element={<Infrastructure />} />
             <Route path="/tenant-admin/infrastructure/new" element={<NewEnvironment />} />
+            <Route path="/tenant-admin/infrastructure/create" element={<NewEnvironment admin key="ta-create" />} />
             <Route path="/tenant-admin/infrastructure/:id" element={<EnvironmentDetail />} />
             <Route path="/tenant-admin/infrastructure/:id/edit" element={<NewEnvironment />} />
             <Route path="/tenant-admin/requests" element={<RequestsQueue />} />
