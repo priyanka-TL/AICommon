@@ -80,7 +80,7 @@ export default function RequestDetail() {
   return (
     <>
       <PageHeader
-        eyebrow={`${request.kind === 'new' ? 'New environment request' : 'Change request'}${scope.role === 'super_admin' ? ` · ${tenant.name}` : ''}`}
+        eyebrow={`${request.origin === 'admin' ? (request.status === 'approved' && request.history[0]?.status === 'approved' ? 'Admin-created environment' : 'Admin-created, escalated') : request.kind === 'new' ? 'New environment request' : 'Change request'}${scope.role === 'super_admin' ? ` · ${tenant.name}` : ''}`}
         title={request.spec.name}
         description={
           <span className="flex flex-wrap items-center gap-2">

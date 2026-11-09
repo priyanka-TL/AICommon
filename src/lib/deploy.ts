@@ -885,17 +885,17 @@ export const checksPass = (checks: PreDeployCheck[], overrides: CheckKey[] = [])
 
 /* ---------- permissions ---------- */
 
-/** Add or remove projects: the environment owner, its Tenant Admin, or the Super Admin. */
-export function canManageEnvProjects(user: Pick<User, 'id' | 'role' | 'tenantId'>, env: Pick<Environment, 'ownerId' | 'tenantId'>) {
+/** Add or remove projects: the environment owner, Users given access to it, its Tenant Admin, or the Super Admin. */
+export function canManageEnvProjects(user: Pick<User, 'id' | 'role' | 'tenantId'>, env: Pick<Environment, 'ownerId' | 'tenantId' | 'accessUserIds'>) {
   if (user.role === 'super_admin') return true
   if (user.tenantId !== env.tenantId) return false
-  return user.role === 'tenant_admin' || user.id === env.ownerId
+  return user.role === 'tenant_admin' || user.id === env.ownerId || (user.role === 'user' && !!env.accessUserIds?.includes(user.id))
 }
 
 /** Configure and deploy one project: anyone who can manage the environment, plus the project's owner and editors. */
 export function canOperateDeployment(
   user: Pick<User, 'id' | 'role' | 'tenantId'>,
-  env: Pick<Environment, 'ownerId' | 'tenantId'>,
+  env: Pick<Environment, 'ownerId' | 'tenantId' | 'accessUserIds'>,
   project: Pick<Project, 'memberIds' | 'memberAccess' | 'ownerId'> | undefined,
 ) {
   if (canManageEnvProjects(user, env)) return true

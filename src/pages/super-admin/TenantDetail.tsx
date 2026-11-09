@@ -2,13 +2,13 @@ import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { Mail, MapPin, Pause, Pencil, Play, ServerOff, ShieldCheck, UserRound, Users as UsersIcon } from 'lucide-react'
+import { Mail, MapPin, Pause, Pencil, Play, Plus, ServerOff, ShieldCheck, UserRound, Users as UsersIcon } from 'lucide-react'
 import type { Environment, User } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
 import { formatCompact, formatDate, formatShortDate, plural, relativeTime } from '@/lib/format'
 import { computeLabel, ROLE_LABELS } from '@/lib/labels'
 import { tenantAllocated } from '@/lib/quota'
-import { envPath } from '@/lib/paths'
+import { adminCreatePath, envPath } from '@/lib/paths'
 import { axisProps, CHART_COLORS, CHART_GRID } from '@/lib/chart'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { TenantProviders } from '@/components/shared/TenantProviders'
@@ -91,7 +91,10 @@ export default function TenantDetail() {
       header: 'Environment',
       cell: (e) => (
         <div className="min-w-0">
-          <p className="truncate font-semibold text-text-primary">{e.spec.name}</p>
+          <p className="flex min-w-0 items-center gap-2">
+            <span className="truncate font-semibold text-text-primary">{e.spec.name}</span>
+            {e.adminCreated && <Tag className="shrink-0">Admin-created</Tag>}
+          </p>
           <p className="truncate text-caption text-text-muted">{[...new Set(allDeployments.filter((d) => d.envId === e.id).map((d) => d.projectId))].map((pid) => projects.find((p) => p.id === pid)?.name).filter(Boolean).join(', ') || 'No projects yet'}</p>
         </div>
       ),
@@ -155,7 +158,7 @@ export default function TenantDetail() {
         <Tabs defaultValue="members" className="min-w-0">
           <TabsList>
             <TabsTrigger value="members">Members ({members.length})</TabsTrigger>
-            <TabsTrigger value="environments">Environments ({envs.length})</TabsTrigger>
+            <TabsTrigger value="environments">Infrastructure ({envs.length})</TabsTrigger>
             <TabsTrigger value="usage">Usage</TabsTrigger>
           </TabsList>
           <TabsContent value="members">
@@ -177,13 +180,18 @@ export default function TenantDetail() {
             />
           </TabsContent>
           <TabsContent value="environments">
+            <div className="mb-3 flex justify-end">
+              <Button variant="secondary" disabled={tenant.status !== 'active'} onClick={() => navigate(adminCreatePath('super_admin', tenant.id))}>
+                <Plus /> Create infrastructure
+              </Button>
+            </div>
             <DataTable
               rows={envs}
               columns={envColumns}
               rowKey={(e) => e.id}
               onRowClick={(e) => navigate(envPath('super_admin', e.id))}
               rowLabel={(e) => `Open ${e.spec.name}`}
-              empty={<EmptyState icon={ServerOff} title="No environments yet" />}
+              empty={<EmptyState icon={ServerOff} title="No environments yet" action={<Button variant="secondary" onClick={() => navigate(adminCreatePath('super_admin', tenant.id))}><Plus /> Create infrastructure</Button>} />}
               mobileCard={(e) => (
                 <div className="flex items-center justify-between gap-3">
                   <p className="font-semibold text-text-primary">{e.spec.name}</p>

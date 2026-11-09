@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { ArrowRight, Building2, Cpu, Inbox, Server, Wallet } from 'lucide-react'
+import { ArrowRight, Building2, Cpu, Inbox, Plus, Server, Wallet } from 'lucide-react'
+import { adminCreatePath } from '@/lib/paths'
 import { useAppStore } from '@/store/useAppStore'
 import { useScope, useScopedAudit, useScopedEnvironments, useScopedRequests, useVisibleTenants } from '@/store/selectors'
 import { useSimulatedLoading } from '@/hooks/useSimulatedLoading'
@@ -76,11 +77,18 @@ export default function SuperAdminDashboard() {
         title="Platform dashboard"
         description="Requests waiting for you, how tenants use their quota, and what changed recently."
         actions={
-          <Button asChild>
-            <Link to="/super-admin/requests">
-              <Inbox /> Review escalated ({escalated + pendingQuota})
-            </Link>
-          </Button>
+          <>
+            <Button asChild variant="secondary">
+              <Link to={adminCreatePath('super_admin', scope.tenantId ?? undefined)}>
+                <Plus /> Create infrastructure
+              </Link>
+            </Button>
+            <Button asChild>
+              <Link to="/super-admin/requests">
+                <Inbox /> Review escalated ({escalated + pendingQuota})
+              </Link>
+            </Button>
+          </>
         }
       />
 

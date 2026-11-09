@@ -130,6 +130,11 @@ export default function TenantAdminDashboard() {
                 </Link>
               </Button>
               <Button asChild variant="secondary" className="justify-start">
+                <Link to="/tenant-admin/infrastructure/create">
+                  <Server /> Create infrastructure
+                </Link>
+              </Button>
+              <Button asChild variant="secondary" className="justify-start">
                 <Link to="/tenant-admin/infrastructure/new">
                   <Plus /> Request infrastructure
                 </Link>

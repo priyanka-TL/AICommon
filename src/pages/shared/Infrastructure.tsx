@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Eye, Plus, SearchX, ServerOff } from 'lucide-react'
+import { Eye, Plus, SearchX, Send, ServerOff } from 'lucide-react'
 import type { Environment, EnvStatus } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
 import { useHostedProjectIds, useScope, useScopedEnvironments, useScopedProjects } from '@/store/selectors'
@@ -10,14 +10,15 @@ import { computeLabel, STATUS_LABELS } from '@/lib/labels'
 import { needsMigration } from '@/lib/providers'
 import { MigrateBadge } from '@/components/shared/TenantProviders'
 import { allocationOf, tenantAllocated } from '@/lib/quota'
-import { envPath, newEnvPath } from '@/lib/paths'
+import { adminCreatePath, envPath, newEnvPath } from '@/lib/paths'
+import { ownerLabel } from '@/lib/ownership'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { RowActions } from '@/components/shared/RowActions'
 import { SearchInput } from '@/components/shared/SearchInput'
-import { StatusBadge } from '@/components/shared/StatusBadge'
+import { StatusBadge, Tag } from '@/components/shared/StatusBadge'
 import { ResourceQuota } from '@/components/shared/ResourceQuota'
 import { useEnvLifecycle } from '@/components/shared/useEnvLifecycle'
 import { Button } from '@/components/ui/button'
@@ -52,7 +53,7 @@ export default function Infrastructure() {
       (e) =>
         (showTerminated || e.status !== 'terminated') &&
         (projectId === 'all' || !!hosted.get(e.id)?.includes(projectId)) &&
-        (!q || [e.spec.name, users.find((u) => u.id === e.ownerId)?.name ?? ''].some((s) => s.toLowerCase().includes(q))),
+        (!q || [e.spec.name, ownerLabel(e, users)].some((s) => s.toLowerCase().includes(q))),
     )
   }, [environments, showTerminated, projectId, query, users, hosted])
 
@@ -65,8 +66,11 @@ export default function Infrastructure() {
       header: 'Environment',
       cell: (e) => (
         <div className="min-w-0">
-          <p className="truncate font-semibold text-text-primary">{e.spec.name}</p>
-          <p className="truncate text-caption text-text-muted">{users.find((u) => u.id === e.ownerId)?.name}</p>
+          <p className="flex min-w-0 items-center gap-2">
+            <span className="truncate font-semibold text-text-primary">{e.spec.name}</span>
+            {e.adminCreated && <Tag className="shrink-0">Admin-created</Tag>}
+          </p>
+          <p className="truncate text-caption text-text-muted">{ownerLabel(e, users)}</p>
         </div>
       ),
     },
@@ -124,11 +128,16 @@ export default function Infrastructure() {
             : 'Environments in your tenant. Start, stop, restart or terminate them, and change setups that need no new infrastructure.'
         }
         actions={
-          !isSuper && (
-            <Button onClick={() => navigate(newEnvPath(scope.role))}>
-              <Plus /> Request infrastructure
+          <>
+            {!isSuper && (
+              <Button variant="secondary" onClick={() => navigate(newEnvPath(scope.role))}>
+                <Send /> Request infrastructure
+              </Button>
+            )}
+            <Button onClick={() => navigate(adminCreatePath(scope.role, isSuper ? (scope.tenantId ?? undefined) : undefined))}>
+              <Plus /> Create infrastructure
             </Button>
-          )
+          </>
         }
       />
 
@@ -189,14 +198,17 @@ export default function Infrastructure() {
           query || projectId !== 'all' || status !== 'all' ? (
             <EmptyState icon={SearchX} title="No environments match these filters" action={<Button variant="secondary" onClick={() => { setQuery(''); setProjectId('all'); setStatus('all') }}>Clear filters</Button>} />
           ) : (
-            <EmptyState icon={ServerOff} title="No environments yet" description="They appear here once a request is approved." />
+            <EmptyState icon={ServerOff} title="No environments yet" description="They appear here once a request is approved or an admin creates one." />
           )
         }
         mobileCard={(e) => (
           <div className="flex flex-col gap-1.5">
             <div className="flex items-start justify-between gap-3">
               <p className="font-semibold text-text-primary">{e.spec.name}</p>
-              <StatusBadge status={e.status} />
+              <span className="flex shrink-0 flex-col items-end gap-1">
+                <StatusBadge status={e.status} />
+                {e.adminCreated && <Tag>Admin-created</Tag>}
+              </span>
             </div>
             <p className="text-caption text-text-muted">
               {isSuper ? `${tenants.find((t) => t.id === e.tenantId)?.name} · ` : ''}

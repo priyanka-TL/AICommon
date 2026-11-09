@@ -3,6 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware'
 import { createSeed, endpointFor, GPU_TIER, rateCardVersionAt, SAMPLE_PASSWORD, SEED_VERSION, type SeedState } from '@/data/seed'
 import type {
   AccessMode,
+  AdminCreation,
   ActorRole,
   AuditEntity,
   CatalogCategory,
@@ -49,7 +50,7 @@ import { seedQaRuns } from '@/lib/qa'
 import { ACCESS_MODE_LABELS, residencyProblem } from '@/lib/providers'
 import { environmentsInUse } from '@/lib/cost'
 import { parseGithubUrl } from '@/lib/suggestions'
-import { formatDuration, formatInt } from '@/lib/format'
+import { formatDate, formatDuration, formatInt } from '@/lib/format'
 import { roleLabel } from '@/lib/labels'
 import { canEditProject, isAdmin } from '@/lib/roles'
 import { uid, slugify } from '@/lib/utils'
@@ -72,6 +73,8 @@ import {
   validateConfig,
 } from '@/lib/deploy'
 import { allocationOf } from '@/lib/quota'
+import { adminCreateCheck, MAX_COPIES } from '@/lib/adminCreate'
+import { batchName, TENANT_OWNER } from '@/lib/ownership'
 
 export const STORAGE_KEY = `aic-demo-data-${SEED_VERSION}`
 
@@ -142,6 +145,23 @@ export type ProviderRequestInput = Pick<ProviderRequest, 'providerId' | 'regionI
 export type ProviderRequestAction = 'forward' | 'request_changes' | 'reject' | 'approve' | 'cancel'
 
 export type Result = { ok: true; id?: string } | { ok: false; error: string }
+
+/** What an admin fills in to create infrastructure directly. */
+export interface AdminCreateInput {
+  tenantId: string
+  spec: EnvSpec
+  /** A user in the tenant, or TENANT_OWNER. */
+  ownerId: string
+  accessUserIds: string[]
+  reason: string
+  /** Number of identical environments, 1–20. */
+  count: number
+  /** YYYY-MM-DD; auto-terminates on that date. */
+  expiresAt: string | null
+  overrideReason?: string
+  simulateFailure?: boolean
+}
+export type AdminCreateResult = { ok: true; envIds: string[]; requestIds: string[] } | { ok: false; error: string }
 const ok = (id?: string): Result => ({ ok: true, id })
 const fail = (error: string): Result => ({ ok: false, error })
 
@@ -188,6 +208,14 @@ interface AppState extends SeedState {
   closeTerminalSession: (envId: string, startedAt: number) => void
   extendEnv: (id: string, weeks: number) => void
   scheduleProvisioning: () => void
+  /** Super Admin or Tenant Admin: create environments directly, skipping the approval flow. */
+  createInfrastructure: (input: AdminCreateInput) => AdminCreateResult
+  /** Tenant Admin over quota or budget: send the same configuration to the Super Admin as escalated requests. */
+  escalateAdminCreate: (input: AdminCreateInput) => AdminCreateResult
+  /** Super Admin: approve a provider for a tenant inline, with regions and a monthly budget cap. */
+  enableProviderForTenant: (tenantId: string, providerId: string, regionIds: string[], budgetCap: number) => Result
+  /** Tenant Admin or Super Admin: hand the environment to someone else in the tenant, or make it tenant-owned. */
+  changeEnvOwner: (envId: string, ownerId: string) => Result
 
   // deployments (projects hosted on an environment)
   addProjectsToEnv: (envId: string, items: { projectId: string; limits: { vcpu: number; ramGb: number } }[]) => Result
@@ -389,7 +417,7 @@ export const useAppStore = create<AppState>()(
       /** `link` receives each recipient's role so links land on the right page. */
       const notify = (userIds: string[], text: string, link: ((role: Role) => string) | null) => {
         const self = useSessionStore.getState().currentUserId
-        const recipients = [...new Set(userIds)].filter((id) => id !== self)
+        const recipients = [...new Set(userIds)].filter((id) => id !== self && get().users.some((u) => u.id === id))
         if (!recipients.length) return
         set((s) => ({
           notifications: [
@@ -464,6 +492,85 @@ export const useAppStore = create<AppState>()(
         patchEnv(envId, { provisionDueAt: new Date(Date.now() + PROVISIONING_MS).toISOString(), failureReason: null })
         get().scheduleProvisioning()
       }
+
+      /** Creates the environment for an approved (or admin-created) `new` request and starts provisioning. */
+      const materialiseEnv = (
+        requestId: string,
+        opts: { ownerId: string; accessUserIds?: string[]; adminCreated?: Environment['adminCreated']; expiresAt?: string | null; autoTerminate?: boolean; simulateFailure: boolean },
+      ) => {
+        const r = get().requests.find((x) => x.id === requestId)!
+        const tenant = get().tenants.find((x) => x.id === r.tenantId)!
+        const envId = uid('env')
+        const env: Environment = {
+          id: envId,
+          tenantId: r.tenantId,
+          ownerId: opts.ownerId,
+          requestId,
+          status: 'provisioning',
+          spec: r.spec,
+          endpoint: endpointFor(tenant.code, envId),
+          apiKey: `aic_live_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`.slice(0, 41),
+          creditsUsed: 0,
+          rateCardVersion: rateCardVersionAt(r.spec.providerId, now(), get().infraProviders),
+          createdAt: now(),
+          expiresAt: opts.expiresAt ?? new Date(Date.now() + r.spec.durationWeeks * 7 * 86_400_000).toISOString(),
+          history: [event('provisioning', undefined, true)],
+          failureReason: null,
+          provisionDueAt: null,
+          hold: false,
+          loadProfile: 'normal',
+          capabilities: r.spec.capabilities.map((itemId) => ({ itemId, version: catalogVersion(itemId), addedById: r.requesterId, at: now() })),
+          ...(opts.accessUserIds?.length ? { accessUserIds: opts.accessUserIds } : {}),
+          ...(opts.adminCreated ? { adminCreated: opts.adminCreated } : {}),
+          ...(opts.autoTerminate ? { autoTerminate: true } : {}),
+        }
+        set((s) => ({ environments: [env, ...s.environments] }))
+        // Projects are optional: an environment can be created with none and get them later.
+        const hosted = [...new Set(r.spec.projectIds)].filter((pid) => get().projects.some((p) => p.id === pid && p.tenantId === r.tenantId && p.status === 'active'))
+        const deps: Deployment[] = []
+        for (const pid of hosted) {
+          const dep = newDeployment(env, pid, deps)
+          const room = capacityShortfall(env, deps, dep.config.limits)
+          deps.push(room ? { ...dep, config: { ...dep.config, limits: { vcpu: 1, ramGb: 1 } } } : dep)
+        }
+        set((s) => ({ deployments: [...s.deployments, ...deps] }))
+        patchRequest(requestId, { envId })
+        startProvisioning(envId, opts.simulateFailure)
+        return envId
+      }
+
+      /** Shared checks for the admin create flow; returns an error or null. */
+      const adminCreateProblem = (user: User, input: AdminCreateInput): string | null => {
+        if (user.role !== 'super_admin' && user.role !== 'tenant_admin') return 'Only admins can create infrastructure directly. Request an environment instead.'
+        const tenant = get().tenants.find((t) => t.id === input.tenantId)
+        if (!tenant || tenant.isSystem) return 'Choose an organisation to create infrastructure for.'
+        if (user.role === 'tenant_admin' && tenant.id !== user.tenantId) return 'You can create infrastructure only for your own organisation.'
+        if (tenant.status === 'suspended') return `${tenant.name} is suspended, so no infrastructure can be created for it.`
+        const inTenant = (id: string, roles: Role[]) => get().users.some((u) => u.id === id && u.tenantId === tenant.id && u.status === 'active' && roles.includes(u.role))
+        if (input.ownerId !== TENANT_OWNER && !inTenant(input.ownerId, ['user', 'tenant_admin', 'qa'])) return `The owner must be an active person in ${tenant.name}, or choose Tenant-owned.`
+        if (input.accessUserIds.some((id) => !inTenant(id, ['user', 'qa']))) return `Access can only be given to active Users and QA Engineers in ${tenant.name}.`
+        if (input.reason.trim().length < 10) return 'Give a reason for creating this, in a sentence or two.'
+        if (!Number.isInteger(input.count) || input.count < 1 || input.count > MAX_COPIES) return `Create between 1 and ${MAX_COPIES} environments at a time.`
+        if (input.spec.name.trim().length < 3) return 'Give the environment a name of at least 3 characters.'
+        if (input.expiresAt && input.expiresAt <= new Date().toISOString().slice(0, 10)) return 'Choose an expiry date after today.'
+        const foreign = input.spec.projectIds.filter((pid) => !get().projects.some((p) => p.id === pid && p.tenantId === tenant.id && p.status === 'active'))
+        if (foreign.length) return `One of the chosen projects isn’t an active project in ${tenant.name}. Remove it, or add projects later.`
+        return placementProblem(input.spec, tenant.id)
+      }
+      const adminCheck = (input: AdminCreateInput) => {
+        const tenant = get().tenants.find((t) => t.id === input.tenantId)!
+        return adminCreateCheck(input.spec, input.count, tenant, get().environments, { providers: get().infraProviders, catalog: get().catalog })
+      }
+      const adminMeta = (input: AdminCreateInput, batchId?: string): AdminCreation => ({
+        ownerId: input.ownerId,
+        accessUserIds: [...new Set(input.accessUserIds)].filter((id) => id !== input.ownerId),
+        reason: input.reason.trim(),
+        ...(input.overrideReason?.trim() ? { overrideReason: input.overrideReason.trim() } : {}),
+        ...(batchId ? { batchId } : {}),
+        expiresAt: input.expiresAt,
+        autoTerminate: !!input.expiresAt,
+      })
+      const expiryIso = (day: string | null) => (day ? new Date(`${day}T23:59:00`).toISOString() : null)
 
       /* ---------- deployment helpers ---------- */
 
@@ -816,40 +923,15 @@ export const useAppStore = create<AppState>()(
             case 'approved': {
               notify([...requester, ...tas], `“${name}” was approved${updated.kind === 'new' ? '. It is being set up now.' : ' and applied.'}`, reqLink(id))
               if (updated.kind === 'new') {
-                const tenant = get().tenants.find((x) => x.id === r.tenantId)!
-                const envId = uid('env')
-                const env: Environment = {
-                  id: envId,
-                  tenantId: r.tenantId,
-                  ownerId: r.requesterId,
-                  requestId: id,
-                  status: 'provisioning',
-                  spec: updated.spec,
-                  endpoint: endpointFor(tenant.code, envId),
-                  apiKey: `aic_live_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`.slice(0, 41),
-                  creditsUsed: 0,
-                  rateCardVersion: rateCardVersionAt(updated.spec.providerId, now(), get().infraProviders),
-                  createdAt: now(),
-                  expiresAt: new Date(Date.now() + updated.spec.durationWeeks * 7 * 86_400_000).toISOString(),
-                  history: [event('provisioning', undefined, true)],
-                  failureReason: null,
-                  provisionDueAt: null,
-                  hold: false,
-                  loadProfile: 'normal',
-                  capabilities: updated.spec.capabilities.map((itemId) => ({ itemId, version: catalogVersion(itemId), addedById: r.requesterId, at: now() })),
-                }
-                set((s) => ({ environments: [env, ...s.environments] }))
-                // Projects are optional: an environment can be approved with none and get them later.
-                const hosted = [...new Set(updated.spec.projectIds)].filter((pid) => get().projects.some((p) => p.id === pid && p.tenantId === r.tenantId && p.status === 'active'))
-                const deps: Deployment[] = []
-                for (const pid of hosted) {
-                  const dep = newDeployment(env, pid, deps)
-                  const room = capacityShortfall(env, deps, dep.config.limits)
-                  deps.push(room ? { ...dep, config: { ...dep.config, limits: { vcpu: 1, ramGb: 1 } } } : dep)
-                }
-                set((s) => ({ deployments: [...s.deployments, ...deps] }))
-                patchRequest(id, { envId })
-                startProvisioning(envId, !!opts.simulateFailure)
+                // Escalated admin-created configurations keep the owner and access list the admin chose.
+                const meta = updated.admin
+                materialiseEnv(id, {
+                  ownerId: meta?.ownerId ?? r.requesterId,
+                  accessUserIds: meta?.accessUserIds,
+                  expiresAt: expiryIso(meta?.expiresAt ?? null) ?? undefined,
+                  autoTerminate: meta?.autoTerminate,
+                  simulateFailure: !!opts.simulateFailure,
+                })
               } else if (updated.envId) {
                 const target = get().environments.find((e) => e.id === updated.envId)
                 patchEnv(updated.envId, { spec: updated.spec, ...(target ? { capabilities: syncCapabilities(target, updated.spec) } : {}) })
@@ -943,6 +1025,138 @@ export const useAppStore = create<AppState>()(
             const wait = Math.max(0, new Date(env.provisionDueAt).getTime() - Date.now())
             timers.set(env.id, setTimeout(() => completeProvisioning(env.id), wait) as unknown as number)
           }
+        },
+
+        createInfrastructure: (input) => {
+          const user = me()
+          if (!user) return { ok: false, error: 'Sign in again.' }
+          const problem = adminCreateProblem(user, input)
+          if (problem) return { ok: false, error: problem }
+          const check = adminCheck(input)
+          const tenant = get().tenants.find((t) => t.id === input.tenantId)!
+          if (check.over && user.role === 'tenant_admin') return { ok: false, error: `This goes over ${tenant.name}’s quota or provider budget. Escalate it to the Super Admin instead.` }
+          if (check.over && !input.overrideReason?.trim()) return { ok: false, error: 'This goes over quota or budget. Give an override reason.' }
+          const byRole = user.role as 'super_admin' | 'tenant_admin'
+          const batchId = input.count > 1 ? uid('batch') : undefined
+          const meta = adminMeta(input, batchId)
+          const roleName = roleLabel(byRole)
+          const comment = [`Created by ${user.name} (${roleName}) — no approval required.`, `Reason: ${meta.reason}`, meta.overrideReason ? `Override reason: ${meta.overrideReason}` : ''].filter(Boolean).join(' ')
+          const envIds: string[] = []
+          const requestIds: string[] = []
+          for (let i = 0; i < input.count; i++) {
+            const spec: EnvSpec = { ...input.spec, name: batchName(input.spec.name.trim(), i, input.count), justification: meta.reason }
+            const id = uid('req')
+            const req: EnvRequest = {
+              id,
+              kind: 'new',
+              tenantId: tenant.id,
+              requesterId: user.id,
+              raisedByRole: user.role,
+              envId: null,
+              spec,
+              previousSpec: null,
+              status: 'approved',
+              createdAt: now(),
+              updatedAt: now(),
+              history: [event('approved', comment)],
+              comments: [],
+              adminChanges: [],
+              simulateFailure: !!input.simulateFailure,
+              origin: 'admin',
+              admin: meta,
+            }
+            set((s) => ({ requests: [req, ...s.requests] }))
+            const envId = materialiseEnv(id, {
+              ownerId: meta.ownerId,
+              accessUserIds: meta.accessUserIds,
+              adminCreated: { byId: user.id, byRole, reason: meta.reason, ...(meta.overrideReason ? { overrideReason: meta.overrideReason } : {}) },
+              expiresAt: expiryIso(input.expiresAt) ?? undefined,
+              autoTerminate: meta.autoTerminate,
+              simulateFailure: !!input.simulateFailure,
+            })
+            envIds.push(envId)
+            requestIds.push(id)
+            audit('environment.admin_created', 'environment', envId, `${user.name} (${roleName}) created “${spec.name}” for ${tenant.name}; no approval required`, tenant.id, [`Reason: ${meta.reason}`, meta.overrideReason ? `Override reason: ${meta.overrideReason}` : ''].filter(Boolean).join(' · '))
+            notify([meta.ownerId, ...meta.accessUserIds], `${user.name} created “${spec.name}” for you.`, envLink(envId))
+            if (user.role === 'super_admin') notify(tenantAdmins(tenant.id), `The Super Admin created “${spec.name}” in ${tenant.name}.`, envLink(envId))
+          }
+          return { ok: true, envIds, requestIds }
+        },
+
+        escalateAdminCreate: (input) => {
+          const user = me()
+          if (!user) return { ok: false, error: 'Sign in again.' }
+          if (user.role !== 'tenant_admin') return { ok: false, error: 'Only a Tenant Admin escalates; the Super Admin can create it directly.' }
+          const problem = adminCreateProblem(user, input)
+          if (problem) return { ok: false, error: problem }
+          const batchId = input.count > 1 ? uid('batch') : undefined
+          const meta = adminMeta(input, batchId)
+          const requestIds: string[] = []
+          for (let i = 0; i < input.count; i++) {
+            const spec: EnvSpec = { ...input.spec, name: batchName(input.spec.name.trim(), i, input.count), justification: meta.reason }
+            const id = uid('req')
+            const req: EnvRequest = {
+              id,
+              kind: 'new',
+              tenantId: user.tenantId,
+              requesterId: user.id,
+              raisedByRole: user.role,
+              envId: null,
+              spec,
+              previousSpec: null,
+              status: 'submitted',
+              createdAt: now(),
+              updatedAt: now(),
+              history: [event('submitted', `Over quota or provider budget, so escalated from Create infrastructure. Reason: ${meta.reason}`)],
+              comments: [],
+              adminChanges: [],
+              simulateFailure: false,
+              origin: 'admin',
+              admin: meta,
+            }
+            set((s) => ({ requests: [req, ...s.requests] }))
+            audit('request.submitted', 'request', id, `${user.name} escalated “${spec.name}” to the Super Admin (over quota or budget)`, user.tenantId)
+            routeAfterSubmit(id)
+            requestIds.push(id)
+          }
+          return { ok: true, envIds: [], requestIds }
+        },
+
+        enableProviderForTenant: (tenantId, providerId, regionIds, budgetCap) => {
+          const user = me()
+          if (!user || user.role !== 'super_admin') return fail('Only the Super Admin approves providers for a tenant.')
+          const tenant = get().tenants.find((t) => t.id === tenantId)
+          const p = get().infraProviders.find((x) => x.id === providerId)
+          if (!tenant || tenant.isSystem || !p) return fail('Provider or tenant not found.')
+          if (p.status !== 'active') return fail(`${p.name} is disabled.`)
+          const regions = regionIds.filter((rid) => p.regions.some((r) => r.id === rid))
+          if (!regions.length) return fail('Approve at least one region.')
+          const cap = Math.round(budgetCap)
+          if (!(cap > 0)) return fail('Set a monthly budget cap above zero.')
+          const approval: ProviderApproval = { providerId: p.id, regionIds: regions, budgetCap: cap, approvedAt: now(), approvedById: user.id, requestId: null, status: 'approved' }
+          set((s) => ({
+            tenants: s.tenants.map((t) => (t.id === tenant.id ? { ...t, approvedProviders: [...t.approvedProviders.filter((a) => a.providerId !== p.id), approval] } : t)),
+            infraProviders: s.infraProviders.map((x) => (x.id === p.id && x.allowedTenants !== 'all' && !x.allowedTenants.includes(tenant.id) ? { ...x, allowedTenants: [...x.allowedTenants, tenant.id] } : x)),
+          }))
+          audit('provider.approved', 'infra_provider', p.id, `${user.name} approved ${p.name} for ${tenant.name} while creating infrastructure: ${formatInt(cap)} credits a month`, tenant.id)
+          notify(tenantAdmins(tenant.id), `The Super Admin enabled ${p.name} for ${tenant.name}: ${formatInt(cap)} credits a month.`, () => '/tenant-admin/infra-providers')
+          return ok(p.id)
+        },
+
+        changeEnvOwner: (envId, ownerId) => {
+          const user = me()
+          const env = get().environments.find((e) => e.id === envId)
+          if (!user || !env) return fail('Environment not found.')
+          if (!(user.role === 'super_admin' || (user.role === 'tenant_admin' && user.tenantId === env.tenantId))) return fail('Only the Tenant Admin or the Super Admin can change the owner.')
+          if (ownerId === env.ownerId) return fail('That’s already the owner.')
+          const next = get().users.find((u) => u.id === ownerId && u.tenantId === env.tenantId && u.status === 'active')
+          if (ownerId !== TENANT_OWNER && !next) return fail('The owner must be an active person in this organisation.')
+          const fromLabel = env.ownerId === TENANT_OWNER ? 'tenant-owned' : (userById(env.ownerId)?.name ?? 'nobody')
+          const toLabel = ownerId === TENANT_OWNER ? 'tenant-owned' : next!.name
+          patchEnv(envId, { ownerId, accessUserIds: (env.accessUserIds ?? []).filter((id) => id !== ownerId) })
+          audit('environment.owner_changed', 'environment', envId, `${user.name} changed the owner of “${env.spec.name}” from ${fromLabel} to ${toLabel}`, env.tenantId)
+          notify([env.ownerId, ownerId], `${user.name} changed the owner of “${env.spec.name}” to ${toLabel}.`, envLink(envId))
+          return ok(envId)
         },
 
 
@@ -2023,6 +2237,23 @@ export const useAppStore = create<AppState>()(
                 `${u.label} on “${env.spec.name}” is at ${Math.round(u.pct)}%, above ${level}%.`,
                 (role) => `${envPath(role, env.id)}?tab=monitoring`,
               )
+            }
+          }
+          // Admin-set expiry: remind the owner 3 days before, then terminate.
+          const nowMs = Date.now()
+          for (const env of get().environments) {
+            if (!env.autoTerminate || !env.expiresAt || ['terminated', 'provisioning_failed'].includes(env.status)) continue
+            const left = new Date(env.expiresAt).getTime() - nowMs
+            if (left <= 0) {
+              pushEnvEvent(env.id, event('terminated', 'Reached its expiry date.', true), { provisionDueAt: null })
+              followEnv(env.id, 'terminated')
+              audit('environment.terminated', 'environment', env.id, `“${env.spec.name}” terminated on its expiry date`, env.tenantId, undefined, true)
+              notify([env.ownerId, ...(env.accessUserIds ?? []), ...tenantAdmins(env.tenantId)], `“${env.spec.name}” reached its expiry date and was terminated.`, envLink(env.id))
+            } else if (left <= 3 * 86_400_000) {
+              const key = `${env.id}:expiry`
+              if (get().alertKeys.includes(key) || fresh.includes(key)) continue
+              fresh.push(key)
+              notify(env.ownerId === TENANT_OWNER ? tenantAdmins(env.tenantId) : [env.ownerId], `“${env.spec.name}” terminates automatically on ${formatDate(env.expiresAt)}.`, envLink(env.id))
             }
           }
           if (fresh.length) set((s) => ({ alertKeys: [...new Set([...s.alertKeys, ...fresh])] }))

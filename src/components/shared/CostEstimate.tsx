@@ -21,22 +21,29 @@ interface Props {
   className?: string
   /** When editing, the environment being changed (its own cost isn't counted twice). */
   editingEnvId?: string
+  /** Admin create: number of identical environments (quota and cost scale with it). */
+  count?: number
+  /** Admin create: no approval step, so the copy changes. */
+  adminCreate?: boolean
 }
 
-export function CostEstimate({ spec, tenant, used, previous, catalog, audience, className, editingEnvId }: Props) {
+export function CostEstimate({ spec, tenant, used, previous, catalog, audience, className, editingEnvId, count = 1, adminCreate }: Props) {
   const budget = useSpecBudget(spec, tenant.id, editingEnvId)
   const ctx = useCostContext(tenant.id)
   const est = costBreakdown(spec, { ...ctx, catalog })
   const alloc = allocationOf(spec)
+  const n = Math.max(1, count)
   const extra = previous ? subQuota(alloc, allocationOf(previous)) : alloc
-  const positive: Quota = { vcpu: Math.max(0, extra.vcpu), ramGb: Math.max(0, extra.ramGb), gpus: Math.max(0, extra.gpus), storageGb: Math.max(0, extra.storageGb) }
+  const positive: Quota = { vcpu: Math.max(0, extra.vcpu) * n, ramGb: Math.max(0, extra.ramGb) * n, gpus: Math.max(0, extra.gpus) * n, storageGb: Math.max(0, extra.storageGb) * n }
   const quota = checkQuota(tenant.quota, used, positive)
-  const message = quotaMessage(quota.items, tenant.name, audience)
+  const message = adminCreate
+    ? `${quotaMessage(quota.items, tenant.name, 'user')?.split('.')[0]}.${audience === 'tenant_admin' ? ' Escalate it to the Super Admin, or reduce the configuration.' : ' You can still create it with an override reason.'}`
+    : quotaMessage(quota.items, tenant.name, audience)
 
   return (
     <aside className={cn('flex flex-col gap-5 rounded-card border border-border bg-bg-subtle p-5', className)} aria-label="Resources and estimated cost" aria-live="polite">
       <div>
-        <p className="eyebrow">{previous ? 'Change in resources' : 'Resources'}</p>
+        <p className="eyebrow">{previous ? 'Change in resources' : n > 1 ? `Resources, each of ${n} environments` : 'Resources'}</p>
         <p className="tabular mt-1 text-sm text-text-primary">
           <span className="font-heading text-h3">{alloc.vcpu}</span> vCPU · <span className="font-heading text-h3">{alloc.ramGb}</span> GB RAM
           {alloc.gpus > 0 && (
@@ -66,7 +73,9 @@ export function CostEstimate({ spec, tenant, used, previous, catalog, audience, 
       ) : (
         <div className="flex gap-2.5 rounded-control bg-status-running-bg p-3 text-status-running-fg" role="status">
           <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />
-          <p className="text-caption">Within {tenant.name}’s quota. The Super Admin gives final approval for new infrastructure.</p>
+          <p className="text-caption">
+            Within {tenant.name}’s quota. {adminCreate ? 'Created as soon as you confirm; no approval is needed.' : 'The Super Admin gives final approval for new infrastructure.'}
+          </p>
         </div>
       )}
 
@@ -80,6 +89,7 @@ export function CostEstimate({ spec, tenant, used, previous, catalog, audience, 
         </p>
         <p className="mb-3 text-caption text-text-muted">
           {formatINR(est.total)} a month incl. GST{est.gpuHours > 0 ? ` · ${formatInt(est.gpuHours)} GPU-hours` : ''}
+          {n > 1 ? ` · per environment; ${formatInt(est.total * n)} credits a month for all ${n}` : ''}
         </p>
         <CostBreakdown est={est} />
       </div>
