@@ -12,6 +12,7 @@ import { envPath } from '@/lib/paths'
 import { axisProps, CHART_COLORS, CHART_GRID } from '@/lib/chart'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { TenantProviders } from '@/components/shared/TenantProviders'
+import { EditTenantProvidersDialog } from '@/components/shared/TenantProviderPicker'
 import { KpiCard } from '@/components/shared/KpiCard'
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { EmptyState } from '@/components/shared/EmptyState'
@@ -38,6 +39,7 @@ export default function TenantDetail() {
   const allAudit = useAppStore((s) => s.audit)
   const updateUser = useAppStore((s) => s.updateUser)
   const [editOpen, setEditOpen] = useState(false)
+  const [providersOpen, setProvidersOpen] = useState(false)
   const { askSuspend, reactivate, dialog } = useTenantSuspend()
 
   const members = useMemo(() => allUsers.filter((u) => u.tenantId === id), [allUsers, id])
@@ -143,7 +145,16 @@ export default function TenantDetail() {
         <KpiCard label="Active environments" value={String(envs.filter((e) => e.status === 'active').length)} trend={{ direction: 'flat', text: `${envs.filter((e) => e.status !== 'terminated').length} not terminated` }} />
       </div>
 
-      <TenantProviders tenantId={tenant.id} className="mt-6" />
+      <TenantProviders
+        tenantId={tenant.id}
+        className="mt-6"
+        action={
+          <Button variant="secondary" size="compact" onClick={() => setProvidersOpen(true)}>
+            <Pencil /> Edit providers
+          </Button>
+        }
+      />
+      <EditTenantProvidersDialog tenantId={tenant.id} open={providersOpen} onOpenChange={setProvidersOpen} />
 
       <section className="card mt-6 p-6">
         <h2 className="mb-4 font-heading text-h3 text-text-primary">Quota and allocation</h2>

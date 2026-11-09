@@ -43,8 +43,13 @@ export const isSensitive = (spec: Pick<EnvSpec, 'dataClassification'>) => spec.d
 
 export const isAllowedFor = (p: InfraProvider, tenantId: string) => p.allowedTenants === 'all' || p.allowedTenants.includes(tenantId)
 
-/** Active providers the tenant may use. */
-export const providersFor = (providers: InfraProvider[], tenantId: string) => providers.filter((p) => p.status === 'active' && isAllowedFor(p, tenantId))
+type TenantRef = { id: string; providerIds: string[] }
+
+/** Active providers the Super Admin may offer a tenant (provider-side access). */
+export const providersOfferedTo = (providers: InfraProvider[], tenantId: string) => providers.filter((p) => p.status === 'active' && isAllowedFor(p, tenantId))
+
+/** Providers a tenant can request environments on: offered to it and chosen for it. */
+export const providersFor = (providers: InfraProvider[], tenant: TenantRef) => providersOfferedTo(providers, tenant.id).filter((p) => tenant.providerIds.includes(p.id))
 
 /** Personal and children's data may only use India-resident regions. */
 export const regionsFor = (p: InfraProvider | undefined, sensitive: boolean) => (p?.regions ?? []).filter((r) => !sensitive || r.indiaResident)
@@ -79,8 +84,8 @@ export function applyPlacement(spec: EnvSpec, providerId: string, regionId: stri
  * Makes sure a spec points at a valid provider, region and instance for this tenant and its data.
  * Keeps the current choice where it is still valid; otherwise picks the closest match.
  */
-export function ensurePlacement(spec: EnvSpec, providers: InfraProvider[], tenantId: string): EnvSpec {
-  const allowed = providersFor(providers, tenantId)
+export function ensurePlacement(spec: EnvSpec, providers: InfraProvider[], tenant: TenantRef): EnvSpec {
+  const allowed = providersFor(providers, tenant)
   const provider = allowed.find((p) => p.id === spec.providerId) ?? allowed[0]
   if (!provider) return spec
   const regions = regionsFor(provider, isSensitive(spec))
@@ -106,10 +111,10 @@ export function residencyProblem(spec: EnvSpec, providers: InfraProvider[]): str
 }
 
 /** Ways a project can reach a model, given the providers this tenant may use. */
-export function accessModesFor(model: CatalogItem, providers: InfraProvider[], tenantId: string): AccessMode[] {
+export function accessModesFor(model: CatalogItem, providers: InfraProvider[], tenant: TenantRef): AccessMode[] {
   const modes: AccessMode[] = ['direct']
   if (OPENROUTER_MODELS.has(model.id)) modes.push('openrouter')
-  const services = new Set(providersFor(providers, tenantId).flatMap((p) => p.aiServices))
+  const services = new Set(providersFor(providers, tenant).flatMap((p) => p.aiServices))
   for (const s of MODEL_SERVICES[model.id] ?? []) if (services.has(s)) modes.push(s)
   return modes
 }

@@ -624,6 +624,56 @@ test('13: infrastructure providers, rate cards and the shared cost engine', asyn
   expect(await breakdown(page).innerText()).toBe(wizardText)
 })
 
+test('14: tenants choose their infrastructure providers; the wizard only offers those', async ({ page }) => {
+  await signIn(page, 'Super Admin')
+  await go(page, '/super-admin/tenants')
+  await page.getByRole('button', { name: 'Create tenant' }).click()
+  await dialog(page).getByLabel('Tenant name').fill('Pratham Education Foundation')
+  await dialog(page).getByLabel('Code').fill('PEF-104')
+  await dialog(page).getByLabel('City').fill('Pune')
+  await dialog(page).getByLabel('Contact person').fill('Anjali Deshpande')
+  await dialog(page).getByLabel('Contact email').fill('anjali@pratham.example')
+  await dialog(page).getByRole('button', { name: 'Create tenant' }).click()
+  await expect(dialog(page).getByText('Choose at least one provider')).toBeVisible()
+  const picker = dialog(page).getByRole('group', { name: 'Infrastructure providers' })
+  await picker.getByRole('checkbox', { name: 'E2E Networks' }).click()
+  await picker.getByRole('checkbox', { name: 'Yotta' }).click()
+  await dialog(page).getByRole('button', { name: 'Create tenant' }).click()
+  await expect(page.getByText('Created Pratham Education Foundation.')).toBeVisible()
+  await expect(page.locator('main')).toContainText('E2E Networks')
+  await expect(page.locator('main')).toContainText('Yotta')
+
+  // Providers with running environments can't be taken away.
+  await go(page, '/super-admin/tenants/t-shikshalokam')
+  await page.getByRole('button', { name: 'Edit providers' }).click()
+  await dialog(page).getByRole('checkbox', { name: 'Amazon Web Services' }).click()
+  await dialog(page).getByRole('button', { name: 'Save providers' }).click()
+  await expect(dialog(page).getByRole('alert')).toContainText('Amazon Web Services (“Lesson-plan assistant”)')
+  await page.keyboard.press('Escape')
+
+  // Removing an unused provider takes it out of that tenant's wizard.
+  await go(page, '/super-admin/tenants/t-mantra4change')
+  await page.getByRole('button', { name: 'Edit providers' }).click()
+  await dialog(page).getByRole('checkbox', { name: 'Yotta' }).click()
+  await dialog(page).getByRole('button', { name: 'Save providers' }).click()
+  await expect(page.getByText('Saved Mantra4Change’s providers.')).toBeVisible()
+
+  await signIn(page, 'Mantra4Change · User')
+  await go(page, '/app/environments/new')
+  await page.getByLabel('Environment name').fill('Classroom audio notes')
+  await page.getByRole('button', { name: /^Next:/ }).click()
+  await page.getByRole('combobox', { name: 'Infrastructure provider' }).click()
+  await expect(page.getByRole('option')).toHaveText([/Amazon Web Services/, /Microsoft Azure/, /Google Cloud/, /E2E Networks/])
+  await page.keyboard.press('Escape')
+
+  await signIn(page, 'ShikshaLokam · User')
+  await go(page, '/app/environments/new')
+  await page.getByLabel('Environment name').fill('Phonics practice pilot')
+  await page.getByRole('button', { name: /^Next:/ }).click()
+  await page.getByRole('combobox', { name: 'Infrastructure provider' }).click()
+  await expect(page.getByRole('option', { name: /Google Cloud/ })).toHaveCount(0)
+})
+
 test('responsive screenshots at 375, 768 and 1440 in light and dark', async ({ page }) => {
   await signIn(page, 'ShikshaLokam · Tenant Admin')
   for (const theme of ['light', 'dark'] as const) {

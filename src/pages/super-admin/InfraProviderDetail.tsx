@@ -223,8 +223,12 @@ export default function InfraProviderDetail() {
                 )}
                 <h2 className="mb-3 mt-5 font-heading text-h3 text-text-primary">Access</h2>
                 <p className="text-sm text-text-primary">
-                  {provider.allowedTenants === 'all' ? 'All tenants' : realTenants.filter((t) => (provider.allowedTenants as string[]).includes(t.id)).map((t) => t.name).join(', ') || 'No tenants'}
+                  Offered to: {provider.allowedTenants === 'all' ? 'All tenants' : realTenants.filter((t) => (provider.allowedTenants as string[]).includes(t.id)).map((t) => t.name).join(', ') || 'No tenants'}
                 </p>
+                <p className="mt-1 text-sm text-text-primary">
+                  Chosen by: {realTenants.filter((t) => t.providerIds.includes(provider.id)).map((t) => t.name).join(', ') || 'No tenant yet'}
+                </p>
+                <p className="mt-1 text-caption text-text-muted">Tenants choose their providers on the tenant page.</p>
               </section>
             </div>
           </div>

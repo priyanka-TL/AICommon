@@ -161,7 +161,7 @@ function StepPurpose({ spec, set, errors, projects }: StepProps) {
 
 function StepCompute({ spec, set, providers, tenant, errors, editing }: StepProps) {
   const hours = activeHoursPerMonth(spec.autoShutdownHours)
-  const allowed = providersFor(providers, tenant.id)
+  const allowed = providersFor(providers, tenant)
   const provider = providers.find((p) => p.id === spec.providerId)
   const sensitive = isSensitive(spec)
   const regions = regionsFor(provider, sensitive)
@@ -176,6 +176,15 @@ function StepCompute({ spec, set, providers, tenant, errors, editing }: StepProp
     const it = opts.find((x) => x.id === instanceId) ?? opts.find((x) => x.gpuType === spec.instance.gpuType) ?? opts[0]
     if (!p || !r || !it) return
     set(applyPlacement(spec, p.id, r.id, it, count))
+  }
+
+  if (!allowed.length) {
+    return (
+      <div className="flex gap-3 rounded-card border border-border bg-bg-subtle p-4 text-sm text-text-secondary" role="alert">
+        <ShieldAlert className="mt-0.5 size-5 shrink-0 text-text-muted" aria-hidden />
+        <p>No infrastructure providers are set up for {tenant.name}. Ask the Super Admin to add one before requesting an environment.</p>
+      </div>
+    )
   }
 
   return (
@@ -594,8 +603,8 @@ export default function NewEnvironment() {
     editingEnv
       ? structuredClone(editingEnv.spec)
       : existing && mode !== 'new'
-        ? ensurePlacement(structuredClone(existing.spec), infraProviders, tenant.id)
-        : ensurePlacement({ ...DEFAULT_SPEC, projectId: projects[0]?.id ?? '' }, infraProviders, tenant.id),
+        ? ensurePlacement(structuredClone(existing.spec), infraProviders, tenant)
+        : ensurePlacement({ ...DEFAULT_SPEC, projectId: projects[0]?.id ?? '' }, infraProviders, tenant),
   )
   const [step, setStep] = useState(0)
   const [maxStep, setMaxStep] = useState(mode === 'new' ? 0 : STEPS.length - 1)

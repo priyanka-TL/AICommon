@@ -44,7 +44,7 @@ export default function CatalogDetail() {
 
   if (!item) return <NotFound message="This item isn’t available to your tenant. It may have been removed or not published to you yet." />
 
-  const accessModes = accessModesFor(item, infraProviders, tenant.id)
+  const accessModes = accessModesFor(item, infraProviders, tenant)
   const allowed = item.enabled
   const usedIn = environments.filter(
     (e) =>

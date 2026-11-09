@@ -26,6 +26,8 @@ export interface Tenant {
   quota: Quota
   /** Catalog items this tenant has switched on (subset of what the Super Admin made available). */
   enabledItemIds: string[]
+  /** Infrastructure providers this tenant's environments may run on (chosen by the Super Admin). */
+  providerIds: string[]
   status: TenantStatus
   isSystem: boolean
   createdAt: string

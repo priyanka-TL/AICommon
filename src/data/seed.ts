@@ -34,7 +34,7 @@ import type {
 } from './types'
 
 /** Bump to discard everyone's saved state and load this seed. */
-export const SEED_VERSION = 'v4'
+export const SEED_VERSION = 'v5'
 
 export const DEFAULT_TENANT_ID = 't-default'
 export const SUPER_ADMIN_ID = 'u-super'
@@ -118,6 +118,7 @@ export const seedTenants: Tenant[] = [
     contactEmail: 'admin@sandbox.org',
     quota: { vcpu: 0, ramGb: 0, gpus: 0, storageGb: 0 },
     enabledItemIds: [],
+    providerIds: [],
     status: 'active',
     isSystem: true,
     createdAt: at(400),
@@ -139,6 +140,7 @@ export const seedTenants: Tenant[] = [
       'cap-langgraph', 'cap-crewai', 'cap-llamaindex', 'cap-qdrant', 'cap-pgvector', 'cap-chroma',
       'cap-ragas', 'cap-deepeval', 'cap-promptfoo', 'cap-langflow',
     ],
+    providerIds: ['ip-aws', 'ip-azure', 'ip-e2e', 'ip-yotta', 'ip-onprem'],
     status: 'active',
     isSystem: false,
     createdAt: at(210),
@@ -160,6 +162,7 @@ export const seedTenants: Tenant[] = [
       'cap-langgraph', 'cap-crewai', 'cap-llamaindex', 'cap-weaviate', 'cap-pgvector',
       'cap-ragas', 'cap-promptfoo', 'cap-flowise', 'cap-haystack',
     ],
+    providerIds: ['ip-aws', 'ip-azure', 'ip-gcp', 'ip-e2e', 'ip-yotta'],
     status: 'active',
     isSystem: false,
     createdAt: at(160),

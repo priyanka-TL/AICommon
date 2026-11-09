@@ -129,7 +129,9 @@ interface AppState extends SeedState {
   addProjectCapability: (projectId: string, itemId: string, access?: AccessMode) => Result
 
   // tenants & users
-  createTenant: (t: Pick<Tenant, 'name' | 'code' | 'description' | 'orgType' | 'city' | 'state' | 'contactName' | 'contactEmail' | 'quota'>) => string | null
+  createTenant: (t: Pick<Tenant, 'name' | 'code' | 'description' | 'orgType' | 'city' | 'state' | 'contactName' | 'contactEmail' | 'quota' | 'providerIds'>) => string | null
+  /** Super Admin: the providers a tenant can request environments on. */
+  setTenantProviders: (id: string, providerIds: string[]) => Result
   updateTenant: (id: string, patch: Partial<Pick<Tenant, 'name' | 'description' | 'orgType' | 'city' | 'state' | 'contactName' | 'contactEmail'>>) => void
   setTenantStatus: (id: string, status: Tenant['status']) => void
   setTenantQuota: (id: string, quota: Quota) => void
@@ -225,12 +227,25 @@ export const useAppStore = create<AppState>()(
         }
         return null
       }
+      const providerName = (pid: string) => get().infraProviders.find((p) => p.id === pid)?.name ?? pid
+      /** Why these providers can't be taken away from a tenant (environments still use them), or null. */
+      const removalBlockers = (tenantId: string, providerIds: string[]): string | null => {
+        const live = get().environments.filter((e) => e.tenantId === tenantId && providerIds.includes(e.spec.providerId) && !['terminated', 'provisioning_failed'].includes(e.status))
+        if (!live.length) return null
+        const byProvider = providerIds
+          .map((pid) => ({ pid, envs: live.filter((e) => e.spec.providerId === pid) }))
+          .filter((x) => x.envs.length)
+          .map((x) => `${providerName(x.pid)} (${x.envs.map((e) => `“${e.spec.name}”`).join(', ')})`)
+        return `Still in use by ${tenantName(tenantId)}: ${byProvider.join('; ')}. Stop or terminate those environments first.`
+      }
       /** Provider must be active and allowed for the tenant; personal and children's data must stay in India. */
       const placementProblem = (spec: EnvSpec, tenantId: string): string | null => {
         const p = get().infraProviders.find((x) => x.id === spec.providerId)
         if (!p) return 'Choose an infrastructure provider on the Compute step.'
         if (p.status !== 'active') return `${p.name} is disabled. Choose another provider on the Compute step.`
         if (p.allowedTenants !== 'all' && !p.allowedTenants.includes(tenantId)) return `${p.name} isn’t available to your organisation. Choose another provider.`
+        const tenant = get().tenants.find((t) => t.id === tenantId)
+        if (tenant && !tenant.providerIds.includes(p.id)) return `${p.name} isn’t one of ${tenant.name}’s providers. Choose another provider, or ask the Super Admin to add it.`
         return residencyProblem(spec, get().infraProviders)
       }
       /** QA may act on assigned projects, or any project in the tenant when tenant-wide is allowed. */
@@ -705,11 +720,31 @@ export const useAppStore = create<AppState>()(
         createTenant: (t) => {
           const user = me()
           if (user?.role !== 'super_admin') return null
+          const offered = new Set(get().infraProviders.filter((p) => p.status === 'active').map((p) => p.id))
+          if (!t.providerIds.some((pid) => offered.has(pid))) return null
           const id = uid('t')
           const enabled = get().catalog.filter((c) => c.availability === 'all' && c.status !== 'deprecated').map((c) => c.id)
           set((s) => ({ tenants: [...s.tenants, { ...t, id, enabledItemIds: enabled, status: 'active', isSystem: false, createdAt: now() }] }))
-          audit('tenant.created', 'tenant', id, `${user.name} created the tenant ${t.name}`, id)
+          audit('tenant.created', 'tenant', id, `${user.name} created the tenant ${t.name} with ${t.providerIds.map(providerName).join(', ')}`, id)
           return id
+        },
+
+        setTenantProviders: (id, providerIds) => {
+          const user = me()
+          const t = get().tenants.find((x) => x.id === id)
+          if (!user || user.role !== 'super_admin' || !t || t.isSystem) return fail('Tenant not found.')
+          const ids = [...new Set(providerIds)].filter((pid) => get().infraProviders.some((p) => p.id === pid))
+          if (!ids.length) return fail('Choose at least one provider. People in this tenant can only request environments on these.')
+          const blocked = removalBlockers(id, t.providerIds.filter((pid) => !ids.includes(pid)))
+          if (blocked) return fail(blocked)
+          const added = ids.filter((pid) => !t.providerIds.includes(pid))
+          const removed = t.providerIds.filter((pid) => !ids.includes(pid))
+          if (!added.length && !removed.length) return ok(id)
+          set((s) => ({ tenants: s.tenants.map((x) => (x.id === id ? { ...x, providerIds: ids } : x)) }))
+          const what = [added.length ? `added ${added.map(providerName).join(', ')}` : '', removed.length ? `removed ${removed.map(providerName).join(', ')}` : ''].filter(Boolean).join(' and ')
+          audit('tenant.providers_changed', 'tenant', id, `${user.name} ${what} for ${t.name}`, id)
+          notify(tenantAdmins(id), `The Super Admin ${what}. Environments can be requested on ${ids.map(providerName).join(', ')}.`, () => '/tenant-admin/settings')
+          return ok(id)
         },
 
         updateTenant: (id, patch) => {
@@ -1074,9 +1109,18 @@ export const useAppStore = create<AppState>()(
             const inUse = environmentsInUse(id, get().environments)
             if (inUse.length) return fail(`${p.name} is used by ${inUse.length} environment${inUse.length === 1 ? '' : 's'}. Move or stop them before disabling it.`)
           }
+          const nowAllowed = (tid: string) => input.allowedTenants === 'all' || input.allowedTenants.includes(tid)
+          const dropped = get().tenants.filter((t) => t.providerIds.includes(id) && !nowAllowed(t.id))
+          for (const t of dropped) {
+            const blocked = removalBlockers(t.id, [id])
+            if (blocked) return fail(blocked)
+          }
           const gone = p.regions.filter((r) => !input.regions.some((x) => x.id === r.id)).filter((r) => environmentsInUse(id, get().environments).some((e) => e.spec.regionId === r.id))
           if (gone.length) return fail(`${gone.map((r) => r.name).join(', ')} still has environments, so it can’t be removed.`)
-          set((s) => ({ infraProviders: s.infraProviders.map((x) => (x.id === id ? { ...x, ...input, code: input.code.trim().toUpperCase(), name: input.name.trim() } : x)) }))
+          set((s) => ({
+            infraProviders: s.infraProviders.map((x) => (x.id === id ? { ...x, ...input, code: input.code.trim().toUpperCase(), name: input.name.trim() } : x)),
+            tenants: s.tenants.map((t) => (dropped.some((d) => d.id === t.id) ? { ...t, providerIds: t.providerIds.filter((x) => x !== id) } : t)),
+          }))
           audit('infra_provider.updated', 'infra_provider', id, `${user.name} updated the provider ${input.name.trim()}`, null)
           return ok(id)
         },
