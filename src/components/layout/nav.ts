@@ -5,14 +5,18 @@ import {
   BrainCircuit,
   Building2,
   ClipboardList,
+  Cloud,
   Cpu,
   FlaskConical,
   FolderKanban,
   Gauge,
-  GitPullRequestArrow,
   Inbox,
   LayoutDashboard,
+  FileBarChart,
   Library,
+  ListChecks,
+  Scale,
+  SlidersHorizontal,
   PlugZap,
   ScrollText,
   Server,
@@ -21,7 +25,7 @@ import {
 } from 'lucide-react'
 import type { Role } from '@/data/types'
 
-export type NavBadge = 'tenantReviews' | 'escalated' | 'suggestions'
+export type NavBadge = 'tenantReviews' | 'escalated'
 
 export interface NavItem {
   to: string
@@ -46,14 +50,15 @@ export const NAV: Record<Role, NavSection[]> = {
         { to: '/super-admin/users', label: 'Users', icon: Users },
         { to: '/super-admin/requests', label: 'Requests', icon: Inbox, badge: 'escalated' },
         { to: '/super-admin/infrastructure', label: 'Infrastructure', icon: Server },
+        { to: '/super-admin/projects', label: 'Projects', icon: FolderKanban },
       ],
     },
     {
       label: 'Platform',
       items: [
         { to: '/super-admin/registry', label: 'Model & capability registry', icon: Library },
-        { to: '/super-admin/suggestions', label: 'Capability suggestions', icon: GitPullRequestArrow, badge: 'suggestions' },
-        { to: '/super-admin/providers', label: 'Providers', icon: PlugZap },
+        { to: '/super-admin/infra-providers', label: 'Infrastructure Providers', icon: Cloud },
+        { to: '/super-admin/providers', label: 'Model API providers', icon: PlugZap },
         { to: '/super-admin/capacity', label: 'Platform capacity', icon: Cpu },
       ],
     },
@@ -73,6 +78,7 @@ export const NAV: Record<Role, NavSection[]> = {
         { to: '/tenant-admin/users', label: 'Users', icon: Users },
         { to: '/tenant-admin/projects', label: 'Projects', icon: FolderKanban },
         { to: '/tenant-admin/infrastructure', label: 'Infrastructure', icon: Server },
+        { to: '/tenant-admin/infra-providers', label: 'Infrastructure Providers', icon: Cloud },
         { to: '/tenant-admin/requests', label: 'Requests', icon: Inbox, badge: 'tenantReviews' },
       ],
     },
@@ -81,7 +87,6 @@ export const NAV: Record<Role, NavSection[]> = {
       items: [
         { to: '/tenant-admin/models', label: 'AI Models', icon: BrainCircuit },
         { to: '/tenant-admin/capabilities', label: 'AI Capabilities', icon: Boxes },
-        { to: '/tenant-admin/suggestions', label: 'Capability Suggestions', icon: GitPullRequestArrow, badge: 'suggestions' },
       ],
     },
     {
@@ -94,11 +99,37 @@ export const NAV: Record<Role, NavSection[]> = {
       ],
     },
   ],
+  qa: [
+    { label: 'Overview', items: [{ to: '/qa', label: 'Dashboard', icon: LayoutDashboard, end: true }] },
+    {
+      label: 'Models',
+      items: [
+        { to: '/qa/model-testing', label: 'Model Testing', icon: BrainCircuit },
+        { to: '/qa/comparison', label: 'Model Comparison', icon: Scale },
+        { to: '/qa/configurations', label: 'Test Configurations', icon: SlidersHorizontal },
+      ],
+    },
+    {
+      label: 'Environments',
+      items: [
+        { to: '/qa/functional', label: 'Functional Testing', icon: ListChecks },
+        { to: '/qa/load', label: 'Load Testing', icon: Gauge },
+      ],
+    },
+    {
+      label: 'Results',
+      items: [
+        { to: '/qa/reports', label: 'Test Reports', icon: FileBarChart },
+        { to: '/qa/monitoring', label: 'Monitoring', icon: Activity },
+      ],
+    },
+  ],
   user: [
     {
       label: 'Workspace',
       items: [
         { to: '/app', label: 'Dashboard', icon: LayoutDashboard, end: true },
+        { to: '/app/projects', label: 'Projects', icon: FolderKanban },
         { to: '/app/requests', label: 'My requests', icon: ClipboardList },
       ],
     },
@@ -124,7 +155,9 @@ const SEGMENT_LABELS: Record<string, string> = {
   infrastructure: 'Infrastructure',
   registry: 'Registry',
   catalog: 'Marketplace',
-  providers: 'Providers',
+  providers: 'Model API providers',
+  'infra-providers': 'Infrastructure Providers',
+  'provider-requests': 'Provider requests',
   capacity: 'Platform capacity',
   testing: 'Testing',
   monitoring: 'Monitoring',
@@ -136,10 +169,19 @@ const SEGMENT_LABELS: Record<string, string> = {
   quotas: 'Quotas & Usage',
   settings: 'Settings',
   new: 'New environment',
+  qa: 'QA',
+  'model-testing': 'Model Testing',
+  comparison: 'Model Comparison',
+  configurations: 'Test Configurations',
+  functional: 'Functional Testing',
+  load: 'Load Testing',
+  reports: 'Test Reports',
   edit: 'Edit',
 }
 
-export function segmentLabel(seg: string, role: Role) {
-  if (seg === 'requests' && role === 'user') return 'My requests'
+export function segmentLabel(seg: string, role: Role, prev?: string) {
+  if (seg === 'new' && prev === 'projects') return 'New project'
+  if ((seg === 'requests' || seg === 'suggestions') && role === 'user') return 'My requests'
+  if (seg === 'environments' && role === 'qa') return 'Environments'
   return SEGMENT_LABELS[seg]
 }

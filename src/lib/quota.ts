@@ -1,5 +1,5 @@
-import type { EnvSpec, EnvStatus, Environment, Quota } from '@/data/types'
-import { COMPUTE_TIERS } from './labels'
+import type { EnvSpec, EnvStatus, Environment, Quota, Role } from '@/data/types'
+
 import { formatInt } from './format'
 
 export const RESOURCES: { key: keyof Quota; label: string; unit: string }[] = [
@@ -14,13 +14,13 @@ export const ZERO: Quota = { vcpu: 0, ramGb: 0, gpus: 0, storageGb: 0 }
 /** Statuses that hold allocated resources. */
 export const ALLOCATING: EnvStatus[] = ['provisioning', 'active', 'stopped', 'suspended']
 
+/** Resources a spec holds: the chosen instance type × the number of instances, plus storage. */
 export function allocationOf(spec: EnvSpec): Quota {
-  const tier = COMPUTE_TIERS.find((t) => t.value === spec.compute)!
-  const nodes = tier.gpu ? Math.max(1, spec.gpuCount) : 1
+  const n = Math.max(1, spec.instanceCount)
   return {
-    vcpu: tier.vcpu * nodes,
-    ramGb: tier.ramGb * nodes,
-    gpus: tier.gpu ? nodes : 0,
+    vcpu: spec.instance.vcpu * n,
+    ramGb: spec.instance.ramGb * n,
+    gpus: spec.instance.gpuCount * n,
     storageGb: spec.storageGb,
   }
 }
@@ -44,7 +44,11 @@ export function allocated(envs: Environment[], filter: (e: Environment) => boole
 }
 
 export const tenantAllocated = (envs: Environment[], tenantId: string) => allocated(envs, (e) => e.tenantId === tenantId)
-export const projectAllocated = (envs: Environment[], projectId: string) => allocated(envs, (e) => e.projectId === projectId)
+/** What a project's environments reserve. An environment shared by several projects counts towards each of them. */
+export const projectAllocated = (envs: Environment[], projectId: string, deployments: { envId: string; projectId: string }[]) => {
+  const ids = new Set(deployments.filter((d) => d.projectId === projectId).map((d) => d.envId))
+  return allocated(envs, (e) => ids.has(e.id))
+}
 
 export interface Overage {
   key: keyof Quota
@@ -69,7 +73,7 @@ export function overageText(items: Overage[], orgName: string) {
   return items.map((i) => `${formatInt(i.need)} ${i.unit} needed, ${formatInt(i.left)} left at ${orgName}`).join('; ')
 }
 
-export function quotaMessage(items: Overage[], orgName: string, audience: 'user' | 'tenant_admin' | 'super_admin') {
+export function quotaMessage(items: Overage[], orgName: string, audience: Role) {
   if (!items.length) return null
   const first = items[0]!
   const lead = `This needs ${formatInt(first.need)} ${first.unit}, but ${orgName} has ${formatInt(first.left)} left${items.length > 1 ? `, and it is over on ${items.length - 1} more resource${items.length > 2 ? 's' : ''}` : ''}.`

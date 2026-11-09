@@ -16,6 +16,8 @@ import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHea
 import { ConfirmDialog } from './ConfirmDialog'
 import { AllocationFields } from './AllocationFields'
 import { StatusBadge } from './StatusBadge'
+import { checkProviderCapacity, ProviderCapacityWarning } from './ProviderCapacityWarning'
+import { BudgetCapWarning, requestBudget, useBudgetInputs } from './BudgetCapWarning'
 
 const ICONS: Partial<Record<RequestStatus, typeof CheckCircle2>> = {
   approved: CheckCircle2,
@@ -44,6 +46,9 @@ export function RequestActions({ request, className }: { request: EnvRequest; cl
   const user = useCurrentUser()
   const catalog = useAppStore((s) => s.catalog)
   const projects = useAppStore((s) => s.projects)
+  const infraProviders = useAppStore((s) => s.infraProviders)
+  const allEnvironments = useAppStore((s) => s.environments)
+  const budgetInputs = useBudgetInputs()
   const transition = useAppStore((s) => s.transitionRequest)
   const navigate = useNavigate()
   const [active, setActive] = useState<Transition<RequestStatus> | null>(null)
@@ -91,7 +96,9 @@ export function RequestActions({ request, className }: { request: EnvRequest; cl
   const needsText = active?.requires
   const isForward = active?.to === 'escalated'
   const isApprove = active?.to === 'approved'
-  const changes = editSpec ? diffSpecs(request.spec, editSpec, catalog, projects) : []
+  const changes = editSpec ? diffSpecs(request.spec, editSpec, catalog, projects, infraProviders) : []
+  const budget = requestBudget(request, budgetInputs, editSpec ?? request.spec)
+  const capacity = checkProviderCapacity(editSpec ?? request.spec, request.kind === 'change' ? request.previousSpec : null, infraProviders, allEnvironments)
 
   return (
     <>
@@ -148,6 +155,9 @@ export function RequestActions({ request, className }: { request: EnvRequest; cl
                 </div>
               </div>
             )}
+
+            {(isForward || isApprove) && <BudgetCapWarning check={budget} audience="reviewer" />}
+            {(isForward || isApprove) && <ProviderCapacityWarning spec={editSpec ?? request.spec} previous={request.kind === 'change' ? request.previousSpec : null} />}
 
             {(isForward || isApprove) && (
               <div className="rounded-card border border-border p-4">
@@ -211,7 +221,7 @@ export function RequestActions({ request, className }: { request: EnvRequest; cl
               <Button variant="secondary">Cancel</Button>
             </DialogClose>
             <Button variant={active?.tone === 'destructive' ? 'destructive' : 'primary'} onClick={run}>
-              {isApprove && quota.over ? 'Approve over quota' : active?.label}
+              {isApprove && quota.over ? 'Approve over quota' : isApprove && capacity?.over ? 'Approve over provider capacity' : isApprove && budget?.over ? 'Approve over budget cap' : active?.label}
             </Button>
           </DialogFooter>
         </DialogContent>

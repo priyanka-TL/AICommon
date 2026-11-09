@@ -12,6 +12,11 @@ export function AppEffects() {
     scheduleProvisioning()
   }, [environments, scheduleProvisioning])
 
+  // Runs left half-way by a reload have no timer any more; mark them failed once, on first load.
+  useEffect(() => {
+    useAppStore.getState().recoverDeployments()
+  }, [])
+
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === STORAGE_KEY) void useAppStore.persist.rehydrate()

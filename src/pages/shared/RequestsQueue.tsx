@@ -2,20 +2,22 @@ import { useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ArrowRight, CheckCircle2, Gauge, Inbox, Plus, SearchX, XCircle } from 'lucide-react'
-import type { EnvRequest, QuotaRequest, RequestStatus } from '@/data/types'
+import type { EnvRequest, ProviderRequest, QuotaRequest, Suggestion } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
-import { useScope, useScopedRequests } from '@/store/selectors'
+import { useRequestItems, useScope, useScopedProjects } from '@/store/selectors'
 import { useSimulatedLoading } from '@/hooks/useSimulatedLoading'
 import { allocationOf, checkQuota, RESOURCES, subQuota, tenantAllocated, ZERO } from '@/lib/quota'
 import { formatDate, formatInt, relativeTime } from '@/lib/format'
-import { STATUS_LABELS } from '@/lib/labels'
-import { REQUEST_STATUSES } from '@/lib/lifecycle'
-import { newEnvPath, requestPath } from '@/lib/paths'
+import { useRequestFilters } from '@/hooks/useRequestFilters'
+import { filterCommon, filterItems, sortItems, type RequestItem } from '@/lib/requestItems'
+import { newEnvPath, providerRequestPath, requestPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { EmptyState } from '@/components/shared/EmptyState'
-import { SearchInput } from '@/components/shared/SearchInput'
+import { ItemStatusBadge, RequestFilters, TypeLabel } from '@/components/shared/RequestFilters'
+import { ReviewSheet } from '@/components/shared/SuggestionReview'
+import { requestBudget, useBudgetInputs } from '@/components/shared/BudgetCapWarning'
 import { StatusBadge, Tag } from '@/components/shared/StatusBadge'
 import { CompactTimeline, futureSteps, mergedHistory } from '@/components/shared/LifecycleTimeline'
 import { Avatar } from '@/components/shared/Avatar'
@@ -23,7 +25,6 @@ import { Button } from '@/components/ui/button'
 import { Field } from '@/components/ui/field'
 import { Textarea } from '@/components/ui/input'
 import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 type Tab = 'action' | 'all' | 'quota'
 
@@ -135,25 +136,41 @@ function QuotaRequests() {
 export default function RequestsQueue() {
   const loading = useSimulatedLoading()
   const scope = useScope()!
-  const requests = useScopedRequests()
+  const items = useRequestItems()
+  const projects = useScopedProjects()
   const tenants = useAppStore((s) => s.tenants)
   const users = useAppStore((s) => s.users)
-  const projects = useAppStore((s) => s.projects)
+  const allProjects = useAppStore((s) => s.projects)
   const environments = useAppStore((s) => s.environments)
   const pendingQuota = useAppStore((s) => s.quotaRequests.filter((q) => q.status === 'pending').length)
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
-  const [status, setStatus] = useState<'all' | RequestStatus>('all')
-  const [query, setQuery] = useState('')
+  const { filters, update, clear, active } = useRequestFilters(scope.role)
   const isSuper = scope.role === 'super_admin'
   const tab = (params.get('tab') as Tab) || 'action'
+  const selected = items.find((i): i is Extract<RequestItem, { type: 'capability' }> => i.type === 'capability' && i.id === params.get('id'))?.source ?? null
 
-  const needsMe = (r: EnvRequest) =>
+  const setTab = (t: Tab) =>
+    setParams((prev) => {
+      const next = new URLSearchParams(prev)
+      if (t === 'action') next.delete('tab')
+      else next.set('tab', t)
+      next.delete('id')
+      return next
+    })
+
+  const envNeedsMe = (r: EnvRequest) =>
     isSuper ? r.status === 'escalated' : ['submitted', 'resubmitted', 'under_review'].includes(r.status) && r.raisedByRole !== 'tenant_admin'
+  const capNeedsMe = (s: Suggestion) =>
+    isSuper ? (s.forwarded && ['submitted', 'under_review'].includes(s.status)) || s.status === 'approved_tenant' : ['submitted', 'under_review'].includes(s.status) && !s.forwarded
+  const provNeedsMe = (r: ProviderRequest) => (isSuper ? r.status === 'escalated' : r.raisedByRole === 'user' && ['submitted', 'under_review', 'resubmitted'].includes(r.status))
+  const needsMe = (i: RequestItem) => (i.type === 'environment' ? envNeedsMe(i.source) : i.type === 'provider' ? provNeedsMe(i.source) : capNeedsMe(i.source))
 
   const overQuota = useMemo(() => {
     const m = new Map<string, boolean>()
-    for (const r of requests) {
+    for (const i of items) {
+      if (i.type !== 'environment') continue
+      const r = i.source
       if (!['submitted', 'under_review', 'resubmitted', 'escalated'].includes(r.status)) continue
       const t = tenants.find((x) => x.id === r.tenantId)
       if (!t) continue
@@ -163,54 +180,92 @@ export default function RequestsQueue() {
       m.set(r.id, checkQuota(t.quota, tenantAllocated(environments, t.id), extra).over)
     }
     return m
-  }, [requests, tenants, environments])
+  }, [items, tenants, environments])
 
-  const actionCount = requests.filter(needsMe).length
-  const rows = requests
-    .filter((r) => (tab === 'action' ? needsMe(r) : true))
-    .filter((r) => status === 'all' || r.status === status)
-    .filter((r) => {
-      const q = query.trim().toLowerCase()
-      if (!q) return true
-      const who = users.find((u) => u.id === r.requesterId)?.name ?? ''
-      return [r.spec.name, who].some((s) => s.toLowerCase().includes(q))
+  const budgetInputs = useBudgetInputs()
+  const overBudget = useMemo(() => {
+    const m = new Map<string, boolean>()
+    for (const i of items) {
+      if (i.type !== 'environment' || !['submitted', 'under_review', 'resubmitted', 'escalated'].includes(i.source.status)) continue
+      m.set(i.id, !!requestBudget(i.source, budgetInputs)?.over)
+    }
+    return m
+  }, [items, budgetInputs])
+
+  const requesterName = (i: RequestItem) => users.find((u) => u.id === i.requesterId)?.name ?? ''
+  const tabItems = tab === 'action' ? items.filter(needsMe) : items
+  const common = filterCommon(tabItems, filters, (i) => [requesterName(i)])
+  const counts = {
+    all: common.length,
+    environment: common.filter((i) => i.type === 'environment').length,
+    capability: common.filter((i) => i.type === 'capability').length,
+    provider: common.filter((i) => i.type === 'provider').length,
+  }
+  const actionCount = items.filter(needsMe).length
+  const rows = sortItems(filterItems(tabItems, filters, (i) => [requesterName(i)]), filters.sort)
+
+  const openItem = (i: RequestItem) => {
+    if (i.type === 'environment') return navigate(requestPath(scope.role, i.id))
+    if (i.type === 'provider') return navigate(providerRequestPath(scope.role, i.id))
+    setParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('id', i.id)
+      return next
     })
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  }
 
-  const columns: Column<EnvRequest>[] = [
+  const columns: Column<RequestItem>[] = [
+    { key: 'type', header: 'Type', cell: (i) => <TypeLabel type={i.type} /> },
     {
       key: 'name',
       header: 'Request',
-      cell: (r) => (
+      cell: (i) => (
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="truncate font-semibold text-text-primary">{r.spec.name}</span>
-            {r.kind === 'change' && <Tag>Change</Tag>}
+            <span className="truncate font-semibold text-text-primary">{i.name}</span>
+            {i.type === 'environment' && i.source.kind === 'change' && <Tag>Change</Tag>}
           </div>
-          <span className="text-caption text-text-muted">{users.find((u) => u.id === r.requesterId)?.name}</span>
+          <span className="text-caption text-text-muted">
+            {requesterName(i)} · <span className="font-mono text-xs">{i.id}</span>
+          </span>
         </div>
       ),
     },
-    ...(isSuper ? [{ key: 'tenant', header: 'Tenant', cell: (r: EnvRequest) => <span>{tenants.find((t) => t.id === r.tenantId)?.name}</span> }] : []),
-    { key: 'project', header: 'Project', cell: (r) => <span className="text-text-secondary">{projects.find((p) => p.id === r.spec.projectId)?.name}</span>, className: 'hidden xl:table-cell' },
+    ...(isSuper ? [{ key: 'tenant', header: 'Tenant', cell: (i: RequestItem) => <span>{tenants.find((t) => t.id === i.tenantId)?.name}</span> }] : []),
+    {
+      key: 'where',
+      header: 'Project or repository',
+      cell: (i) =>
+        i.type === 'capability' ? (
+          <span className="block max-w-[200px] truncate font-mono text-caption text-text-secondary" title={i.repo ?? undefined}>
+            {i.repo}
+          </span>
+        ) : (
+          <span className="text-text-secondary">{allProjects.find((p) => p.id === i.projectId)?.name}</span>
+        ),
+      className: 'hidden xl:table-cell',
+    },
     {
       key: 'progress',
       header: 'Progress',
-      cell: (r) => {
+      cell: (i) => {
+        if (i.type !== 'environment') return <span className="text-caption text-text-muted">Submitted {formatDate(i.submittedAt)}</span>
+        const r = i.source
         const env = r.kind === 'new' && r.envId ? environments.find((e) => e.id === r.envId) : null
         const ev = mergedHistory(r, env)
         return <CompactTimeline events={ev} future={futureSteps(ev, r)} />
       },
       className: 'hidden lg:table-cell',
     },
-    { key: 'updated', header: 'Updated', cell: (r) => <span className="text-text-secondary" title={formatDate(r.updatedAt)}>{relativeTime(r.updatedAt)}</span>, className: 'hidden md:table-cell' },
+    { key: 'updated', header: 'Updated', cell: (i) => <span className="text-text-secondary" title={formatDate(i.updatedAt)}>{relativeTime(i.updatedAt)}</span>, className: 'hidden md:table-cell' },
     {
       key: 'status',
       header: 'Status',
-      cell: (r) => (
+      cell: (i) => (
         <div className="flex flex-wrap gap-1.5">
-          <StatusBadge status={r.status} />
-          {overQuota.get(r.id) && <StatusBadge status="over-quota" />}
+          <ItemStatusBadge item={i} />
+          {overQuota.get(i.id) && <StatusBadge status="over-quota" />}
+          {overBudget.get(i.id) && <StatusBadge status="over-quota" label="Over budget cap" />}
         </div>
       ),
     },
@@ -218,7 +273,7 @@ export default function RequestsQueue() {
 
   const tabs: [Tab, string, number?][] = isSuper
     ? [
-        ['action', 'Escalated to you', actionCount],
+        ['action', 'Waiting for you', actionCount],
         ['all', 'All requests'],
         ['quota', 'Quota requests', pendingQuota],
       ]
@@ -230,12 +285,12 @@ export default function RequestsQueue() {
   return (
     <>
       <PageHeader
-        eyebrow={isSuper ? 'Approvals' : 'Approvals'}
+        eyebrow="Approvals"
         title="Requests"
         description={
           isSuper
-            ? 'Tenant Admins forward requests for new infrastructure here. You give the final approval.'
-            : 'Review requests from your tenant. Reject, ask for changes, or forward them to the Super Admin for approval.'
+            ? 'Infrastructure requests and capability suggestions forwarded by Tenant Admins. You give the final approval and decide what is published.'
+            : 'Environment requests and capability suggestions from your tenant. Approve, ask for changes, or forward them to the Super Admin.'
         }
         actions={
           !isSuper && (
@@ -252,7 +307,7 @@ export default function RequestsQueue() {
             key={t}
             role="tab"
             aria-selected={tab === t}
-            onClick={() => setParams({ tab: t })}
+            onClick={() => setTab(t)}
             className={cn(
               '-mb-px flex items-center gap-2 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-semibold',
               tab === t ? 'border-indigo text-indigo-text' : 'border-transparent text-text-secondary hover:text-text-primary',
@@ -268,39 +323,24 @@ export default function RequestsQueue() {
         <QuotaRequests />
       ) : (
         <>
-          <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_220px]">
-            <SearchInput value={query} onChange={setQuery} placeholder="Search by name or person" />
-            <Select value={status} onValueChange={(v) => setStatus(v as typeof status)}>
-              <SelectTrigger aria-label="Filter by status">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All statuses</SelectItem>
-                {REQUEST_STATUSES.filter((s) => s !== 'draft').map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {STATUS_LABELS[s]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <RequestFilters role={scope.role} filters={filters} update={update} clear={clear} active={active} counts={counts} projects={projects} />
           <DataTable
             loading={loading}
             rows={rows}
             columns={columns}
-            rowKey={(r) => r.id}
-            rowLabel={(r) => `Open request ${r.spec.name}`}
-            onRowClick={(r) => navigate(requestPath(scope.role, r.id))}
+            rowKey={(i) => `${i.type}-${i.id}`}
+            rowLabel={(i) => `Open request ${i.name}`}
+            onRowClick={openItem}
             empty={
-              query || status !== 'all' ? (
-                <EmptyState icon={SearchX} title="No requests match these filters" action={<Button variant="secondary" onClick={() => { setQuery(''); setStatus('all') }}>Clear filters</Button>} />
+              active || filters.type !== 'all' ? (
+                <EmptyState icon={SearchX} title="No requests match these filters" action={<Button variant="secondary" onClick={() => (active ? clear() : update({ type: 'all' }))}>{active ? 'Clear filters' : 'Show all types'}</Button>} />
               ) : (
                 <EmptyState
                   icon={Inbox}
                   title={tab === 'action' ? 'Nothing is waiting for you' : 'No requests yet'}
                   action={
                     tab === 'action' ? (
-                      <Button variant="secondary" onClick={() => setParams({ tab: 'all' })}>
+                      <Button variant="secondary" onClick={() => setTab('all')}>
                         See all requests <ArrowRight />
                       </Button>
                     ) : undefined
@@ -308,23 +348,34 @@ export default function RequestsQueue() {
                 />
               )
             }
-            mobileCard={(r) => (
+            mobileCard={(i) => (
               <div className="flex flex-col gap-2">
                 <div className="flex items-start justify-between gap-3">
-                  <span className="font-semibold text-text-primary">{r.spec.name}</span>
-                  <StatusBadge status={r.status} />
+                  <span className="font-semibold text-text-primary">{i.name}</span>
+                  <ItemStatusBadge item={i} />
                 </div>
+                <TypeLabel type={i.type} className="text-caption" />
                 <div className="flex items-center gap-2 text-caption text-text-secondary">
-                  <Avatar name={users.find((u) => u.id === r.requesterId)?.name ?? '?'} size="sm" />
-                  {users.find((u) => u.id === r.requesterId)?.name}
-                  {isSuper && <> · {tenants.find((t) => t.id === r.tenantId)?.name}</>} · {relativeTime(r.updatedAt)}
+                  <Avatar name={requesterName(i) || '?'} size="sm" />
+                  {requesterName(i)}
+                  {isSuper && <> · {tenants.find((t) => t.id === i.tenantId)?.name}</>} · {relativeTime(i.updatedAt)}
                 </div>
-                {overQuota.get(r.id) && <StatusBadge status="over-quota" className="self-start" />}
+                {overQuota.get(i.id) && <StatusBadge status="over-quota" className="self-start" />}
               </div>
             )}
           />
         </>
       )}
+      <ReviewSheet
+        suggestion={selected}
+        onClose={() =>
+          setParams((prev) => {
+            const next = new URLSearchParams(prev)
+            next.delete('id')
+            return next
+          })
+        }
+      />
     </>
   )
 }

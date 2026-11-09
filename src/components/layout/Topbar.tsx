@@ -13,6 +13,7 @@ import { Avatar } from '@/components/shared/Avatar'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/controls'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,6 +35,8 @@ function Breadcrumb() {
   const catalog = useAppStore((s) => s.catalog)
   const requests = useAppStore((s) => s.requests)
   const projects = useAppStore((s) => s.projects)
+  const infraProviders = useAppStore((s) => s.infraProviders)
+  const providerRequests = useAppStore((s) => s.providerRequests)
   if (!user) return null
 
   const segs = pathname.split('/').filter(Boolean)
@@ -41,10 +44,15 @@ function Breadcrumb() {
     .map((seg, i) => {
       const to = '/' + segs.slice(0, i + 1).join('/')
       const label =
-        segmentLabel(seg, user.role) ??
+        segmentLabel(seg, user.role, segs[i - 1]) ??
         environments.find((e) => e.id === seg)?.spec.name ??
         requests.find((r) => r.id === seg)?.spec.name ??
         projects.find((p) => p.id === seg)?.name ??
+        infraProviders.find((p) => p.id === seg)?.name ??
+        (() => {
+          const pr = providerRequests.find((x) => x.id === seg)
+          return pr ? `${infraProviders.find((p) => p.id === pr.providerId)?.name ?? ''} access` : undefined
+        })() ??
         tenants.find((t) => t.id === seg)?.name ??
         catalog.find((c) => c.id === seg)?.name ??
         seg
@@ -92,6 +100,17 @@ function TenantFilter() {
         ))}
       </SelectContent>
     </Select>
+  )
+}
+
+function QaScopeSwitch() {
+  const on = useSessionStore((s) => s.qaTenantWide)
+  const set = useSessionStore((s) => s.setQaTenantWide)
+  return (
+    <label className="hidden shrink-0 cursor-pointer items-center gap-2 text-caption font-semibold text-text-secondary sm:flex">
+      <Switch checked={on} onCheckedChange={set} aria-label="Tenant-wide view" />
+      Tenant-wide
+    </label>
   )
 }
 
@@ -310,6 +329,7 @@ export function Topbar({ onOpenMenu }: { onOpenMenu: () => void }) {
         <Breadcrumb />
       </div>
       {user?.role === 'super_admin' && <TenantFilter />}
+      {user?.role === 'qa' && user.qa?.tenantWideAllowed && <QaScopeSwitch />}
       <GlobalSearch />
       <Notifications />
       <UserMenu />

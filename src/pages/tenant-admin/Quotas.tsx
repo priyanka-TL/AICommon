@@ -8,6 +8,7 @@ import { formatInt, relativeTime } from '@/lib/format'
 import { addQuota, projectAllocated, RESOURCES, tenantAllocated, ZERO } from '@/lib/quota'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { SpendThisMonth } from '@/components/shared/SpendThisMonth'
 import { ResourceQuota } from '@/components/shared/ResourceQuota'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
@@ -21,6 +22,7 @@ export default function Quotas() {
   const tenant = useCurrentTenant()!
   const projects = useScopedProjects(false)
   const environments = useAppStore((s) => s.environments)
+  const deployments = useAppStore((s) => s.deployments)
   const quotaRequests = useAppStore((s) => s.quotaRequests.filter((q) => q.tenantId === tenant.id))
   const usage = useAppStore((s) => s.usage)
   const updateProject = useAppStore((s) => s.updateProject)
@@ -81,6 +83,8 @@ export default function Quotas() {
         <ResourceQuota used={used} total={tenant.quota} className="lg:grid-cols-4" />
       </section>
 
+      <SpendThisMonth tenantId={tenant.id} className="mt-6" />
+
       <section className="card mt-6 p-6">
         <h2 className="mb-1 font-heading text-h3 text-text-primary">Split across projects</h2>
         <p className="mb-5 text-caption text-text-secondary">Requests over a project’s limit are flagged to reviewers. The split can’t add up to more than the tenant quota.</p>
@@ -99,7 +103,7 @@ export default function Quotas() {
             </thead>
             <tbody className="divide-y divide-border">
               {projects.map((p) => {
-                const pu = projectAllocated(environments, p.id)
+                const pu = projectAllocated(environments, p.id, deployments)
                 return (
                   <tr key={p.id}>
                     <td className="py-3 pr-3 font-semibold text-text-primary">{p.name}</td>

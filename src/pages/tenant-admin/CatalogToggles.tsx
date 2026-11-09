@@ -16,7 +16,7 @@ import { Switch } from '@/components/ui/controls'
 import { cn } from '@/lib/utils'
 
 const GROUPS: Record<'models' | 'capabilities', CatalogCategory[]> = {
-  models: ['llm', 'asr'],
+  models: ['llm', 'asr', 'embedding'],
   capabilities: ['agent-framework', 'vector-db', 'evaluation', 'low-code'],
 }
 
@@ -25,6 +25,7 @@ export default function CatalogToggles({ mode }: { mode: 'models' | 'capabilitie
   const items = useTenantCatalog()
   const environments = useAppStore((s) => s.environments)
   const setItemEnabled = useAppStore((s) => s.setItemEnabled)
+  const projects = useAppStore((s) => s.projects)
   const [params] = useSearchParams()
   const focus = params.get('item')
   const [query, setQuery] = useState('')
@@ -73,6 +74,13 @@ export default function CatalogToggles({ mode }: { mode: 'models' | 'capabilitie
                             {i.status !== 'active' && <CatalogStatusBadge status={i.status} />}
                             {i.origin === 'suggestion' && <Tag>Suggested by your team</Tag>}
                             {i.availability !== 'all' && <Tag>Only for {tenant.name}</Tag>}
+                            {projects
+                              .filter((p) => p.tenantId === tenant.id && p.recommendation?.modelId === i.id)
+                              .map((p) => (
+                                <Tag key={p.id} className="border-indigo bg-indigo-50 text-indigo-text">
+                                  Recommended for {p.name}
+                                </Tag>
+                              ))}
                           </p>
                           <p className="text-caption text-text-secondary">
                             {i.provider} · {i.hosting === 'hosted' ? 'Hosted API' : 'Open source'} · {i.licence} · {costLabel(i)}

@@ -3,10 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import { Eye, Plus, SearchX, ServerOff } from 'lucide-react'
 import type { Environment, EnvStatus } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
-import { useScope, useScopedEnvironments, useScopedProjects } from '@/store/selectors'
+import { useHostedProjectIds, useScope, useScopedEnvironments, useScopedProjects } from '@/store/selectors'
 import { useSimulatedLoading } from '@/hooks/useSimulatedLoading'
 import { formatDate, formatInt } from '@/lib/format'
 import { computeLabel, STATUS_LABELS } from '@/lib/labels'
+import { needsMigration } from '@/lib/providers'
+import { MigrateBadge } from '@/components/shared/TenantProviders'
 import { allocationOf, tenantAllocated } from '@/lib/quota'
 import { envPath, newEnvPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
@@ -29,7 +31,10 @@ export default function Infrastructure() {
   const scope = useScope()!
   const [showTerminated, setShowTerminated] = useState(false)
   const environments = useScopedEnvironments(true)
+  const tenantsAll = useAppStore((s) => s.tenants)
   const projects = useScopedProjects()
+  const hosted = useHostedProjectIds()
+  const projectNames = (envId: string) => (hosted.get(envId) ?? []).map((pid) => projects.find((p) => p.id === pid)?.name).filter(Boolean).join(', ') || 'No projects yet'
   const tenants = useAppStore((s) => s.tenants)
   const users = useAppStore((s) => s.users)
   const allEnvs = useAppStore((s) => s.environments)
@@ -46,10 +51,10 @@ export default function Infrastructure() {
     return environments.filter(
       (e) =>
         (showTerminated || e.status !== 'terminated') &&
-        (projectId === 'all' || e.projectId === projectId) &&
+        (projectId === 'all' || !!hosted.get(e.id)?.includes(projectId)) &&
         (!q || [e.spec.name, users.find((u) => u.id === e.ownerId)?.name ?? ''].some((s) => s.toLowerCase().includes(q))),
     )
-  }, [environments, showTerminated, projectId, query, users])
+  }, [environments, showTerminated, projectId, query, users, hosted])
 
   const counts = Object.fromEntries(STATUSES.map((s) => [s, base.filter((e) => e.status === s).length])) as Record<EnvStatus, number>
   const rows = base.filter((e) => status === 'all' || e.status === status).sort((a, b) => STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status))
@@ -66,7 +71,7 @@ export default function Infrastructure() {
       ),
     },
     ...(isSuper ? [{ key: 'tenant', header: 'Tenant', cell: (e: Environment) => <span>{tenants.find((t) => t.id === e.tenantId)?.name}</span> }] : []),
-    { key: 'project', header: 'Project', cell: (e) => <span className="text-text-secondary">{projects.find((p) => p.id === e.projectId)?.name}</span>, className: 'hidden xl:table-cell' },
+    { key: 'project', header: 'Project', cell: (e) => <span className="text-text-secondary">{projectNames(e.id)}</span>, className: 'hidden xl:table-cell' },
     {
       key: 'compute',
       header: 'Allocation',
@@ -82,7 +87,16 @@ export default function Infrastructure() {
       className: 'hidden lg:table-cell',
     },
     { key: 'expires', header: 'Expires', cell: (e) => <span className="text-text-secondary">{e.expiresAt ? formatDate(e.expiresAt) : '—'}</span>, className: 'hidden xl:table-cell' },
-    { key: 'status', header: 'Status', cell: (e) => <StatusBadge status={e.status} /> },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (e) => (
+        <div className="flex flex-wrap gap-1.5">
+          <StatusBadge status={e.status} />
+          {needsMigration(e, tenantsAll) && <MigrateBadge />}
+        </div>
+      ),
+    },
     {
       key: 'actions',
       header: '',
@@ -186,7 +200,7 @@ export default function Infrastructure() {
             </div>
             <p className="text-caption text-text-muted">
               {isSuper ? `${tenants.find((t) => t.id === e.tenantId)?.name} · ` : ''}
-              {projects.find((p) => p.id === e.projectId)?.name} · {computeLabel(e.spec.compute)}
+              {projectNames(e.id)} · {computeLabel(e.spec.compute)}
             </p>
           </div>
         )}

@@ -1,11 +1,13 @@
 import { AlertTriangle, CheckCircle2 } from 'lucide-react'
 import type { CatalogItem, EnvSpec, Quota, Role, Tenant } from '@/data/types'
-import { estimateCost } from '@/lib/cost'
+import { costBreakdown } from '@/lib/cost'
+import { useCostContext } from '@/store/selectors'
 import { allocationOf, checkQuota, quotaMessage, subQuota } from '@/lib/quota'
 import { formatINR, formatInt } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { CostBreakdown } from './CostBreakdown'
 import { ResourceQuota } from './ResourceQuota'
+import { BudgetCapWarning, useSpecBudget } from './BudgetCapWarning'
 
 interface Props {
   spec: EnvSpec
@@ -17,10 +19,14 @@ interface Props {
   catalog: CatalogItem[]
   audience: Role
   className?: string
+  /** When editing, the environment being changed (its own cost isn't counted twice). */
+  editingEnvId?: string
 }
 
-export function CostEstimate({ spec, tenant, used, previous, catalog, audience, className }: Props) {
-  const est = estimateCost(spec, catalog)
+export function CostEstimate({ spec, tenant, used, previous, catalog, audience, className, editingEnvId }: Props) {
+  const budget = useSpecBudget(spec, tenant.id, editingEnvId)
+  const ctx = useCostContext(tenant.id)
+  const est = costBreakdown(spec, { ...ctx, catalog })
   const alloc = allocationOf(spec)
   const extra = previous ? subQuota(alloc, allocationOf(previous)) : alloc
   const positive: Quota = { vcpu: Math.max(0, extra.vcpu), ramGb: Math.max(0, extra.ramGb), gpus: Math.max(0, extra.gpus), storageGb: Math.max(0, extra.storageGb) }
@@ -64,13 +70,17 @@ export function CostEstimate({ spec, tenant, used, previous, catalog, audience, 
         </div>
       )}
 
+      <BudgetCapWarning check={budget} audience="requester" />
+
       <div className="border-t border-border pt-4">
         <p className="eyebrow">Estimated cost</p>
         <p className="mt-1 flex items-baseline gap-2">
-          <span className="tabular font-heading text-kpi text-text-primary">{formatInt(est.credits)}</span>
+          <span className="tabular font-heading text-kpi text-text-primary">{formatInt(est.total)}</span>
           <span className="text-sm text-text-secondary">credits / month</span>
         </p>
-        <p className="mb-3 text-caption text-text-muted">About {formatINR(est.credits)} a month</p>
+        <p className="mb-3 text-caption text-text-muted">
+          {formatINR(est.total)} a month incl. GST{est.gpuHours > 0 ? ` · ${formatInt(est.gpuHours)} GPU-hours` : ''}
+        </p>
         <CostBreakdown est={est} />
       </div>
     </aside>

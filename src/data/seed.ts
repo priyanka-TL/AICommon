@@ -2,27 +2,45 @@ import type {
   ActorRole,
   AuditEntry,
   CatalogItem,
+  ComputeTier,
+  Dataset,
+  Deployment,
+  DeploymentConfig,
+  DeploymentVersion,
   EnvRequest,
   EnvSpec,
   EnvStatus,
   Environment,
+  GpuType,
+  InfraProvider,
+  InstanceType,
   LifecycleEvent,
+  Language,
   LifecycleStatus,
   Notification,
   Project,
   Provider,
+  ProviderApproval,
+  ProviderRequest,
+  QaMetric,
+  QaRun,
   Quota,
   QuotaRequest,
+  RateCard,
+  Region,
   Role,
   Suggestion,
   Tenant,
+  TestConfig,
+  TestConfigSpec,
   TestRun,
   UsagePoint,
   User,
 } from './types'
+import { SEEDED_BUILD_ERROR, STEP_ORDER } from '@/lib/deploy'
 
 /** Bump to discard everyone's saved state and load this seed. */
-export const SEED_VERSION = 'v2'
+export const SEED_VERSION = 'v8'
 
 export const DEFAULT_TENANT_ID = 't-default'
 export const SUPER_ADMIN_ID = 'u-super'
@@ -34,6 +52,8 @@ export const QUICK_SIGN_IN: { userId: string; label: string }[] = [
   { userId: 'u-sl-dev', label: 'ShikshaLokam · User' },
   { userId: 'u-m4c-ta', label: 'Mantra4Change · Tenant Admin' },
   { userId: 'u-m4c-dev', label: 'Mantra4Change · User' },
+  { userId: 'u-sl-qa', label: 'ShikshaLokam · QA Engineer' },
+  { userId: 'u-m4c-qa', label: 'Mantra4Change · QA Engineer' },
 ]
 
 /* ---------- deterministic helpers ---------- */
@@ -91,6 +111,16 @@ const ev = (status: LifecycleStatus, when: string, actorId: string, actorRole: A
 const SL = 't-shikshalokam'
 const M4C = 't-mantra4change'
 
+const approval = (providerId: string, regionIds: string[], budgetCap: number, days: number): ProviderApproval => ({
+  providerId,
+  regionIds,
+  budgetCap,
+  approvedAt: at(days),
+  approvedById: SUPER_ADMIN_ID,
+  requestId: null,
+  status: 'approved',
+})
+
 export const seedTenants: Tenant[] = [
   {
     id: DEFAULT_TENANT_ID,
@@ -104,6 +134,8 @@ export const seedTenants: Tenant[] = [
     contactEmail: 'admin@sandbox.org',
     quota: { vcpu: 0, ramGb: 0, gpus: 0, storageGb: 0 },
     enabledItemIds: [],
+    approvedProviders: [],
+    connectedKeys: [],
     status: 'active',
     isSystem: true,
     createdAt: at(400),
@@ -124,6 +156,12 @@ export const seedTenants: Tenant[] = [
       'asr-indicconformer', 'asr-bhashini', 'asr-sarvam', 'asr-whisper', 'asr-google', 'asr-azure',
       'cap-langgraph', 'cap-crewai', 'cap-llamaindex', 'cap-qdrant', 'cap-pgvector', 'cap-chroma',
       'cap-ragas', 'cap-deepeval', 'cap-promptfoo', 'cap-langflow',
+      'emb-bge-m3', 'cap-langchain', 'cap-langfuse',
+    ],
+    connectedKeys: ['SARVAM_API_KEY', 'OPENAI_API_KEY', 'QDRANT_API_KEY'],
+    approvedProviders: [
+      approval('ip-aws', ['aws-mum', 'aws-hyd', 'aws-sin'], 60000, 180),
+      approval('ip-e2e', ['e2e-del', 'e2e-mum'], 95000, 180),
     ],
     status: 'active',
     isSystem: false,
@@ -145,7 +183,10 @@ export const seedTenants: Tenant[] = [
       'asr-bhashini',
       'cap-langgraph', 'cap-crewai', 'cap-llamaindex', 'cap-weaviate', 'cap-pgvector',
       'cap-ragas', 'cap-promptfoo', 'cap-flowise', 'cap-haystack',
+      'cap-qdrant', 'emb-bge-m3', 'cap-langchain', 'cap-langfuse',
     ],
+    connectedKeys: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
+    approvedProviders: [approval('ip-azure', ['azr-cin', 'azr-sin'], 120000, 150)],
     status: 'active',
     isSystem: false,
     createdAt: at(160),
@@ -174,6 +215,7 @@ export const seedUsers: User[] = [
   u('u-sl-kiran', 'Kiran Hegde', 'kiran.hegde@shikshalokam.org', 'Backend developer', SL, 'user', hoursAgo(50)),
   u('u-sl-fatima', 'Fatima Sheikh', 'fatima.sheikh@shikshalokam.org', 'Speech researcher', SL, 'user', hoursAgo(8)),
   u('u-sl-vikram', 'Vikram Patil', 'vikram.patil@shikshalokam.org', 'Intern', SL, 'user', at(45), 'deactivated'),
+  { ...u('u-sl-qa', 'Lakshmi Iyer', 'qa@shikshalokam.org', 'QA engineer', SL, 'qa', hoursAgo(7)), qa: { projectIds: ['p-sl-teacher', 'p-sl-edu'], tenantWideAllowed: false } },
 
   u('u-m4c-ta', 'Sneha Kulkarni', 'tenantadmin@mantra4change.org', 'Head of technology', M4C, 'tenant_admin', hoursAgo(4)),
   u('u-m4c-dev', 'Rahul Menon', 'developer@mantra4change.org', 'Full-stack developer', M4C, 'user', hoursAgo(6)),
@@ -181,20 +223,77 @@ export const seedUsers: User[] = [
   u('u-m4c-sanjay', 'Sanjay Gupta', 'sanjay.gupta@mantra4change.org', 'ML engineer', M4C, 'user', hoursAgo(12)),
   u('u-m4c-aisha', 'Aisha Khan', 'aisha.khan@mantra4change.org', 'Product manager', M4C, 'user', hoursAgo(20)),
   u('u-m4c-manoj', 'Manoj Das', 'manoj.das@mantra4change.org', 'Developer', M4C, 'user', at(60), 'deactivated'),
+  { ...u('u-m4c-qa', 'Imran Qureshi', 'qa@mantra4change.org', 'QA engineer', M4C, 'qa', hoursAgo(9)), qa: { projectIds: ['p-m4c-docs'], tenantWideAllowed: true } },
 ]
 
 /* ---------- projects ---------- */
 
 const q = (vcpu: number, ramGb: number, gpus: number, storageGb: number): Quota => ({ vcpu, ramGb, gpus, storageGb })
 
-export const seedProjects: Project[] = [
-  { id: 'p-sl-edu', tenantId: SL, name: 'AI Education Assistant', description: 'Reading and maths help for children in Kannada and Hindi.', ownerId: 'u-sl-ta', memberIds: ['u-sl-dev', 'u-sl-meera'], status: 'active', limits: q(48, 192, 2, 1000), capabilityIds: ['cap-langgraph', 'cap-qdrant'], createdAt: at(200) },
-  { id: 'p-sl-teacher', tenantId: SL, name: 'Teacher Support Chatbot', description: 'Answers teachers’ questions on lesson planning and classroom practice.', ownerId: 'u-sl-ta', memberIds: ['u-sl-dev', 'u-sl-kiran'], status: 'active', limits: q(40, 160, 2, 800), capabilityIds: ['cap-llamaindex'], createdAt: at(180) },
-  { id: 'p-sl-speech', tenantId: SL, name: 'Multilingual Speech Recognition', description: 'Speech models for Indian languages, tested with classroom audio.', ownerId: 'u-sl-ta', memberIds: ['u-sl-fatima', 'u-sl-meera'], status: 'active', limits: q(40, 160, 2, 1200), capabilityIds: ['cap-deepeval'], createdAt: at(150) },
+type ProjectSeed = Omit<Project, 'memberAccess' | 'capabilityVersions' | 'updatedAt' | 'updatedById' | 'repoUrl' | 'defaultBranch' | 'type' | 'defaultRuntime' | 'defaultRuntimeVersion'> &
+  Partial<Pick<Project, 'memberAccess' | 'capabilityVersions' | 'repoUrl' | 'defaultBranch' | 'type' | 'defaultRuntime' | 'defaultRuntimeVersion'>> & { updatedDaysAgo?: number; updatedById?: string }
 
-  { id: 'p-m4c-coach', tenantId: M4C, name: 'School Leader Coaching Assistant', description: 'Helps school leaders plan improvement goals and reflect on progress.', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-dev', 'u-m4c-aisha'], status: 'active', limits: q(40, 160, 2, 800), capabilityIds: ['cap-crewai'], createdAt: at(150) },
-  { id: 'p-m4c-docs', tenantId: M4C, name: 'Document Intelligence', description: 'Reads scanned school records and forms into structured data.', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-sanjay', 'u-m4c-dev'], status: 'active', limits: q(32, 128, 1, 700), capabilityIds: ['cap-haystack', 'cap-pgvector'], createdAt: at(120) },
-  { id: 'p-m4c-feedback', tenantId: M4C, name: 'Feedback Analysis', description: 'Finds themes in feedback from teachers and parents.', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-divya', 'u-m4c-aisha'], status: 'active', limits: q(24, 96, 1, 500), capabilityIds: [], createdAt: at(100) },
+const proj = ({ updatedDaysAgo, updatedById, ...p }: ProjectSeed): Project => ({
+  type: 'api',
+  repoUrl: '',
+  defaultBranch: 'main',
+  defaultRuntime: 'node',
+  defaultRuntimeVersion: '20',
+  memberAccess: Object.fromEntries(p.memberIds.map((m) => [m, 'editor' as const])),
+  capabilityVersions: {},
+  ...p,
+  updatedAt: updatedDaysAgo !== undefined ? at(updatedDaysAgo) : p.createdAt,
+  updatedById: updatedById ?? p.ownerId,
+})
+
+export const seedProjects: Project[] = [
+  proj({
+    id: 'p-sl-edu', tenantId: SL, name: 'AI Education Assistant', description: 'Reading and maths help for children in Kannada and Hindi.', type: 'agent',
+    repoUrl: 'https://github.com/shikshalokam/reading-tutor-api.git', ownerId: 'u-sl-ta', memberIds: ['u-sl-dev', 'u-sl-meera'], memberAccess: { 'u-sl-dev': 'editor', 'u-sl-meera': 'viewer' },
+    status: 'active', limits: q(48, 192, 2, 1000), capabilityIds: ['cap-langgraph', 'cap-qdrant', 'emb-bge-m3', 'llm-sarvam', 'llm-gemma', 'llm-mistral', 'llm-gpt'],
+    // Pins LangGraph 0.5 while “Kannada reading tutor” runs 0.6: a version conflict to resolve before the next deploy.
+    capabilityVersions: { 'cap-langgraph': '0.5' },
+    createdAt: at(200), updatedDaysAgo: 4, updatedById: 'u-sl-dev',
+  }),
+  proj({
+    id: 'p-sl-teacher', tenantId: SL, name: 'Teacher Support Chatbot', description: 'Answers teachers’ questions on lesson planning and classroom practice.', type: 'web', defaultRuntime: 'static', defaultRuntimeVersion: '',
+    repoUrl: 'https://github.com/shikshalokam/teacher-support-web.git', ownerId: 'u-sl-ta', memberIds: ['u-sl-dev', 'u-sl-kiran'],
+    status: 'active', limits: q(40, 160, 2, 800), capabilityIds: ['cap-llamaindex', 'cap-chroma', 'llm-sarvam', 'llm-llama', 'llm-claude', 'llm-gpt', 'llm-gemini'], createdAt: at(180),
+  }),
+  proj({
+    id: 'p-sl-speech', tenantId: SL, name: 'Multilingual Speech Recognition', description: 'Speech models for Indian languages, tested with classroom audio.', type: 'api', defaultRuntime: 'python', defaultRuntimeVersion: '3.11',
+    repoUrl: 'https://github.com/shikshalokam/speech-scoring-service.git', ownerId: 'u-sl-ta', memberIds: ['u-sl-fatima', 'u-sl-meera'],
+    status: 'active', limits: q(40, 160, 2, 1200), capabilityIds: ['cap-deepeval', 'llm-sarvam'], createdAt: at(150),
+  }),
+  proj({
+    id: 'p-sl-quiz', tenantId: SL, name: 'Quiz Generator', description: 'Drafts practice quizzes from textbook chapters for teachers to review.', type: 'pipeline', defaultRuntime: 'python', defaultRuntimeVersion: '3.12',
+    repoUrl: 'https://github.com/shikshalokam/quiz-generator.git', ownerId: 'u-sl-dev', memberIds: ['u-sl-dev', 'u-sl-kiran'], memberAccess: { 'u-sl-dev': 'editor', 'u-sl-kiran': 'viewer' },
+    status: 'active', limits: q(16, 64, 0, 200), capabilityIds: ['cap-langchain', 'llm-sarvam'], createdAt: at(9), updatedDaysAgo: 2,
+  }),
+
+  proj({
+    id: 'p-m4c-coach', tenantId: M4C, name: 'School Leader Coaching Assistant', description: 'Helps school leaders plan improvement goals and reflect on progress.', type: 'agent',
+    repoUrl: 'https://github.com/mantra4change/leader-coach-api.git', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-dev', 'u-m4c-aisha'], memberAccess: { 'u-m4c-dev': 'editor', 'u-m4c-aisha': 'viewer' },
+    status: 'active', limits: q(40, 160, 2, 800), capabilityIds: ['cap-crewai', 'cap-qdrant', 'llm-gpt', 'llm-gemma', 'llm-claude'],
+    // Pins CrewAI 0.120 while “Leader coaching assistant” runs 0.140.
+    capabilityVersions: { 'cap-crewai': '0.120' },
+    createdAt: at(150), updatedDaysAgo: 5, updatedById: 'u-m4c-dev',
+  }),
+  proj({
+    id: 'p-m4c-docs', tenantId: M4C, name: 'Document Intelligence', description: 'Reads scanned school records and forms into structured data.', type: 'pipeline', defaultRuntime: 'python', defaultRuntimeVersion: '3.12',
+    repoUrl: 'git@github.com:mantra4change/document-intelligence.git', defaultBranch: 'develop', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-sanjay', 'u-m4c-dev'],
+    status: 'active', limits: q(32, 128, 1, 700), capabilityIds: ['cap-haystack', 'cap-pgvector', 'llm-claude', 'llm-sarvam', 'llm-gemini', 'llm-mistral'], createdAt: at(120),
+  }),
+  proj({
+    id: 'p-m4c-feedback', tenantId: M4C, name: 'Feedback Analysis', description: 'Finds themes in feedback from teachers and parents.', type: 'api', defaultRuntime: 'python', defaultRuntimeVersion: '3.11',
+    repoUrl: 'https://github.com/mantra4change/feedback-themes.git', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-divya', 'u-m4c-aisha', 'u-m4c-dev'],
+    status: 'active', limits: q(24, 96, 1, 500), capabilityIds: ['emb-bge-m3', 'llm-mistral', 'llm-gpt'], createdAt: at(100),
+  }),
+  proj({
+    id: 'p-m4c-survey', tenantId: M4C, name: 'Parent Survey Insights', description: 'Summarises parent survey answers by school and block.', type: 'web', defaultRuntime: 'node', defaultRuntimeVersion: '22',
+    ownerId: 'u-m4c-dev', memberIds: ['u-m4c-dev', 'u-m4c-divya'], memberAccess: { 'u-m4c-dev': 'editor', 'u-m4c-divya': 'editor' },
+    status: 'active', limits: q(8, 32, 0, 100), capabilityIds: ['cap-langchain', 'llm-gemini'], createdAt: at(6), updatedDaysAgo: 1, updatedById: 'u-m4c-divya',
+  }),
 ]
 
 /* ---------- catalog ---------- */
@@ -223,7 +322,11 @@ const baseCatalog: BaseCatalogItem[] = [
   { id: 'asr-google', name: 'Google Speech-to-Text', category: 'asr', provider: 'Google Cloud', hosting: 'hosted', version: 'chirp-2', versions: ['chirp-2'], licence: 'Commercial API', gitUrl: null, docsUrl: 'https://cloud.google.com/speech-to-text/docs', costPerUnit: 70, costUnit: 'per audio hour', languages: ALL_LANGS, status: 'active', description: 'Hosted speech recognition with broad language coverage.' },
   { id: 'asr-azure', name: 'Azure AI Speech', category: 'asr', provider: 'Microsoft', hosting: 'hosted', version: '2025-10', versions: ['2025-10'], licence: 'Commercial API', gitUrl: 'https://github.com/Azure-Samples/cognitive-services-speech-sdk', docsUrl: 'https://learn.microsoft.com/azure/ai-services/speech-service', costPerUnit: 60, costUnit: 'per audio hour', languages: ALL_LANGS, status: 'beta', description: 'Hosted speech recognition with custom vocabulary support.' },
 
+  // Embedding models
+  { id: 'emb-bge-m3', name: 'BGE-M3', category: 'embedding', provider: 'BAAI', hosting: 'open-source', version: '1.5.0', versions: ['1.5.0', '1.4.0'], licence: 'MIT', gitUrl: 'https://github.com/FlagOpen/FlagEmbedding', docsUrl: null, costPerUnit: 0, costUnit: 'free', languages: ALL_LANGS, status: 'active', description: 'Multilingual embedding model for dense, sparse and multi-vector retrieval.' },
+
   // Agent frameworks
+  { id: 'cap-langchain', name: 'LangChain', category: 'agent-framework', provider: 'LangChain', hosting: 'open-source', version: '0.3', versions: ['0.3', '0.2'], licence: 'MIT', gitUrl: 'https://github.com/langchain-ai/langchain', docsUrl: 'https://python.langchain.com', costPerUnit: 0, costUnit: 'free', languages: [], status: 'active', description: 'Building blocks for prompts, retrieval and tool-using chains.' },
   { id: 'cap-langgraph', name: 'LangGraph', category: 'agent-framework', provider: 'LangChain', hosting: 'open-source', version: '0.6', versions: ['0.6', '0.5'], licence: 'MIT', gitUrl: 'https://github.com/langchain-ai/langgraph', docsUrl: 'https://langchain-ai.github.io/langgraph', costPerUnit: 0, costUnit: 'free', languages: [], status: 'active', description: 'Build stateful, multi-step agents as graphs.' },
   { id: 'cap-crewai', name: 'CrewAI', category: 'agent-framework', provider: 'CrewAI', hosting: 'open-source', version: '0.140', versions: ['0.140', '0.120'], licence: 'MIT', gitUrl: 'https://github.com/crewAIInc/crewAI', docsUrl: 'https://docs.crewai.com', costPerUnit: 0, costUnit: 'free', languages: [], status: 'active', description: 'Coordinate role-based agents that work together on a task.' },
   { id: 'cap-llamaindex', name: 'LlamaIndex', category: 'agent-framework', provider: 'LlamaIndex', hosting: 'open-source', version: '0.12', versions: ['0.12', '0.11'], licence: 'MIT', gitUrl: 'https://github.com/run-llama/llama_index', docsUrl: 'https://docs.llamaindex.ai', costPerUnit: 0, costUnit: 'free', languages: [], status: 'active', description: 'Connect your documents to models for retrieval and question answering.' },
@@ -238,6 +341,8 @@ const baseCatalog: BaseCatalogItem[] = [
   { id: 'cap-ragas', name: 'Ragas', category: 'evaluation', provider: 'Exploding Gradients', hosting: 'open-source', version: '0.3', versions: ['0.3', '0.2'], licence: 'Apache 2.0', gitUrl: 'https://github.com/explodinggradients/ragas', docsUrl: 'https://docs.ragas.io', costPerUnit: 0, costUnit: 'free', languages: [], status: 'active', description: 'Measure retrieval and answer quality for RAG pipelines.' },
   { id: 'cap-deepeval', name: 'DeepEval', category: 'evaluation', provider: 'Confident AI', hosting: 'open-source', version: '3.4', versions: ['3.4', '3.0'], licence: 'Apache 2.0', gitUrl: 'https://github.com/confident-ai/deepeval', docsUrl: 'https://deepeval.com/docs', costPerUnit: 0, costUnit: 'free', languages: [], status: 'active', description: 'Unit-test style evaluation for model outputs.' },
   { id: 'cap-promptfoo', name: 'Promptfoo', category: 'evaluation', provider: 'Promptfoo', hosting: 'open-source', version: '0.117', versions: ['0.117'], licence: 'MIT', gitUrl: 'https://github.com/promptfoo/promptfoo', docsUrl: 'https://www.promptfoo.dev/docs', costPerUnit: 0, costUnit: 'free', languages: [], status: 'active', description: 'Compare prompts and models side by side, and run red-team checks.' },
+
+  { id: 'cap-langfuse', name: 'Langfuse', category: 'evaluation', provider: 'Langfuse', hosting: 'open-source', version: '3.80', versions: ['3.80', '3.60'], licence: 'MIT', gitUrl: 'https://github.com/langfuse/langfuse', docsUrl: 'https://langfuse.com/docs', costPerUnit: 250, costUnit: 'per month', languages: [], status: 'active', description: 'Tracing, prompt management and evaluation for model applications, run as a shared server.' },
 
   // Low-code
   { id: 'cap-langflow', name: 'Langflow', category: 'low-code', provider: 'Langflow', hosting: 'open-source', version: '1.5', versions: ['1.5', '1.4'], licence: 'MIT', gitUrl: 'https://github.com/langflow-ai/langflow', docsUrl: 'https://docs.langflow.org', costPerUnit: 300, costUnit: 'per month', languages: [], status: 'active', description: 'Visual builder for model pipelines and agents.' },
@@ -306,14 +411,234 @@ export const seedCatalog: CatalogItem[] = [
   },
 ]
 
+/* ---------- infrastructure providers ---------- */
+
+/** YYYY-MM-DD, `days` ago. */
+const dayAgo = (days: number) => new Date(Date.now() - days * DAY).toISOString().slice(0, 10)
+
+const inst = (id: string, name: string, vcpu: number, ramGb: number, gpuType: GpuType | 'none', gpuCount: number, hourlyRate: number): InstanceType => ({ id, name, vcpu, ramGb, gpuType, gpuCount, hourlyRate })
+
+const card = (
+  version: number,
+  days: number,
+  source: string,
+  instanceTypes: InstanceType[],
+  rates: { storage: number; egress: number; fee: number; ngo: number; gst?: number },
+): RateCard => ({
+  version,
+  effectiveFrom: dayAgo(days),
+  source,
+  publishedAt: at(days + 3),
+  publishedById: SUPER_ADMIN_ID,
+  instanceTypes,
+  storageRate: rates.storage,
+  egressRate: rates.egress,
+  platformFeePct: rates.fee,
+  ngoDiscountPct: rates.ngo,
+  gstPct: rates.gst ?? 18,
+})
+
+const region = (id: string, name: string, indiaResident: boolean, gpuTypes: GpuType[]): Region => ({ id, name, indiaResident, gpuTypes })
+
+const azureV1 = [
+  inst('azr-d8s', 'D8s v5', 8, 32, 'none', 0, 32),
+  inst('azr-nc8-t4', 'NC8as T4 v3', 8, 56, 'T4', 1, 64),
+  inst('azr-nv18-a10', 'NV18ads A10 v5', 18, 220, 'A10', 1, 132),
+  inst('azr-nc24-a100', 'NC24ads A100 v4', 24, 220, 'A100', 1, 315),
+]
+const azureV2 = azureV1.map((i) => ({ ...i, hourlyRate: Math.round(i.hourlyRate * 1.06) }))
+
+export const seedInfraProviders: InfraProvider[] = [
+  {
+    id: 'ip-aws',
+    name: 'Amazon Web Services',
+    code: 'AWS',
+    type: 'public_cloud',
+    status: 'active',
+    regions: [region('aws-mum', 'Mumbai', true, ['T4', 'L4', 'A10', 'A100']), region('aws-hyd', 'Hyderabad', true, ['T4', 'A10']), region('aws-sin', 'Singapore', false, ['T4', 'L4', 'A10', 'A100'])],
+    rateCards: [
+      card(
+        1,
+        200,
+        'Published price list, Apr 2026 (ap-south-1, on-demand)',
+        [
+          inst('aws-c6i-2xl', 'c6i.2xlarge', 8, 16, 'none', 0, 32),
+          inst('aws-g4dn-2xl', 'g4dn.2xlarge', 8, 32, 'T4', 1, 70),
+          inst('aws-g6-2xl', 'g6.2xlarge', 8, 32, 'L4', 1, 96),
+          inst('aws-g5-4xl', 'g5.4xlarge', 16, 64, 'A10', 1, 152),
+          inst('aws-p4d-1g', 'p4d A100 80 GB (1 GPU)', 12, 144, 'A100', 1, 360),
+        ],
+        { storage: 7, egress: 7.5, fee: 10, ngo: 10 },
+      ),
+    ],
+    aiServices: ['bedrock'],
+    maxGpus: 24,
+    allowedTenants: 'all',
+    createdAt: at(210),
+  },
+  {
+    id: 'ip-azure',
+    name: 'Microsoft Azure',
+    code: 'AZR',
+    type: 'public_cloud',
+    status: 'active',
+    regions: [region('azr-cin', 'Central India (Pune)', true, ['T4', 'A10', 'A100']), region('azr-sin', 'South India (Chennai)', true, ['T4', 'A10']), region('azr-sea', 'Southeast Asia (Singapore)', false, ['T4', 'A10', 'A100'])],
+    rateCards: [
+      card(1, 200, 'Published price list, Apr 2026 (Central India, pay-as-you-go)', azureV1, { storage: 6.5, egress: 7, fee: 10, ngo: 15 }),
+      card(2, 40, 'Published price list, Oct 2026 (Central India, pay-as-you-go)', azureV2, { storage: 6.5, egress: 7, fee: 10, ngo: 15 }),
+    ],
+    aiServices: ['azure_openai'],
+    maxGpus: 20,
+    allowedTenants: 'all',
+    createdAt: at(210),
+  },
+  {
+    id: 'ip-gcp',
+    name: 'Google Cloud',
+    code: 'GCP',
+    type: 'public_cloud',
+    status: 'active',
+    regions: [region('gcp-mum', 'Mumbai', true, ['T4', 'L4', 'A100']), region('gcp-del', 'Delhi', true, ['T4', 'L4']), region('gcp-sin', 'Singapore', false, ['T4', 'L4', 'A100'])],
+    rateCards: [
+      card(
+        1,
+        200,
+        'Published price list, Apr 2026 (asia-south1, on-demand)',
+        [
+          inst('gcp-n2-8', 'n2-standard-8', 8, 32, 'none', 0, 33),
+          inst('gcp-n1-t4', 'n1-standard-8 + T4', 8, 30, 'T4', 1, 62),
+          inst('gcp-g2-8', 'g2-standard-8', 8, 32, 'L4', 1, 90),
+          inst('gcp-a2-1g', 'a2-highgpu-1g', 12, 85, 'A100', 1, 322),
+        ],
+        { storage: 7, egress: 9.5, fee: 10, ngo: 10 },
+      ),
+    ],
+    aiServices: ['vertex'],
+    maxGpus: 16,
+    allowedTenants: 'all',
+    createdAt: at(210),
+  },
+  {
+    id: 'ip-e2e',
+    name: 'E2E Networks',
+    code: 'E2E',
+    type: 'indian_cloud',
+    status: 'active',
+    regions: [region('e2e-del', 'Delhi NCR', true, ['T4', 'L4', 'A100']), region('e2e-mum', 'Mumbai', true, ['T4', 'A10', 'A100'])],
+    rateCards: [
+      card(
+        1,
+        200,
+        'Published price list, Apr 2026 (hourly billing)',
+        [
+          inst('e2e-c3-8', 'C3 8 vCPU', 8, 32, 'none', 0, 12),
+          inst('e2e-t4', 'GPU T4 1×', 8, 30, 'T4', 1, 28),
+          inst('e2e-l4', 'GPU L4 1×', 16, 64, 'L4', 1, 52),
+          inst('e2e-a10', 'GPU A10 1×', 16, 64, 'A10', 1, 66),
+          inst('e2e-a100', 'GPU A100 80 GB 1×', 16, 115, 'A100', 1, 220),
+        ],
+        { storage: 4, egress: 2, fee: 7, ngo: 5 },
+      ),
+    ],
+    aiServices: [],
+    maxGpus: 16,
+    allowedTenants: 'all',
+    createdAt: at(210),
+  },
+  {
+    id: 'ip-yotta',
+    name: 'Yotta',
+    code: 'YTA',
+    type: 'indian_cloud',
+    status: 'active',
+    regions: [region('yta-nmb', 'Navi Mumbai', true, ['L4', 'A100']), region('yta-hyd', 'Hyderabad', true, ['A10', 'A100'])],
+    rateCards: [
+      card(
+        1,
+        200,
+        'Signed rate agreement, Apr 2026',
+        [
+          inst('yta-cpu-8', 'Shakti CPU 8 vCPU', 8, 32, 'none', 0, 11),
+          inst('yta-l4', 'Shakti L4 1×', 8, 48, 'L4', 1, 48),
+          inst('yta-a10', 'Shakti A10 1×', 16, 64, 'A10', 1, 60),
+          inst('yta-a100', 'Shakti A100 80 GB 1×', 16, 120, 'A100', 1, 190),
+        ],
+        { storage: 3.5, egress: 1.5, fee: 5, ngo: 5 },
+      ),
+    ],
+    aiServices: [],
+    maxGpus: 12,
+    allowedTenants: 'all',
+    createdAt: at(210),
+  },
+]
+
+export const GPU_TIER: Record<GpuType | 'none', ComputeTier> = { none: 'cpu', T4: 't4', L4: 'l4', A10: 'a10', A100: 'a100' }
+
+/** Fills the infrastructure fields of a spec from a provider's latest rate card. */
+export function placeSpec<T extends EnvSpec>(spec: T, providerId: string, regionId: string, instanceTypeId: string, instanceCount = 1): T {
+  const provider = seedInfraProviders.find((p) => p.id === providerId)!
+  const it = provider.rateCards[provider.rateCards.length - 1]!.instanceTypes.find((i) => i.id === instanceTypeId)!
+  return {
+    ...spec,
+    providerId,
+    regionId,
+    instanceTypeId,
+    instanceCount,
+    instance: { name: it.name, vcpu: it.vcpu, ramGb: it.ramGb, gpuType: it.gpuType, gpuCount: it.gpuCount },
+    compute: GPU_TIER[it.gpuType],
+    gpuCount: it.gpuCount * instanceCount,
+  }
+}
+
+/** Where each tenant's environments go by tier, on its approved providers, in India-resident regions. */
+const TENANT_PLACEMENT: Record<string, Record<ComputeTier, [string, string, string]>> = {
+  [SL]: {
+    cpu: ['ip-e2e', 'e2e-del', 'e2e-c3-8'],
+    t4: ['ip-aws', 'aws-mum', 'aws-g4dn-2xl'],
+    l4: ['ip-aws', 'aws-mum', 'aws-g6-2xl'],
+    a10: ['ip-e2e', 'e2e-mum', 'e2e-a10'],
+    a100: ['ip-e2e', 'e2e-mum', 'e2e-a100'],
+  },
+  [M4C]: {
+    cpu: ['ip-azure', 'azr-cin', 'azr-d8s'],
+    t4: ['ip-azure', 'azr-cin', 'azr-nc8-t4'],
+    l4: ['ip-azure', 'azr-cin', 'azr-nc8-t4'],
+    a10: ['ip-azure', 'azr-cin', 'azr-nv18-a10'],
+    a100: ['ip-azure', 'azr-cin', 'azr-nc24-a100'],
+  },
+}
+
+/** Moves a seeded spec onto its tenant's approved providers. */
+function placeForTenant(spec: EnvSpec, tenantId: string, regionId?: string) {
+  const place = TENANT_PLACEMENT[tenantId]?.[spec.compute]
+  if (!place) return spec
+  return placeSpec(spec, place[0], regionId ?? place[1], place[2], spec.instanceCount)
+}
+
+/** Default placement for a tier, in an India-resident region. */
+const DEFAULT_PLACEMENT: Record<ComputeTier, [string, string, string]> = {
+  cpu: ['ip-e2e', 'e2e-del', 'e2e-c3-8'],
+  t4: ['ip-aws', 'aws-mum', 'aws-g4dn-2xl'],
+  l4: ['ip-gcp', 'gcp-mum', 'gcp-g2-8'],
+  a10: ['ip-azure', 'azr-cin', 'azr-nv18-a10'],
+  a100: ['ip-e2e', 'e2e-mum', 'e2e-a100'],
+}
+
 /* ---------- environments and requests ---------- */
 
 const baseSpec: EnvSpec = {
   name: '',
   description: '',
-  projectId: '',
+  projectIds: [],
   purpose: 'development',
   durationWeeks: 8,
+  providerId: '',
+  regionId: '',
+  instanceTypeId: '',
+  instance: { name: '', vcpu: 0, ramGb: 0, gpuType: 'none', gpuCount: 0 },
+  instanceCount: 1,
+  egressGbPerMonth: 50,
   compute: 't4',
   gpuCount: 1,
   storageGb: 100,
@@ -328,7 +653,12 @@ const baseSpec: EnvSpec = {
   justification: '',
 }
 
-const spec = (s: Partial<EnvSpec>): EnvSpec => ({ ...baseSpec, ...s })
+/** Older seed specs give a tier and GPU count; place them on a provider that offers it. */
+const spec = (s: Partial<EnvSpec>): EnvSpec => {
+  const merged = { ...baseSpec, ...s }
+  const [p, r, i] = DEFAULT_PLACEMENT[merged.compute]
+  return placeSpec(merged, p, r, i, merged.compute === 'cpu' ? 1 : Math.max(1, merged.gpuCount))
+}
 
 const TA: Record<string, string> = { [SL]: 'u-sl-ta', [M4C]: 'u-m4c-ta' }
 const CODE: Record<string, string> = { [SL]: 'SLK-101', [M4C]: 'M4C-102' }
@@ -352,53 +682,61 @@ const envSeeds: EnvSeed[] = [
   // ShikshaLokam
   {
     id: 'env-sl-tutor', tenantId: SL, ownerId: 'u-sl-dev', status: 'active', createdDaysAgo: 32, creditsUsed: 21400, hot: true,
-    spec: spec({ name: 'Kannada reading tutor', description: 'Listens to children read aloud in Kannada and Hindi and gives gentle feedback.', projectId: 'p-sl-edu', compute: 'a10', storageGb: 200, llms: [{ id: 'llm-sarvam', tokenBudget: 4 }, { id: 'llm-llama', tokenBudget: 6 }], asr: ['asr-indicconformer'], languages: ['Kannada', 'Hindi'], asrHoursPerMonth: 40, capabilities: ['cap-langgraph', 'cap-qdrant'], dataClassification: 'children', containsPii: true, justification: 'Reading levels in our partner schools need daily practice that teachers can’t give one to one.' }),
+    spec: spec({ name: 'Kannada reading tutor', description: 'Listens to children read aloud in Kannada and Hindi and gives gentle feedback.', projectIds: ['p-sl-edu'], compute: 'a10', storageGb: 200, llms: [{ id: 'llm-sarvam', tokenBudget: 4 }, { id: 'llm-llama', tokenBudget: 6 }], asr: ['asr-indicconformer'], languages: ['Kannada', 'Hindi'], asrHoursPerMonth: 40, capabilities: ['cap-langgraph', 'cap-qdrant'], dataClassification: 'children', containsPii: true, justification: 'Reading levels in our partner schools need daily practice that teachers can’t give one to one.' }),
+  },
+  {
+    id: 'env-sl-sandbox', tenantId: SL, ownerId: 'u-sl-kiran', status: 'active', createdDaysAgo: 3, creditsUsed: 640,
+    spec: spec({ name: 'Backend sandbox', description: 'A general-purpose environment for trying out new services before they join a project.', compute: 'cpu', storageGb: 50, llms: [{ id: 'llm-mistral', tokenBudget: 1 }], justification: 'Somewhere to try new services without touching the project environments.' }),
   },
   {
     id: 'env-sl-lessonplan', tenantId: SL, ownerId: 'u-sl-kiran', status: 'stopped', createdDaysAgo: 40, creditsUsed: 9800,
-    spec: spec({ name: 'Lesson-plan assistant', description: 'Drafts activity-based lesson plans from the state textbook.', projectId: 'p-sl-teacher', purpose: 'evaluation', compute: 't4', storageGb: 100, llms: [{ id: 'llm-claude', tokenBudget: 3 }, { id: 'llm-gpt', tokenBudget: 2 }], capabilities: ['cap-llamaindex', 'cap-chroma', 'cap-promptfoo'], justification: 'Compare two models before the teacher training cycle.' }),
+    spec: spec({ name: 'Lesson-plan assistant', description: 'Drafts activity-based lesson plans from the state textbook.', projectIds: ['p-sl-teacher'], purpose: 'evaluation', compute: 't4', storageGb: 100, llms: [{ id: 'llm-claude', tokenBudget: 3 }, { id: 'llm-gpt', tokenBudget: 2 }], capabilities: ['cap-llamaindex', 'cap-chroma', 'cap-promptfoo'], justification: 'Compare two models before the teacher training cycle.' }),
     later: [ev('stopped', at(3, 18, 0), 'u-sl-kiran', 'user', 'Evaluation finished for this cycle.')],
   },
   {
     id: 'env-sl-asr-ft', tenantId: SL, ownerId: 'u-sl-fatima', status: 'provisioning', createdDaysAgo: 1, creditsUsed: 0, hold: true,
-    spec: spec({ name: 'IndicConformer fine-tuning', description: 'Fine-tune speech recognition on classroom recordings in three languages.', projectId: 'p-sl-speech', purpose: 'evaluation', compute: 'a100', storageGb: 500, asr: ['asr-indicconformer', 'asr-whisper'], languages: ['Kannada', 'Tamil', 'Telugu'], asrHoursPerMonth: 120, capabilities: ['cap-deepeval'], dataClassification: 'children', containsPii: true, justification: 'Classroom audio is noisy; off-the-shelf models miss too many words.' }),
+    spec: spec({ name: 'IndicConformer fine-tuning', description: 'Fine-tune speech recognition on classroom recordings in three languages.', projectIds: ['p-sl-speech'], purpose: 'evaluation', compute: 'a100', storageGb: 500, asr: ['asr-indicconformer', 'asr-whisper'], languages: ['Kannada', 'Tamil', 'Telugu'], asrHoursPerMonth: 120, capabilities: ['cap-deepeval'], dataClassification: 'children', containsPii: true, justification: 'Classroom audio is noisy; off-the-shelf models miss too many words.' }),
   },
   {
     id: 'env-sl-whatsapp', tenantId: SL, ownerId: 'u-sl-dev', status: 'suspended', createdDaysAgo: 25, creditsUsed: 12600,
-    spec: spec({ name: 'Teacher WhatsApp helpline', description: 'Answers teachers’ questions over WhatsApp using the programme handbook.', projectId: 'p-sl-teacher', purpose: 'pilot', compute: 'a10', storageGb: 150, llms: [{ id: 'llm-gpt', tokenBudget: 5 }], capabilities: ['cap-langgraph', 'cap-pgvector'], dataClassification: 'personal', containsPii: true, justification: 'Pilot with 300 teachers in Dharwad district.' }),
+    spec: spec({ name: 'Teacher WhatsApp helpline', description: 'Answers teachers’ questions over WhatsApp using the programme handbook.', projectIds: ['p-sl-teacher'], purpose: 'pilot', compute: 'a10', storageGb: 150, llms: [{ id: 'llm-gpt', tokenBudget: 5 }], capabilities: ['cap-langgraph', 'cap-pgvector'], dataClassification: 'personal', containsPii: true, justification: 'Pilot with 300 teachers in Dharwad district.' }),
     later: [ev('suspended', at(2, 16, 40), SUPER_ADMIN_ID, 'super_admin', 'Paused: teachers’ phone numbers were sent to a hosted model without a consent record. Add the consent step and we’ll resume it.')],
   },
   {
     id: 'env-sl-asr-eval', tenantId: SL, ownerId: 'u-sl-meera', status: 'provisioning_failed', createdDaysAgo: 2, creditsUsed: 0,
-    spec: spec({ name: 'Speech benchmark batch', description: 'Batch-score five hours of test audio across two providers.', projectId: 'p-sl-speech', purpose: 'evaluation', compute: 'a100', gpuCount: 2, storageGb: 300, asr: ['asr-whisper', 'asr-google'], languages: ['Hindi', 'Kannada'], asrHoursPerMonth: 60, justification: 'Need a baseline before the fine-tuning results come in.' }),
+    spec: spec({ name: 'Speech benchmark batch', description: 'Batch-score five hours of test audio across two providers.', projectIds: ['p-sl-speech'], purpose: 'evaluation', compute: 'a100', gpuCount: 2, storageGb: 300, asr: ['asr-whisper', 'asr-google'], languages: ['Hindi', 'Kannada'], asrHoursPerMonth: 60, justification: 'Need a baseline before the fine-tuning results come in.' }),
   },
 
   // Mantra4Change
   {
     id: 'env-m4c-coach', tenantId: M4C, ownerId: 'u-m4c-dev', status: 'active', createdDaysAgo: 28, creditsUsed: 17300, hot: true,
-    spec: spec({ name: 'Leader coaching assistant', description: 'Helps school leaders set goals and reflect after classroom walks, in Telugu and English.', projectId: 'p-m4c-coach', compute: 'a10', storageGb: 150, llms: [{ id: 'llm-claude', tokenBudget: 4 }, { id: 'llm-sarvam', tokenBudget: 2 }], asr: ['asr-bhashini'], languages: ['Telugu', 'English'], asrHoursPerMonth: 20, capabilities: ['cap-crewai', 'cap-weaviate'], justification: 'Coaches can meet each leader only once a month.' }),
+    spec: spec({ name: 'Leader coaching assistant', description: 'Helps school leaders set goals and reflect after classroom walks, in Telugu and English.', projectIds: ['p-m4c-coach'], compute: 'a10', storageGb: 150, llms: [{ id: 'llm-claude', tokenBudget: 4 }, { id: 'llm-sarvam', tokenBudget: 2 }], asr: ['asr-bhashini'], languages: ['Telugu', 'English'], asrHoursPerMonth: 20, capabilities: ['cap-crewai', 'cap-weaviate', 'cap-qdrant', 'cap-langfuse'], justification: 'Coaches can meet each leader only once a month.' }),
+  },
+  {
+    id: 'env-m4c-scratch', tenantId: M4C, ownerId: 'u-m4c-sanjay', status: 'active', createdDaysAgo: 2, creditsUsed: 380,
+    spec: spec({ name: 'Data team workspace', description: 'Shared space for the data team to stand up new pipelines.', compute: 'cpu', storageGb: 60, justification: 'New pipelines need somewhere to run before they have a project.' }),
   },
   {
     id: 'env-m4c-docparse', tenantId: M4C, ownerId: 'u-m4c-sanjay', status: 'stopped', createdDaysAgo: 35, creditsUsed: 4200,
-    spec: spec({ name: 'Document parser evaluation', description: 'Extracts fields from school development plans.', projectId: 'p-m4c-docs', purpose: 'evaluation', compute: 'cpu', storageGb: 100, llms: [{ id: 'llm-mistral', tokenBudget: 3 }], capabilities: ['cap-llamaindex', 'cap-pgvector', 'cap-ragas'], dataClassification: 'internal', justification: 'Check extraction accuracy before scaling up.' }),
+    spec: spec({ name: 'Document parser evaluation', description: 'Extracts fields from school development plans.', projectIds: ['p-m4c-docs'], purpose: 'evaluation', compute: 'cpu', storageGb: 100, llms: [{ id: 'llm-mistral', tokenBudget: 3 }], capabilities: ['cap-llamaindex', 'cap-pgvector', 'cap-ragas'], dataClassification: 'internal', justification: 'Check extraction accuracy before scaling up.' }),
     later: [ev('stopped', at(6, 19, 10), 'u-m4c-sanjay', 'user')],
   },
   {
     id: 'env-m4c-feedback', tenantId: M4C, ownerId: 'u-m4c-divya', status: 'provisioning', createdDaysAgo: 0, creditsUsed: 0, hold: true,
-    spec: spec({ name: 'Feedback theme classifier', description: 'Groups open-ended feedback from teachers into themes.', projectId: 'p-m4c-feedback', compute: 't4', storageGb: 100, llms: [{ id: 'llm-gemma', tokenBudget: 3 }], capabilities: ['cap-promptfoo'], justification: '12,000 survey responses arrive next month.' }),
+    spec: spec({ name: 'Feedback theme classifier', description: 'Groups open-ended feedback from teachers into themes.', projectIds: ['p-m4c-feedback'], compute: 't4', storageGb: 100, llms: [{ id: 'llm-gemma', tokenBudget: 3 }], capabilities: ['cap-promptfoo'], justification: '12,000 survey responses arrive next month.' }),
   },
   {
     id: 'env-m4c-visits', tenantId: M4C, ownerId: 'u-m4c-aisha', status: 'suspended', createdDaysAgo: 20, creditsUsed: 6100,
-    spec: spec({ name: 'School visit summariser', description: 'Turns field notes from school visits into short summaries.', projectId: 'p-m4c-coach', compute: 't4', storageGb: 80, llms: [{ id: 'llm-gemini', tokenBudget: 2 }], capabilities: ['cap-langgraph'], justification: 'Field coordinators spend an hour a day writing summaries.' }),
+    spec: spec({ name: 'School visit summariser', description: 'Turns field notes from school visits into short summaries.', projectIds: ['p-m4c-coach'], compute: 't4', storageGb: 80, llms: [{ id: 'llm-gemini', tokenBudget: 2 }], capabilities: ['cap-langgraph'], justification: 'Field coordinators spend an hour a day writing summaries.' }),
     later: [ev('suspended', at(1, 11, 15), SUPER_ADMIN_ID, 'super_admin', 'Paused while we look into unusual token use over the weekend. We’ll resume it after a quick check with your team.')],
   },
   {
     id: 'env-m4c-ocr', tenantId: M4C, ownerId: 'u-m4c-ta', status: 'provisioning_failed', createdDaysAgo: 1, creditsUsed: 0,
-    spec: spec({ name: 'Scanned forms OCR', description: 'Reads handwritten enrolment forms from 40 schools.', projectId: 'p-m4c-docs', compute: 'a10', storageGb: 200, llms: [{ id: 'llm-gpt', tokenBudget: 3 }], dataClassification: 'personal', containsPii: true, justification: 'Enrolment data entry takes field staff two weeks each term.' }),
+    spec: spec({ name: 'Scanned forms OCR', description: 'Reads handwritten enrolment forms from 40 schools.', projectIds: ['p-m4c-docs'], compute: 'a10', storageGb: 200, llms: [{ id: 'llm-gpt', tokenBudget: 3 }], dataClassification: 'personal', containsPii: true, justification: 'Enrolment data entry takes field staff two weeks each term.' }),
   },
   {
     id: 'env-m4c-pilot-v0', tenantId: M4C, ownerId: 'u-m4c-dev', status: 'terminated', createdDaysAgo: 75, creditsUsed: 3900,
-    spec: spec({ name: 'Coaching chatbot v0', description: 'First prototype of the coaching assistant.', projectId: 'p-m4c-coach', compute: 'cpu', storageGb: 50, llms: [{ id: 'llm-mistral', tokenBudget: 1 }], justification: 'Early prototype.' }),
+    spec: spec({ name: 'Coaching chatbot v0', description: 'First prototype of the coaching assistant.', projectIds: ['p-m4c-coach'], compute: 'cpu', storageGb: 50, llms: [{ id: 'llm-mistral', tokenBudget: 1 }], justification: 'Early prototype.' }),
     later: [ev('terminated', at(30, 12, 0), 'u-m4c-ta', 'tenant_admin', 'Replaced by the leader coaching assistant.')],
   },
 ]
@@ -427,6 +765,24 @@ function approvalHistory(e: EnvSeed) {
   return { req, env, submitted, approvedAt }
 }
 
+/** A few environments use a second region, so both appear in reports. */
+const REGION_OVERRIDE: Record<string, string> = {
+  'env-m4c-coach': 'azr-sin',
+  'env-m4c-visits': 'azr-sin',
+  'env-sl-lessonplan': 'aws-hyd',
+}
+for (const e of envSeeds) e.spec = placeForTenant(e.spec, e.tenantId, REGION_OVERRIDE[e.id])
+
+/** Version of the provider's rate card in force on a date. */
+export function rateCardVersionAt(providerId: string, iso: string, providers: InfraProvider[] = seedInfraProviders) {
+  const p = providers.find((x) => x.id === providerId)
+  const day = iso.slice(0, 10)
+  const cards = (p?.rateCards ?? []).filter((c) => c.effectiveFrom <= day)
+  return (cards[cards.length - 1] ?? p?.rateCards[0])?.version ?? 1
+}
+
+const catalogVersion = (id: string) => seedCatalog.find((c) => c.id === id)?.version ?? ''
+
 const built = envSeeds.map((e) => {
   const owner = seedUsers.find((x) => x.id === e.ownerId)!
   const h = approvalHistory(e)
@@ -434,7 +790,6 @@ const built = envSeeds.map((e) => {
   const environment: Environment = {
     id: e.id,
     tenantId: e.tenantId,
-    projectId: e.spec.projectId,
     ownerId: e.ownerId,
     requestId,
     status: e.status,
@@ -449,6 +804,8 @@ const built = envSeeds.map((e) => {
     provisionDueAt: null,
     hold: !!e.hold,
     loadProfile: e.hot ? 'hot' : 'normal',
+    rateCardVersion: rateCardVersionAt(e.spec.providerId, h.approvedAt),
+    capabilities: e.spec.capabilities.map((itemId) => ({ itemId, version: catalogVersion(itemId), addedById: e.ownerId, at: h.approvedAt })),
   }
   const request: EnvRequest = {
     id: requestId,
@@ -471,6 +828,275 @@ const built = envSeeds.map((e) => {
 })
 
 export const seedEnvironments: Environment[] = built.map((b) => b.environment)
+
+/* ---------- deployments (projects hosted on environments) ---------- */
+
+const ENV_SL_TUTOR = 'env-sl-tutor'
+const ENV_M4C_COACH = 'env-m4c-coach'
+
+type DepCfgOptional = 'domain' | 'healthStatus' | 'preDeployCmd' | 'postDeployCmd' | 'serviceAccess' | 'capabilityChoice'
+const depCfg = (c: Omit<DeploymentConfig, DepCfgOptional> & Partial<Pick<DeploymentConfig, DepCfgOptional>>): DeploymentConfig => ({
+  domain: '',
+  healthStatus: 200,
+  preDeployCmd: '',
+  postDeployCmd: '',
+  serviceAccess: {},
+  capabilityChoice: {},
+  ...c,
+})
+
+const version = (n: number, config: DeploymentConfig, daysAgo: number, byId: string, commit: string, status: DeploymentVersion['status'], note?: string): DeploymentVersion => ({
+  version: n,
+  config,
+  at: at(daysAgo, 11, 20),
+  byId,
+  commit,
+  status,
+  ...(note ? { note } : {}),
+})
+
+interface DeploySeed {
+  id: string
+  tenantId: string
+  envId: string
+  projectId: string
+  serviceName: string
+  status: Deployment['status']
+  config: DeploymentConfig
+  history: DeploymentVersion[]
+  usage: Deployment['usage']
+  breakBuild?: boolean
+  createdDaysAgo: number
+}
+
+const slNodeApi = depCfg({
+  runtime: 'node',
+  runtimeVersion: '20',
+  source: { kind: 'git', repoUrl: 'https://github.com/shikshalokam/reading-tutor-api.git', branch: 'main' },
+  installCmd: 'npm ci',
+  buildCmd: 'npm run build',
+  startCmd: 'node dist/server.js',
+  processManager: 'systemd',
+  port: 3000,
+  basePath: '/api',
+  env: [
+    { key: 'NODE_ENV', value: 'production' },
+    { key: 'LOG_LEVEL', value: 'info' },
+    { key: 'SARVAM_API_KEY', value: '${SARVAM_API_KEY}' },
+  ],
+  healthPath: '/health',
+  limits: { vcpu: 2, ramGb: 4 },
+  dependencies: ['llm-sarvam', 'llm-llama'],
+})
+
+const slSpeechApi = depCfg({
+  runtime: 'python',
+  runtimeVersion: '3.11',
+  source: { kind: 'git', repoUrl: 'https://github.com/shikshalokam/speech-scoring-service.git', branch: 'main' },
+  installCmd: 'pip install -r requirements.txt',
+  buildCmd: 'python -m compileall app',
+  startCmd: 'uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2',
+  processManager: 'pm2',
+  port: 8000,
+  basePath: '/speech',
+  env: [
+    { key: 'MODEL_CACHE_DIR', value: '/srv/multilingual-speech-recognition/.cache' },
+    // Not connected for ShikshaLokam yet: the review shows a warning.
+    { key: 'HF_TOKEN', value: '${HF_TOKEN}' },
+  ],
+  preDeployCmd: 'python -m app.migrate',
+  healthPath: '/healthz',
+  limits: { vcpu: 4, ramGb: 8 },
+  dependencies: ['asr-indicconformer'],
+})
+
+const slFrontend = depCfg({
+  runtime: 'static',
+  runtimeVersion: '',
+  source: { kind: 'git', repoUrl: 'https://github.com/shikshalokam/teacher-support-web.git', branch: 'main' },
+  installCmd: 'npm ci',
+  buildCmd: 'npm run build',
+  startCmd: '',
+  processManager: 'systemd',
+  port: 0,
+  basePath: '/',
+  env: [{ key: 'VITE_API_BASE', value: '/api' }],
+  healthPath: '/',
+  limits: { vcpu: 1, ramGb: 1 },
+  dependencies: [],
+})
+
+const m4cNodeApi = depCfg({
+  runtime: 'node',
+  runtimeVersion: '20',
+  source: { kind: 'git', repoUrl: 'https://github.com/mantra4change/leader-coach-api.git', branch: 'main' },
+  installCmd: 'npm ci',
+  buildCmd: 'npm run build',
+  startCmd: 'node dist/index.js',
+  processManager: 'compose',
+  port: 3000,
+  basePath: '/coach',
+  domain: 'coach.mantra4change.org',
+  env: [
+    { key: 'NODE_ENV', value: 'production' },
+    { key: 'ANTHROPIC_API_KEY', value: '${ANTHROPIC_API_KEY}' },
+  ],
+  healthPath: '/health',
+  limits: { vcpu: 2, ramGb: 4 },
+  dependencies: ['llm-claude'],
+  postDeployCmd: 'curl -fsS -X POST http://127.0.0.1:3000/coach/admin/warm-cache',
+})
+
+const m4cDocsApi = depCfg({
+  runtime: 'python',
+  runtimeVersion: '3.12',
+  source: { kind: 'git', repoUrl: 'git@github.com:mantra4change/document-intelligence.git', branch: 'develop' },
+  installCmd: 'pip install -r requirements.txt',
+  buildCmd: '',
+  startCmd: 'uvicorn docs.api:app --host 127.0.0.1 --port 8000',
+  processManager: 'systemd',
+  port: 8000,
+  basePath: '/docs-api',
+  env: [{ key: 'OCR_LANGS', value: 'eng+tel+hin' }],
+  healthPath: '/health',
+  limits: { vcpu: 2, ramGb: 4 },
+  dependencies: ['llm-claude'],
+})
+
+const m4cFeedbackApi = depCfg({
+  runtime: 'python',
+  runtimeVersion: '3.11',
+  source: { kind: 'git', repoUrl: 'https://github.com/mantra4change/feedback-themes.git', branch: 'main' },
+  installCmd: 'pip install -r requirements.txt',
+  buildCmd: 'python -m compileall app',
+  startCmd: 'uvicorn app.main:app --host 127.0.0.1 --port 8100',
+  processManager: 'systemd',
+  port: 8100,
+  basePath: '/feedback',
+  env: [{ key: 'OPENAI_API_KEY', value: '${OPENAI_API_KEY}' }],
+  healthPath: '/health',
+  limits: { vcpu: 1, ramGb: 2 },
+  dependencies: [],
+})
+
+const deploySeeds: DeploySeed[] = [
+  {
+    id: 'dep-sl-api', tenantId: SL, envId: ENV_SL_TUTOR, projectId: 'p-sl-edu', serviceName: 'reading-tutor-api', status: 'running', config: slNodeApi, createdDaysAgo: 30,
+    usage: { cpuPct: 38, ramGb: 1.6 },
+    history: [
+      version(1, { ...slNodeApi, startCmd: 'node dist/index.js' }, 30, 'u-sl-dev', '4e1a9c2', 'superseded'),
+      version(2, slNodeApi, 6, 'u-sl-dev', 'b7d03f1', 'running', 'Renamed the entry point to server.js'),
+    ],
+  },
+  {
+    id: 'dep-sl-speech', tenantId: SL, envId: ENV_SL_TUTOR, projectId: 'p-sl-speech', serviceName: 'speech-scoring-api', status: 'failed', config: slSpeechApi, createdDaysAgo: 3,
+    usage: { cpuPct: 0, ramGb: 0 },
+    breakBuild: true,
+    history: [version(1, slSpeechApi, 1, 'u-sl-meera', '9c2e771', 'failed', 'Build failed')],
+  },
+  {
+    id: 'dep-sl-web', tenantId: SL, envId: ENV_SL_TUTOR, projectId: 'p-sl-teacher', serviceName: 'teacher-support-web', status: 'running', config: slFrontend, createdDaysAgo: 20,
+    usage: { cpuPct: 4, ramGb: 0.1 },
+    history: [version(1, slFrontend, 20, 'u-sl-kiran', 'f00b5a3', 'running')],
+  },
+  {
+    id: 'dep-m4c-api', tenantId: M4C, envId: ENV_M4C_COACH, projectId: 'p-m4c-coach', serviceName: 'leader-coach-api', status: 'running', config: m4cNodeApi, createdDaysAgo: 26,
+    usage: { cpuPct: 52, ramGb: 2.3 },
+    history: [version(1, m4cNodeApi, 26, 'u-m4c-dev', '1d8e4b0', 'running')],
+  },
+  {
+    id: 'dep-m4c-docs', tenantId: M4C, envId: ENV_M4C_COACH, projectId: 'p-m4c-docs', serviceName: 'document-intelligence', status: 'stopped', config: m4cDocsApi, createdDaysAgo: 14,
+    usage: { cpuPct: 0, ramGb: 0 },
+    history: [version(1, m4cDocsApi, 14, 'u-m4c-sanjay', 'a3f9e12', 'running')],
+  },
+  {
+    id: 'dep-m4c-feedback', tenantId: M4C, envId: ENV_M4C_COACH, projectId: 'p-m4c-feedback', serviceName: 'feedback-themes', status: 'failed', config: m4cFeedbackApi, createdDaysAgo: 2,
+    usage: { cpuPct: 0, ramGb: 0 },
+    breakBuild: true,
+    history: [version(1, m4cFeedbackApi, 1, 'u-m4c-divya', '5be0c47', 'failed', 'Build failed')],
+  },
+]
+
+const seededDeployments: Deployment[] = deploySeeds.map((d) => {
+  const last = d.history[d.history.length - 1]!
+  const failed = d.status === 'failed'
+  const failAt = STEP_ORDER.indexOf('build')
+  return {
+    id: d.id,
+    tenantId: d.tenantId,
+    envId: d.envId,
+    projectId: d.projectId,
+    serviceName: d.serviceName,
+    config: d.config,
+    status: d.status,
+    history: d.history,
+    usage: d.usage,
+    ...(d.breakBuild ? { breakBuild: true } : {}),
+    createdAt: at(d.createdDaysAgo),
+    updatedAt: last.at,
+    lastRun: {
+      id: `run-${d.id}`,
+      version: last.version,
+      startedAt: last.at,
+      finishedAt: last.at,
+      actorId: last.byId,
+      steps: STEP_ORDER.map((key, i) => {
+        const skipped = (d.config.runtime === 'static' && (key === 'service' || key === 'start')) || (key === 'pre' && !d.config.preDeployCmd) || (key === 'post' && !d.config.postDeployCmd)
+        return { key, status: failed ? (i < failAt ? (skipped ? 'skipped' : 'ok') : i === failAt ? 'failed' : 'pending') : skipped ? 'skipped' : 'ok' }
+      }),
+      log: failed
+        ? [
+            { at: last.at, level: 'INFO', text: `$ ${d.config.buildCmd}` },
+            { at: last.at, level: 'ERROR', text: "ModuleNotFoundError: No module named 'app.scoring'" },
+            { at: last.at, level: 'ERROR', text: SEEDED_BUILD_ERROR },
+          ]
+        : [{ at: last.at, level: 'INFO', text: `Deployed version ${last.version} (${last.commit}).` }],
+      failedStep: failed ? 'build' : null,
+      error: failed ? SEEDED_BUILD_ERROR : null,
+    },
+  }
+})
+
+/** Every project named on an environment's request is linked to it through a deployment, even before its first deploy. */
+const linkedDeployments: Deployment[] = seedEnvironments.flatMap((e) =>
+  e.spec.projectIds
+    .filter((pid) => !seededDeployments.some((d) => d.envId === e.id && d.projectId === pid))
+    .map((pid, i): Deployment => {
+      const project = seedProjects.find((p) => p.id === pid)!
+      const slug = project.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
+      const python = project.defaultRuntime === 'python'
+      return {
+        id: `dep-${e.id.slice(4)}-${pid.slice(2)}`,
+        tenantId: e.tenantId,
+        envId: e.id,
+        projectId: pid,
+        serviceName: slug,
+        config: depCfg({
+          runtime: project.defaultRuntime,
+          runtimeVersion: project.defaultRuntimeVersion,
+          source: { kind: 'git', repoUrl: project.repoUrl || `https://github.com/example-org/${slug}.git`, branch: project.defaultBranch || 'main' },
+          installCmd: python ? 'pip install -r requirements.txt' : 'npm ci',
+          buildCmd: python ? '' : 'npm run build',
+          startCmd: python ? `uvicorn app.main:app --host 127.0.0.1 --port ${8000 + i}` : project.defaultRuntime === 'static' ? '' : 'node dist/server.js',
+          processManager: 'systemd',
+          port: project.defaultRuntime === 'static' ? 0 : python ? 8000 + i : 3000 + i,
+          basePath: `/${slug}`,
+          env: [],
+          healthPath: project.defaultRuntime === 'static' ? '/' : '/health',
+          limits: { vcpu: 1, ramGb: 2 },
+          dependencies: [],
+        }),
+        status: 'not_deployed',
+        lastRun: null,
+        history: [],
+        createdAt: e.createdAt,
+        updatedAt: e.createdAt,
+        usage: { cpuPct: 0, ramGb: 0 },
+      }
+    }),
+)
+
+export const seedDeployments: Deployment[] = [...seededDeployments, ...linkedDeployments]
 
 interface OpenSeed {
   id: string
@@ -506,17 +1132,17 @@ const openRequests: EnvRequest[] = [
   // ShikshaLokam
   open({
     id: 'req-sl-phonics', tenantId: SL, requesterId: 'u-sl-dev',
-    spec: spec({ name: 'Kannada phonics practice', description: 'Short phonics games with spoken feedback.', projectId: 'p-sl-edu', compute: 't4', llms: [{ id: 'llm-sarvam', tokenBudget: 2 }] }),
+    spec: spec({ name: 'Kannada phonics practice', description: 'Short phonics games with spoken feedback.', projectIds: ['p-sl-edu'], compute: 't4', llms: [{ id: 'llm-sarvam', tokenBudget: 2 }] }),
     history: [ev('draft', hoursAgo(20), 'u-sl-dev', 'user')],
   }),
   open({
     id: 'req-sl-feedback', tenantId: SL, requesterId: 'u-sl-meera',
-    spec: spec({ name: 'Teacher feedback summariser', description: 'Summarises observation notes into feedback for teachers.', projectId: 'p-sl-teacher', compute: 't4', llms: [{ id: 'llm-gemini', tokenBudget: 2 }], capabilities: ['cap-promptfoo'], justification: 'Mentors write 40 feedback notes a week by hand.' }),
+    spec: spec({ name: 'Teacher feedback summariser', description: 'Summarises observation notes into feedback for teachers.', projectIds: ['p-sl-teacher'], compute: 't4', llms: [{ id: 'llm-gemini', tokenBudget: 2 }], capabilities: ['cap-promptfoo'], justification: 'Mentors write 40 feedback notes a week by hand.' }),
     history: [ev('submitted', hoursAgo(1), 'u-sl-meera', 'user')],
   }),
   open({
     id: 'req-sl-labelling', tenantId: SL, requesterId: 'u-sl-kiran',
-    spec: spec({ name: 'Speech labelling workbench', description: 'A tool for volunteers to correct speech transcripts.', projectId: 'p-sl-speech', compute: 'a100', storageGb: 200, asr: ['asr-indicconformer'], languages: ['Kannada'], asrHoursPerMonth: 30, justification: 'Volunteers need a fast way to fix transcripts for training data.' }),
+    spec: spec({ name: 'Speech labelling workbench', description: 'A tool for volunteers to correct speech transcripts.', projectIds: ['p-sl-speech'], compute: 'a100', storageGb: 200, asr: ['asr-indicconformer'], languages: ['Kannada'], asrHoursPerMonth: 30, justification: 'Volunteers need a fast way to fix transcripts for training data.' }),
     history: [
       ev('submitted', at(3, 9, 30), 'u-sl-kiran', 'user'),
       ev('under_review', at(3, 12, 0), 'u-sl-ta', 'tenant_admin'),
@@ -525,7 +1151,7 @@ const openRequests: EnvRequest[] = [
   }),
   open({
     id: 'req-sl-benchmark', tenantId: SL, requesterId: 'u-sl-fatima',
-    spec: spec({ name: 'Multilingual ASR benchmark', description: 'Benchmark four speech models on 20 hours of classroom audio.', projectId: 'p-sl-speech', purpose: 'evaluation', compute: 'a100', gpuCount: 3, storageGb: 400, asr: ['asr-indicconformer', 'asr-sarvam', 'asr-whisper'], languages: ['Kannada', 'Hindi', 'Tamil'], asrHoursPerMonth: 80, capabilities: ['cap-deepeval'], dataClassification: 'children', containsPii: true, justification: 'The state wants benchmark numbers before choosing a provider.' }),
+    spec: spec({ name: 'Multilingual ASR benchmark', description: 'Benchmark four speech models on 20 hours of classroom audio.', projectIds: ['p-sl-speech'], purpose: 'evaluation', compute: 'a100', gpuCount: 3, storageGb: 400, asr: ['asr-indicconformer', 'asr-sarvam', 'asr-whisper'], languages: ['Kannada', 'Hindi', 'Tamil'], asrHoursPerMonth: 80, capabilities: ['cap-deepeval'], dataClassification: 'children', containsPii: true, justification: 'The state wants benchmark numbers before choosing a provider.' }),
     history: [
       ev('submitted', at(2, 10, 0), 'u-sl-fatima', 'user'),
       ev('under_review', at(2, 14, 0), 'u-sl-ta', 'tenant_admin'),
@@ -534,7 +1160,7 @@ const openRequests: EnvRequest[] = [
   }),
   open({
     id: 'req-sl-attendance', tenantId: SL, requesterId: 'u-sl-kiran',
-    spec: spec({ name: 'Student face attendance', description: 'Marks attendance from classroom photos.', projectId: 'p-sl-edu', compute: 't4', dataClassification: 'children', containsPii: true, justification: 'Saves teachers ten minutes each morning.' }),
+    spec: spec({ name: 'Student face attendance', description: 'Marks attendance from classroom photos.', projectIds: ['p-sl-edu'], compute: 't4', dataClassification: 'children', containsPii: true, justification: 'Saves teachers ten minutes each morning.' }),
     history: [
       ev('submitted', at(9, 9, 0), 'u-sl-kiran', 'user'),
       ev('under_review', at(9, 11, 0), 'u-sl-ta', 'tenant_admin'),
@@ -543,24 +1169,24 @@ const openRequests: EnvRequest[] = [
   }),
   open({
     id: 'req-sl-faq', tenantId: SL, requesterId: 'u-sl-dev',
-    spec: spec({ name: 'Old FAQ bot migration', description: 'Move the old FAQ bot onto the platform.', projectId: 'p-sl-teacher', compute: 'cpu', llms: [{ id: 'llm-mistral', tokenBudget: 1 }] }),
+    spec: spec({ name: 'Old FAQ bot migration', description: 'Move the old FAQ bot onto the platform.', projectIds: ['p-sl-teacher'], compute: 'cpu', llms: [{ id: 'llm-mistral', tokenBudget: 1 }] }),
     history: [ev('submitted', at(14, 15, 0), 'u-sl-dev', 'user'), ev('cancelled', at(13, 10, 0), 'u-sl-dev', 'user', 'No longer needed; the helpline replaces it.')],
   }),
 
   // Mantra4Change
   open({
     id: 'req-m4c-voice', tenantId: M4C, requesterId: 'u-m4c-dev',
-    spec: spec({ name: 'Principal voice notes', description: 'Lets principals record reflections by voice.', projectId: 'p-m4c-coach', compute: 't4', asr: ['asr-bhashini'], languages: ['Telugu'], asrHoursPerMonth: 15 }),
+    spec: spec({ name: 'Principal voice notes', description: 'Lets principals record reflections by voice.', projectIds: ['p-m4c-coach'], compute: 't4', asr: ['asr-bhashini'], languages: ['Telugu'], asrHoursPerMonth: 15 }),
     history: [ev('draft', hoursAgo(30), 'u-m4c-dev', 'user')],
   }),
   open({
     id: 'req-m4c-observation', tenantId: M4C, requesterId: 'u-m4c-divya',
-    spec: spec({ name: 'Classroom observation analytics', description: 'Finds patterns across 2,000 classroom observations.', projectId: 'p-m4c-feedback', purpose: 'evaluation', compute: 'a10', storageGb: 150, llms: [{ id: 'llm-claude', tokenBudget: 3 }], capabilities: ['cap-ragas'], justification: 'District teams want to see trends before the next review.' }),
+    spec: spec({ name: 'Classroom observation analytics', description: 'Finds patterns across 2,000 classroom observations.', projectIds: ['p-m4c-feedback'], purpose: 'evaluation', compute: 'a10', storageGb: 150, llms: [{ id: 'llm-claude', tokenBudget: 3 }], capabilities: ['cap-ragas'], justification: 'District teams want to see trends before the next review.' }),
     history: [ev('submitted', at(2, 16, 0), 'u-m4c-divya', 'user'), ev('under_review', at(1, 10, 0), 'u-m4c-ta', 'tenant_admin')],
   }),
   open({
     id: 'req-m4c-sip', tenantId: M4C, requesterId: 'u-m4c-aisha',
-    spec: spec({ name: 'School improvement plan generator', description: 'Drafts improvement plans from school data for leaders to edit.', projectId: 'p-m4c-coach', compute: 'a10', autoShutdownHours: 1, llms: [{ id: 'llm-claude', tokenBudget: 3 }], justification: 'Pilot in 25 schools in Nalgonda district.' }),
+    spec: spec({ name: 'School improvement plan generator', description: 'Drafts improvement plans from school data for leaders to edit.', projectIds: ['p-m4c-coach'], compute: 'a10', autoShutdownHours: 1, llms: [{ id: 'llm-claude', tokenBudget: 3 }], justification: 'Pilot in 25 schools in Nalgonda district.' }),
     history: [
       ev('submitted', at(5, 10, 0), 'u-m4c-aisha', 'user'),
       ev('under_review', at(5, 15, 0), 'u-m4c-ta', 'tenant_admin'),
@@ -570,7 +1196,7 @@ const openRequests: EnvRequest[] = [
   }),
   open({
     id: 'req-m4c-docscale', tenantId: M4C, requesterId: 'u-m4c-sanjay',
-    spec: spec({ name: 'Document intelligence at scale', description: 'Process scanned records from all partner schools.', projectId: 'p-m4c-docs', compute: 'a100', storageGb: 300, llms: [{ id: 'llm-gpt', tokenBudget: 4 }], capabilities: ['cap-haystack', 'cap-pgvector'], dataClassification: 'personal', containsPii: true, justification: 'The evaluation hit 94% field accuracy; we’re ready to scale.' }),
+    spec: spec({ name: 'Document intelligence at scale', description: 'Process scanned records from all partner schools.', projectIds: ['p-m4c-docs'], compute: 'a100', storageGb: 300, llms: [{ id: 'llm-gpt', tokenBudget: 4 }], capabilities: ['cap-haystack', 'cap-pgvector'], dataClassification: 'personal', containsPii: true, justification: 'The evaluation hit 94% field accuracy; we’re ready to scale.' }),
     history: [
       ev('submitted', at(1, 9, 0), 'u-m4c-sanjay', 'user'),
       ev('under_review', at(1, 12, 0), 'u-m4c-ta', 'tenant_admin'),
@@ -579,12 +1205,12 @@ const openRequests: EnvRequest[] = [
   }),
   open({
     id: 'req-m4c-sentiment', tenantId: M4C, requesterId: 'u-m4c-dev',
-    spec: spec({ name: 'Feedback sentiment dashboard', description: 'Shows sentiment trends in parent feedback.', projectId: 'p-m4c-feedback', compute: 'cpu', llms: [{ id: 'llm-mistral', tokenBudget: 2 }], justification: 'Parents’ feedback is read by hand today.' }),
+    spec: spec({ name: 'Feedback sentiment dashboard', description: 'Shows sentiment trends in parent feedback.', projectIds: ['p-m4c-feedback'], compute: 'cpu', llms: [{ id: 'llm-mistral', tokenBudget: 2 }], justification: 'Parents’ feedback is read by hand today.' }),
     history: [ev('submitted', hoursAgo(3), 'u-m4c-dev', 'user')],
   }),
   open({
     id: 'req-m4c-broadcast', tenantId: M4C, requesterId: 'u-m4c-aisha',
-    spec: spec({ name: 'Bulk WhatsApp broadcast', description: 'Send generated messages to all parents.', projectId: 'p-m4c-feedback', compute: 't4', llms: [{ id: 'llm-gpt', tokenBudget: 6 }], dataClassification: 'personal', containsPii: true, justification: 'Reach parents before the school year starts.' }),
+    spec: spec({ name: 'Bulk WhatsApp broadcast', description: 'Send generated messages to all parents.', projectIds: ['p-m4c-feedback'], compute: 't4', llms: [{ id: 'llm-gpt', tokenBudget: 6 }], dataClassification: 'personal', containsPii: true, justification: 'Reach parents before the school year starts.' }),
     history: [
       ev('submitted', at(12, 10, 0), 'u-m4c-aisha', 'user'),
       ev('under_review', at(12, 11, 0), 'u-m4c-ta', 'tenant_admin'),
@@ -594,7 +1220,55 @@ const openRequests: EnvRequest[] = [
   }),
 ]
 
-export const seedRequests: EnvRequest[] = [...openRequests, ...built.map((b) => b.request)]
+export const seedRequests: EnvRequest[] = [
+  ...openRequests.map((r) => ({ ...r, spec: placeForTenant(r.spec, r.tenantId), previousSpec: r.previousSpec ? placeForTenant(r.previousSpec, r.tenantId) : null })),
+  ...built.map((b) => b.request),
+]
+
+/* ---------- provider access requests ---------- */
+
+export const seedProviderRequests: ProviderRequest[] = [
+  {
+    id: 'pr-sl-yotta',
+    tenantId: SL,
+    requesterId: 'u-sl-fatima',
+    raisedByRole: 'user',
+    providerId: 'ip-yotta',
+    regionIds: ['yta-nmb'],
+    justification: 'Speech fine-tuning needs A100s for two weeks each month, and Yotta is cheaper per hour than our other providers.',
+    workloads: ['gpu', 'testing'],
+    expectedMonthlySpend: 45000,
+    requestedCap: 60000,
+    dataClassification: 'children',
+    status: 'under_review',
+    history: [
+      { status: 'submitted', at: at(2, 15, 10), actorId: 'u-sl-fatima', actorRole: 'user' },
+      { status: 'under_review', at: at(1, 10, 0), actorId: 'u-sl-ta', actorRole: 'tenant_admin' },
+    ],
+    createdAt: at(2, 15, 10),
+    updatedAt: at(1, 10, 0),
+  },
+  {
+    id: 'pr-m4c-e2e',
+    tenantId: M4C,
+    requesterId: 'u-m4c-ta',
+    raisedByRole: 'tenant_admin',
+    providerId: 'ip-e2e',
+    regionIds: ['e2e-mum'],
+    justification: 'Document parsing pilots in Telangana need cheaper CPU and A10 capacity inside India.',
+    workloads: ['development', 'pilot'],
+    expectedMonthlySpend: 30000,
+    requestedCap: 50000,
+    dataClassification: 'personal',
+    status: 'escalated',
+    history: [
+      { status: 'submitted', at: at(3, 11, 0), actorId: 'u-m4c-ta', actorRole: 'tenant_admin' },
+      { status: 'escalated', at: at(3, 11, 1), actorId: 'system', actorRole: 'system', comment: 'Raised by a Tenant Admin, so it went straight to the Super Admin.' },
+    ],
+    createdAt: at(3, 11, 0),
+    updatedAt: at(3, 11, 1),
+  },
+]
 
 /* ---------- providers ---------- */
 
@@ -608,6 +1282,7 @@ export const seedProviders: Provider[] = [
   { id: 'p-bhashini', name: 'Bhashini', kind: 'asr', maskedKey: 'bh-••••••••••4410', enabled: true, health: 'healthy', latencyMs: 690, region: 'India', serves: ['asr-bhashini'] },
   { id: 'p-gstt', name: 'Google Speech-to-Text', kind: 'asr', maskedKey: 'AIza••••••••••Lm8s', enabled: true, health: 'healthy', latencyMs: 610, region: 'asia-south1 (Mumbai)', serves: ['asr-google'] },
   { id: 'p-azure', name: 'Azure AI Speech', kind: 'asr', maskedKey: 'az-••••••••••c0f3', enabled: false, health: 'down', latencyMs: 0, region: 'Central India', serves: ['asr-azure'] },
+  { id: 'p-openrouter', name: 'OpenRouter', kind: 'llm', maskedKey: 'sk-or-••••••••e81b', enabled: true, health: 'healthy', latencyMs: 900, region: 'Global gateway', serves: ['llm-gpt', 'llm-claude', 'llm-gemini', 'llm-llama', 'llm-mistral', 'llm-gemma', 'llm-qwen'] },
 ]
 
 /* ---------- usage (30 days) ---------- */
@@ -642,6 +1317,47 @@ export const seedUsage: UsagePoint[] = (() => {
 /* ---------- suggestions ---------- */
 
 export const seedSuggestions: Suggestion[] = [
+  {
+    id: 's-sl-indictrans',
+    tenantId: SL,
+    suggestedById: 'u-sl-dev',
+    githubUrl: 'https://github.com/AI4Bharat/IndicTrans2',
+    name: 'IndicTrans2',
+    category: 'llm',
+    description: 'Open translation models for 22 scheduled Indian languages.',
+    useCase: 'Teachers want lesson plans translated between Kannada, Hindi and English without a hosted API.',
+    licence: 'MIT',
+    docsUrl: '',
+    status: 'needs_info',
+    forwarded: false,
+    history: [
+      { status: 'submitted', at: at(5, 10, 30), actorId: 'u-sl-dev', actorRole: 'user' },
+      { status: 'under_review', at: at(4, 9, 15), actorId: 'u-sl-ta', actorRole: 'tenant_admin' },
+      { status: 'needs_info', at: at(3, 16, 0), actorId: 'u-sl-ta', actorRole: 'tenant_admin', comment: 'Which model size do you need? The 1B model needs a GPU, so tell me which project will host it.' },
+    ],
+    catalogItemId: null,
+    createdAt: at(5, 10, 30),
+  },
+  {
+    id: 's-sl-unstructured',
+    tenantId: SL,
+    suggestedById: 'u-sl-dev',
+    githubUrl: 'https://github.com/Unstructured-IO/unstructured',
+    name: 'Unstructured',
+    category: 'agent-framework',
+    description: 'Turns PDFs, scans and slides into clean text for retrieval.',
+    useCase: 'The teacher FAQ bot needs to read state textbook PDFs, many of which are scanned.',
+    licence: 'Apache 2.0',
+    docsUrl: 'https://docs.unstructured.io',
+    status: 'under_review',
+    forwarded: true,
+    history: [
+      { status: 'submitted', at: at(2, 11, 0), actorId: 'u-sl-dev', actorRole: 'user' },
+      { status: 'under_review', at: at(1, 15, 20), actorId: 'u-sl-ta', actorRole: 'tenant_admin', comment: 'Looks useful for other tenants too. Forwarded to the Super Admin.' },
+    ],
+    catalogItemId: null,
+    createdAt: at(2, 11, 0),
+  },
   {
     id: 's-sl-langfuse',
     tenantId: SL,
@@ -780,6 +1496,17 @@ export const seedAudit: AuditEntry[] = (() => {
   push({ at: at(6, 12, 10), actorId: SUPER_ADMIN_ID, actorRole: 'super_admin', tenantId: null, action: 'catalog.deprecated', entityType: 'catalog', entityId: 'llm-gpt4o-mini', summary: 'Platform Administrator marked GPT-4o mini as deprecated' })
   push({ at: at(4, 15, 0), actorId: 'u-sl-dev', actorRole: 'user', tenantId: SL, action: 'test.functional', entityType: 'test', entityId: 'tr-1', summary: 'Arjun Rao ran 5 functional tests on “Kannada reading tutor”: 4 passed' })
   push({ at: at(2, 17, 0), actorId: 'u-m4c-dev', actorRole: 'user', tenantId: M4C, action: 'test.load', entityType: 'test', entityId: 'tr-4', summary: 'Rahul Menon ran a load test on “Leader coaching assistant”: failed at 400 virtual users' })
+  for (const p of seedProjects) {
+    if (p.tenantId === DEFAULT_TENANT_ID) continue
+    push({ at: p.createdAt, actorId: p.ownerId, actorRole: seedUsers.find((x) => x.id === p.ownerId)!.role, tenantId: p.tenantId, action: 'project.created', entityType: 'project', entityId: p.id, summary: `${userName(p.ownerId)} created the project “${p.name}”` })
+    if (p.updatedAt !== p.createdAt)
+      push({ at: p.updatedAt, actorId: p.updatedById, actorRole: seedUsers.find((x) => x.id === p.updatedById)!.role, tenantId: p.tenantId, action: 'project.updated', entityType: 'project', entityId: p.id, summary: `${userName(p.updatedById)} updated “${p.name}”`, comment: Object.keys(p.capabilityVersions).length ? `Pinned ${Object.entries(p.capabilityVersions).map(([id, v]) => `${seedCatalog.find((c) => c.id === id)?.name} ${v}`).join(', ')}` : 'Changed the description' })
+  }
+  for (const d of seedDeployments) {
+    if (d.status !== 'failed' || !d.lastRun) continue
+    const env = seedEnvironments.find((e) => e.id === d.envId)!
+    push({ at: d.lastRun.startedAt, actorId: 'system', actorRole: 'system', tenantId: d.tenantId, action: 'deployment.failed', entityType: 'deployment', entityId: d.id, summary: `Deploying ${seedProjects.find((p) => p.id === d.projectId)?.name} to “${env.spec.name}” failed at build`, comment: d.lastRun.error ?? undefined })
+  }
   return out.sort((a, b) => b.at.localeCompare(a.at))
 })()
 
@@ -925,11 +1652,135 @@ export const DEFAULT_TEST_CASES: TestCaseSeed[] = [
   { input: 'Translate to Hindi: "Water the plants in the evening."', expected: 'शाम को पौधों को पानी दें', match: 'similar' },
 ]
 
+/* ---------- QA: datasets and test configurations ---------- */
+
+const ds = (id: string, tenantId: string, name: string, language: Language, createdById: string, rows: [string, string, string?][]): Dataset => ({
+  id,
+  tenantId,
+  name,
+  language,
+  source: 'seeded',
+  rows: rows.map(([input, expected, context]) => ({ input, expected, ...(context ? { context } : {}) })),
+  createdById,
+  createdAt: at(30),
+})
+
+const NIPUN = 'निपुण भारत मिशन का लक्ष्य है कि कक्षा 3 के अंत तक हर बच्चा पढ़ना, लिखना और गणित की बुनियादी समझ हासिल करे।'
+const ORF = 'मौखिक पठन प्रवाह आकलन में बच्चा एक मिनट तक पाठ पढ़ता है और सही पढ़े गए शब्द गिने जाते हैं।'
+const RAMU = 'ರಾಮು ಬೆಳಿಗ್ಗೆ ಏಳು ಗಂಟೆಗೆ ಶಾಲೆಗೆ ಹೋದನು. ಅವನು ತನ್ನ ಅಕ್ಕನ ಜೊತೆ ನಡೆದುಕೊಂಡು ಹೋದನು. ದಾರಿಯಲ್ಲಿ ಅವರು ಒಂದು ಹಸಿರು ಗಿಳಿಯನ್ನು ನೋಡಿದರು.'
+const PADDY = 'ಮಳೆಗಾಲದಲ್ಲಿ ರೈತರು ಭತ್ತ ಬಿತ್ತುತ್ತಾರೆ. ಭತ್ತಕ್ಕೆ ಹೆಚ್ಚು ನೀರು ಬೇಕು.'
+const SDP = 'विद्यालय विकास योजना विद्यालय प्रबंधन समिति और प्रधानाध्यापक मिलकर तीन साल के लिए बनाते हैं, और हर साल इसकी समीक्षा होती है।'
+
+export const seedDatasets: Dataset[] = [
+  ds('ds-sl-hindi', SL, 'Teacher FAQ – Hindi', 'Hindi', 'u-sl-qa', [
+    ['निपुण भारत मिशन किस कक्षा तक के बच्चों के लिए है?', 'कक्षा 3 तक', NIPUN],
+    ['बच्चों का पढ़ने का स्तर जाँचने के लिए कौन-सा आकलन उपयोग करें?', 'मौखिक पठन प्रवाह (ORF) आकलन', ORF],
+    ['एक मिनट में सही पढ़े गए शब्दों को क्या कहते हैं?', 'प्रति मिनट सही शब्द (WCPM)', ORF],
+    ['समूह कार्य के लिए एक समूह में कितने बच्चे रखें?', '4 से 6 बच्चे', 'समूह कार्य में 4 से 6 बच्चों के छोटे समूह सबसे अच्छे रहते हैं ताकि हर बच्चा भाग ले सके।'],
+    ['गणित में स्थानीय मान सिखाने के लिए कौन-सी सामग्री उपयोगी है?', 'तीलियों के बंडल', 'स्थानीय मान सिखाने के लिए दस तीलियों के बंडल और खुली तीलियाँ उपयोगी हैं।'],
+    ['पाठ योजना में सीखने के उद्देश्य कब लिखने चाहिए?', 'पाठ शुरू करने से पहले', 'अच्छी पाठ योजना में सीखने के उद्देश्य पाठ शुरू करने से पहले स्पष्ट लिखे जाते हैं।'],
+  ]),
+  ds('ds-sl-kannada', SL, 'Reading comprehension – Kannada', 'Kannada', 'u-sl-qa', [
+    ['ರಾಮು ಎಷ್ಟು ಗಂಟೆಗೆ ಶಾಲೆಗೆ ಹೋದನು?', 'ಏಳು ಗಂಟೆಗೆ', RAMU],
+    ['ರಾಮು ಯಾರ ಜೊತೆ ಶಾಲೆಗೆ ಹೋದನು?', 'ಅಕ್ಕನ ಜೊತೆ', RAMU],
+    ['ದಾರಿಯಲ್ಲಿ ಅವರು ಏನು ನೋಡಿದರು?', 'ಹಸಿರು ಗಿಳಿ', RAMU],
+    ['ರಾಮು ಶಾಲೆಗೆ ಹೇಗೆ ಹೋದನು?', 'ನಡೆದುಕೊಂಡು', RAMU],
+    ['ರೈತರು ಮಳೆಗಾಲದಲ್ಲಿ ಏನು ಬಿತ್ತುತ್ತಾರೆ?', 'ಭತ್ತ', PADDY],
+    ['ಭತ್ತಕ್ಕೆ ಏನು ಹೆಚ್ಚು ಬೇಕು?', 'ನೀರು', PADDY],
+  ]),
+  ds('ds-m4c-hindi', M4C, 'School improvement plans – Hindi', 'Hindi', 'u-m4c-qa', [
+    ['विद्यालय विकास योजना कौन बनाता है?', 'विद्यालय प्रबंधन समिति और प्रधानाध्यापक', SDP],
+    ['विद्यालय विकास योजना कितने समय के लिए बनती है?', 'तीन साल', SDP],
+    ['योजना की समीक्षा कितनी बार होती है?', 'हर साल', SDP],
+    ['शिक्षकों की उपस्थिति का रिकॉर्ड कौन रखता है?', 'प्रधानाध्यापक', 'प्रधानाध्यापक शिक्षकों की दैनिक उपस्थिति का रिकॉर्ड रखते हैं।'],
+    ['SMC की बैठक कितनी बार होनी चाहिए?', 'महीने में एक बार', 'SMC की बैठक महीने में कम से कम एक बार होनी चाहिए।'],
+    ['योजना बनाने से पहले क्या करते हैं?', 'विद्यालय की वर्तमान स्थिति का आकलन', 'योजना बनाने से पहले विद्यालय की वर्तमान स्थिति का आकलन किया जाता है।'],
+  ]),
+  ds('ds-m4c-english', M4C, 'School leader coaching – English', 'English', 'u-m4c-qa', [
+    ['What is the first step in a school improvement cycle?', "Assess the school's current situation"],
+    ['How often should a school leader observe classrooms?', 'At least once a week'],
+    ['What should feedback after a classroom observation focus on?', 'One or two specific, actionable points'],
+    ['Who should set the school’s improvement goals?', 'The school leader with teachers and the SMC'],
+    ['What does SMART stand for in goal setting?', 'Specific, measurable, achievable, relevant and time-bound'],
+    ['How long should a coaching conversation last?', 'About 20 to 30 minutes'],
+  ]),
+]
+
+export const DEFAULT_THRESHOLDS: Record<QaMetric, number> = { accuracy: 0.75, faithfulness: 0.75, relevance: 0.8, toxicity: 0.05, latencyP95: 1500 }
+export const ALL_METRICS: QaMetric[] = ['accuracy', 'faithfulness', 'relevance', 'toxicity', 'latencyP95']
+
+const cfgSpec = (p: Partial<TestConfigSpec> & Pick<TestConfigSpec, 'name' | 'projectId' | 'type' | 'datasetId' | 'languages'>): TestConfigSpec => ({
+  temperature: 0.2,
+  maxTokens: 512,
+  systemPrompt: 'You help teachers and school leaders. Answer briefly and only from what you know to be true.',
+  thresholds: { ...DEFAULT_THRESHOLDS },
+  metrics: ALL_METRICS,
+  load: null,
+  schedule: 'manual',
+  notifyOnFailure: true,
+  ...p,
+})
+
+const cfg = (id: string, tenantId: string, byId: string, versions: { spec: TestConfigSpec; days: number; summary: string }[]): TestConfig => ({
+  id,
+  tenantId,
+  archived: false,
+  versions: versions.map((v, i) => ({ version: i + 1, spec: v.spec, at: at(v.days), byId, summary: v.summary })),
+  createdAt: at(versions[0]!.days),
+})
+
+const slCompare = cfgSpec({
+  name: 'Teacher FAQ – model comparison',
+  projectId: 'p-sl-teacher',
+  type: 'comparison',
+  datasetId: 'ds-sl-hindi',
+  languages: ['Hindi'],
+  systemPrompt: 'आप शिक्षकों की मदद करने वाले सहायक हैं। छोटे और सही उत्तर हिंदी में दें।',
+})
+const m4cCompare = cfgSpec({ name: 'School plans – model comparison', projectId: 'p-m4c-docs', type: 'comparison', datasetId: 'ds-m4c-hindi', languages: ['Hindi'] })
+
+export const seedTestConfigs: TestConfig[] = [
+  cfg('cfg-sl-faq-compare', SL, 'u-sl-qa', [
+    { spec: { ...slCompare, thresholds: { ...DEFAULT_THRESHOLDS, accuracy: 0.7 } }, days: 20, summary: 'Created' },
+    { spec: slCompare, days: 6, summary: 'Raised the accuracy threshold from 0.70 to 0.75' },
+  ]),
+  cfg('cfg-sl-reading-functional', SL, 'u-sl-qa', [
+    {
+      spec: cfgSpec({ name: 'Kannada reading – functional checks', projectId: 'p-sl-edu', type: 'functional', datasetId: 'ds-sl-kannada', languages: ['Kannada'], schedule: 'on_new_environment' }),
+      days: 15,
+      summary: 'Created',
+    },
+  ]),
+  cfg('cfg-sl-faq-load', SL, 'u-sl-qa', [
+    {
+      spec: cfgSpec({ name: 'Teacher FAQ – exam week load', projectId: 'p-sl-teacher', type: 'load', datasetId: 'ds-sl-hindi', languages: ['Hindi'], load: { vus: 250, rampUpSec: 60, durationMin: 5, targetRps: 180 }, schedule: 'daily' }),
+      days: 10,
+      summary: 'Created',
+    },
+  ]),
+  cfg('cfg-m4c-sdp-compare', M4C, 'u-m4c-qa', [{ spec: m4cCompare, days: 18, summary: 'Created' }]),
+  cfg('cfg-m4c-coach-eval', M4C, 'u-m4c-qa', [
+    {
+      spec: cfgSpec({ name: 'Leader coaching – evaluation', projectId: 'p-m4c-coach', type: 'evaluation', datasetId: 'ds-m4c-english', languages: ['English'], schedule: 'daily' }),
+      days: 12,
+      summary: 'Created',
+    },
+  ]),
+  cfg('cfg-m4c-docs-load', M4C, 'u-m4c-qa', [
+    {
+      spec: cfgSpec({ name: 'Document parser – load test', projectId: 'p-m4c-docs', type: 'load', datasetId: 'ds-m4c-hindi', languages: ['Hindi'], load: { vus: 150, rampUpSec: 60, durationMin: 5, targetRps: 100 } }),
+      days: 9,
+      summary: 'Created',
+    },
+  ]),
+]
+
 export interface SeedState {
   tenants: Tenant[]
   users: User[]
   projects: Project[]
   environments: Environment[]
+  deployments: Deployment[]
   requests: EnvRequest[]
   catalog: CatalogItem[]
   providers: Provider[]
@@ -939,6 +1790,11 @@ export interface SeedState {
   suggestions: Suggestion[]
   quotaRequests: QuotaRequest[]
   testRuns: TestRun[]
+  infraProviders: InfraProvider[]
+  providerRequests: ProviderRequest[]
+  datasets: Dataset[]
+  testConfigs: TestConfig[]
+  qaRuns: QaRun[]
   capacity: Quota
   alertKeys: string[]
 }
@@ -949,6 +1805,7 @@ export function createSeed(): SeedState {
     users: seedUsers,
     projects: seedProjects,
     environments: seedEnvironments,
+    deployments: seedDeployments,
     requests: seedRequests,
     catalog: seedCatalog,
     providers: seedProviders,
@@ -958,6 +1815,11 @@ export function createSeed(): SeedState {
     suggestions: seedSuggestions,
     quotaRequests: seedQuotaRequests,
     testRuns: seedTestRuns,
+    infraProviders: seedInfraProviders,
+    providerRequests: seedProviderRequests,
+    datasets: seedDatasets,
+    testConfigs: seedTestConfigs,
+    qaRuns: [] as QaRun[],
     capacity: seedCapacity,
     alertKeys: [],
   })

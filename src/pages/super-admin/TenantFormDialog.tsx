@@ -4,9 +4,10 @@ import type { OrgType, Quota, Tenant } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
 import { INDIAN_STATES, ORG_TYPES } from '@/lib/labels'
 import { RESOURCES } from '@/lib/quota'
+import { TenantProviderPicker, type ProviderGrant } from '@/components/shared/TenantProviderPicker'
 import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Field } from '@/components/ui/field'
+import { Field, RequiredTag } from '@/components/ui/field'
 import { Input, Textarea } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
@@ -20,6 +21,7 @@ interface FormState {
   contactName: string
   contactEmail: string
   quota: Record<keyof Quota, string>
+  providers: ProviderGrant[]
 }
 
 type Errors = Partial<Record<keyof FormState | keyof Quota, string>>
@@ -34,6 +36,7 @@ const empty: FormState = {
   contactName: '',
   contactEmail: '',
   quota: { vcpu: '64', ramGb: '256', gpus: '2', storageGb: '1000' },
+  providers: [],
 }
 
 const fromTenant = (t: Tenant): FormState => ({
@@ -46,6 +49,7 @@ const fromTenant = (t: Tenant): FormState => ({
   contactName: t.contactName,
   contactEmail: t.contactEmail,
   quota: { vcpu: String(t.quota.vcpu), ramGb: String(t.quota.ramGb), gpus: String(t.quota.gpus), storageGb: String(t.quota.storageGb) },
+  providers: [],
 })
 
 export function TenantFormDialog({ open, onOpenChange, tenant, onCreated }: { open: boolean; onOpenChange: (o: boolean) => void; tenant?: Tenant; onCreated?: (id: string) => void }) {
@@ -83,6 +87,8 @@ export function TenantFormDialog({ open, onOpenChange, tenant, onCreated }: { op
     if (!/^\S+@\S+\.\S+$/.test(form.contactEmail.trim())) e.contactEmail = 'Enter a valid email address.'
     const quota = Object.fromEntries(RESOURCES.map((r) => [r.key, Number(form.quota[r.key])])) as unknown as Quota
     for (const r of RESOURCES) if (!Number.isFinite(quota[r.key]) || quota[r.key] < 0) e[r.key] = 'Enter 0 or more.'
+    if (!tenant && !form.providers.length) e.providers = 'Choose at least one provider. People in this tenant can only request environments on these.'
+    else if (!tenant && form.providers.some((g) => !(g.budgetCap > 0))) e.providers = 'Give each provider a monthly budget cap above zero.'
     setErrors(e)
     if (Object.values(e).some(Boolean)) return
 
@@ -100,7 +106,7 @@ export function TenantFormDialog({ open, onOpenChange, tenant, onCreated }: { op
       if (RESOURCES.some((r) => tenant.quota[r.key] !== quota[r.key])) setTenantQuota(tenant.id, quota)
       toast.success(`Saved changes to ${name}.`)
     } else {
-      const id = createTenant({ ...profile, code, quota })
+      const id = createTenant({ ...profile, code, quota, providers: form.providers })
       if (id) {
         toast.success(`Created ${name}.`, { description: 'Add a Tenant Admin from the Users page.' })
         onCreated?.(id)
@@ -113,7 +119,7 @@ export function TenantFormDialog({ open, onOpenChange, tenant, onCreated }: { op
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="lg">
         <DialogHeader title={tenant ? `Edit ${tenant.name}` : 'Create tenant'} description={tenant ? 'Quota changes apply straight away.' : 'Set up a new partner organisation and its quota.'} />
-        <DialogBody className="flex flex-col gap-5">
+        <DialogBody className="flex max-h-[68vh] flex-col gap-5 overflow-y-auto">
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Tenant name" htmlFor="t-name" required error={errors.name}>
               <Input id="t-name" value={form.name} onChange={(e) => set('name', e.target.value)} aria-invalid={!!errors.name} />
@@ -179,6 +185,15 @@ export function TenantFormDialog({ open, onOpenChange, tenant, onCreated }: { op
               ))}
             </div>
           </div>
+          {!tenant && (
+            <div>
+              <p className="mb-1 text-sm font-semibold text-text-primary">
+                Approved infrastructure providers <RequiredTag />
+              </p>
+              <p className="mb-3 text-caption text-text-secondary">People in this tenant can only request environments on these. Later, their Tenant Admin can ask for more.</p>
+              <TenantProviderPicker value={form.providers} onChange={(v) => set('providers', v)} error={errors.providers} />
+            </div>
+          )}
         </DialogBody>
         <DialogFooter>
           <DialogClose asChild>

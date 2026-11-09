@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Pencil } from 'lucide-react'
 import type { Quota } from '@/data/types'
@@ -17,6 +18,7 @@ export default function Capacity() {
   const capacity = useAppStore((s) => s.capacity)
   const environments = useAppStore((s) => s.environments)
   const setCapacity = useAppStore((s) => s.setCapacity)
+  const providerGpuMax = useAppStore((s) => s.infraProviders.filter((p) => p.status === 'active').reduce((n, p) => n + p.maxGpus, 0))
   const tenants = useVisibleTenants(true)
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState<Record<keyof Quota, string>>({ vcpu: '', ramGb: '', gpus: '', storageGb: '' })
@@ -44,6 +46,12 @@ export default function Capacity() {
         }
       />
 
+      <p className="mb-4 text-caption text-text-secondary">
+        GPUs are also capped per provider: {formatInt(providerGpuMax)} across all active infrastructure providers.{' '}
+        <Link to="/super-admin/infra-providers" className="link">
+          See Infrastructure Providers
+        </Link>
+      </p>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {RESOURCES.map((r) => (
           <section key={r.key} className="card flex flex-col gap-4 p-5">

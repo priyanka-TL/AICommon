@@ -1,6 +1,5 @@
 import { hashString, seededRandom } from '@/data/seed'
 import type { CatalogItem, Environment } from '@/data/types'
-import { estimateCost } from './cost'
 import { allocationOf } from './quota'
 import { COMPUTE_TIERS } from './labels'
 
@@ -78,7 +77,8 @@ export function liveWindow(env: Environment): { start: number; end: number } | n
   return { start, end }
 }
 
-export function pointAt(env: Environment, catalog: CatalogItem[], t: number, bucket: number, stepMs: number): MetricPoint {
+/** `monthlyCost` comes from the shared cost engine (`costBreakdown(...).total`). */
+export function pointAt(env: Environment, _catalog: CatalogItem[], t: number, bucket: number, stepMs: number, monthlyCost = 0): MetricPoint {
   const tier = COMPUTE_TIERS.find((x) => x.value === env.spec.compute)!
   const alloc = allocationOf(env.spec)
   const gpuMemAlloc = tier.gpuMemGb * alloc.gpus
@@ -119,7 +119,7 @@ export function pointAt(env: Environment, catalog: CatalogItem[], t: number, buc
     const per = calls * share * (650 + n('tok' + l.id) * 500)
     tokens[l.id] = { in: Math.round(per * 0.64), out: Math.round(per * 0.36) }
   }
-  const hourlyCost = estimateCost(env.spec, catalog).credits / 720
+  const hourlyCost = monthlyCost / 720
   return {
     t,
     cpu: Math.round(cpu * 10) / 10,
@@ -139,22 +139,22 @@ export function pointAt(env: Environment, catalog: CatalogItem[], t: number, buc
   }
 }
 
-export function seriesFor(env: Environment, catalog: CatalogItem[], range: Range, now = Date.now()): MetricPoint[] {
+export function seriesFor(env: Environment, catalog: CatalogItem[], range: Range, now = Date.now(), monthlyCost = 0): MetricPoint[] {
   const { points, stepMs } = RANGES[range]
   const lastBucket = Math.floor(now / stepMs)
   const out: MetricPoint[] = []
   for (let i = points - 1; i >= 1; i--) {
     const b = lastBucket - i
-    out.push(pointAt(env, catalog, b * stepMs, b, stepMs))
+    out.push(pointAt(env, catalog, b * stepMs, b, stepMs, monthlyCost))
   }
-  out.push(currentPoint(env, catalog, now, stepMs))
+  out.push(currentPoint(env, catalog, now, stepMs, monthlyCost))
   return out
 }
 
 /** The newest point changes every 5 seconds so live charts move. */
-export function currentPoint(env: Environment, catalog: CatalogItem[], now = Date.now(), stepMs = RANGES['1h'].stepMs) {
+export function currentPoint(env: Environment, catalog: CatalogItem[], now = Date.now(), stepMs = RANGES['1h'].stepMs, monthlyCost = 0) {
   const live = Math.floor(now / LIVE_INTERVAL_MS)
-  return pointAt(env, catalog, now, live, stepMs)
+  return pointAt(env, catalog, now, live, stepMs, monthlyCost)
 }
 
 export interface Utilisation {

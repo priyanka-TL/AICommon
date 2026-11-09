@@ -5,11 +5,15 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as ChartTi
 import { CalendarPlus, CheckCircle2, Eye, EyeOff, FlaskConical, GitBranch, Pause, Pencil, Play, XCircle } from 'lucide-react'
 import type { Environment } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
-import { canSeeEnvironment, useMemberProjectIds, useScope } from '@/store/selectors'
-import { estimateCost } from '@/lib/cost'
+import { canSeeEnvironment, useEnvDeployments, useMemberProjectIds, useScope } from '@/store/selectors'
+import { ProjectsTab } from '@/components/deploy/ProjectsTab'
+import { EnvCapabilitiesTab } from '@/components/deploy/EnvCapabilitiesTab'
+import { costBreakdown, dailySpend, spendToDate } from '@/lib/cost'
+import { useCostContext } from '@/store/selectors'
+import { CostBreakdown } from '@/components/shared/CostBreakdown'
 import { formatCompact, formatDate, formatInt, formatShortDate, formatTime, relativeTime } from '@/lib/format'
 import { autoShutdownLabel, CATEGORY_SINGULAR, COMPUTE_TIERS, dataClassLabel, purposeLabel, roleLabel } from '@/lib/labels'
-import { envUsageSeries, initialLogs, makeLogLine, type LogLine } from '@/lib/mock'
+import { initialLogs, makeLogLine, type LogLine } from '@/lib/mock'
 import { axisProps, CHART_COLORS, CHART_GRID } from '@/lib/chart'
 import { allocationOf } from '@/lib/quota'
 import { editEnvPath, itemPath, requestPath } from '@/lib/paths'
@@ -31,6 +35,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog'
 import { RadioCardItem, RadioGroup } from '@/components/ui/controls'
 import NotFound from '@/pages/NotFound'
+import { isAdmin } from '@/lib/roles'
+import { needsMigration } from '@/lib/providers'
+import { MigrateBadge } from '@/components/shared/TenantProviders'
+import { OpenTerminalButton } from '@/components/shared/OpenTerminalButton'
 
 function snippets(env: Environment, model: string, kind: 'chat' | 'asr') {
   const url = `${env.endpoint}/${kind === 'chat' ? 'chat/completions' : 'audio/transcriptions'}`
@@ -221,20 +229,26 @@ export default function EnvironmentDetail() {
   const [snippetKind, setSnippetKind] = useState<'chat' | 'asr'>('chat')
   const [extendOpen, setExtendOpen] = useState(false)
   const [extendWeeks, setExtendWeeks] = useState('4')
-  const usage = useMemo(() => (env ? envUsageSeries(env) : []), [env])
+  const costCtx = useCostContext(env?.tenantId)
+  const tenants = useAppStore((s) => s.tenants)
+  const usage = useMemo(
+    () => (env ? dailySpend(env, 30, costCtx).map((d, i) => ({ ...d, requests: Math.round(d.credits * (3.2 + ((i * 37) % 10) / 10)) })) : []),
+    [env, costCtx],
+  )
+  const spent = useMemo(() => (env ? spendToDate(env, costCtx).total : 0), [env, costCtx])
+  const deployments = useEnvDeployments(env?.id)
 
-  if (!env || !canSeeEnvironment(scope, env, memberOf)) {
+  if (!env || !canSeeEnvironment(scope, env, memberOf, deployments.map((d) => d.projectId))) {
     return <NotFound message="This environment doesn’t exist or is outside what you can see." />
   }
 
   const item = (cid: string) => catalog.find((c) => c.id === cid)
   const owner = users.find((u) => u.id === env.ownerId)
-  const project = projects.find((p) => p.id === env.projectId)
-  const est = estimateCost(env.spec, catalog)
+  const est = costBreakdown(env.spec, costCtx)
   const alloc = allocationOf(env.spec)
   const tier = COMPUTE_TIERS.find((t) => t.value === env.spec.compute)!
   const live = env.status === 'active' || env.status === 'stopped' || env.status === 'suspended'
-  const canManage = scope.role !== 'user' || env.ownerId === scope.user.id
+  const canManage = isAdmin(scope.role) || env.ownerId === scope.user.id
   const requests7 = usage.slice(-7).reduce((s, u) => s + u.requests, 0)
   const firstModel = env.spec.llms[0] ? item(env.spec.llms[0].id)?.version : undefined
   const firstAsr = env.spec.asr[0] ? item(env.spec.asr[0])?.version : undefined
@@ -245,17 +259,26 @@ export default function EnvironmentDetail() {
   const last = env.history[env.history.length - 1]
   const actions = actionsFor(env)
   const monitoringBlocked = NO_MONITORING[env.status]
-  const tab = params.get('tab') === 'monitoring' && !monitoringBlocked ? 'monitoring' : params.get('tab') === 'tests' ? 'tests' : 'overview'
+  const tabParam = params.get('tab')
+  const tab = tabParam === 'monitoring' && !monitoringBlocked ? 'monitoring' : tabParam === 'tests' || tabParam === 'projects' || tabParam === 'capabilities' ? tabParam : 'overview'
+  const openDeployment = params.get('deployment')
+  const setOpenDeployment = (depId: string | null) => {
+    const next = new URLSearchParams(params)
+    if (depId) next.set('deployment', depId)
+    else next.delete('deployment')
+    setParams(next, { replace: true })
+  }
+  const hostedNames = [...new Set(deployments.map((d) => d.projectId))].map((pid) => projects.find((p) => p.id === pid)?.name).filter(Boolean)
   const attached = [
     ...env.spec.llms.map((l) => ({ it: item(l.id), extra: `${l.tokenBudget}M tokens / month` })),
     ...env.spec.asr.map((a) => ({ it: item(a), extra: env.spec.languages.join(', ') || 'No languages' })),
-    ...env.spec.capabilities.map((c) => ({ it: item(c), extra: null as string | null })),
+    ...env.capabilities.map((c) => ({ it: item(c.itemId), extra: `${c.version} · shared with all projects` as string | null })),
   ].filter((a) => a.it)
 
   return (
     <>
       <PageHeader
-        eyebrow={`${scope.role === 'super_admin' ? `${tenant?.name} · ` : ''}${project?.name ?? ''}`}
+        eyebrow={`${scope.role === 'super_admin' ? `${tenant?.name} · ` : ''}${hostedNames.length > 2 ? `${hostedNames[0]} + ${hostedNames.length - 1} more projects` : hostedNames.join(' · ') || 'No projects yet'}`}
         title={env.spec.name}
         description={env.spec.description || undefined}
         actions={
@@ -292,6 +315,14 @@ export default function EnvironmentDetail() {
                 )}
               </>
             )}
+            <OpenTerminalButton env={env} />
+            {scope.role === 'qa' && env.status === 'active' && (
+              <Button asChild>
+                <Link to={`/qa/functional?env=${env.id}`}>
+                  <FlaskConical /> Test this environment
+                </Link>
+              </Button>
+            )}
             {scope.role === 'user' && env.status === 'active' && !actions.some((a) => a.tone === 'primary') && (
               <Button asChild>
                 <Link to={`/app/testing?env=${env.id}`}>
@@ -306,6 +337,7 @@ export default function EnvironmentDetail() {
       <div className="mb-6 flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={env.status} />
+          {needsMigration(env, tenants) && <MigrateBadge />}
           {pendingChange && <StatusBadge status={pendingChange.status} label={`Change ${pendingChange.status === 'escalated' ? 'with Super Admin' : 'under review'}`} />}
           <Tag>
             {tier.label}
@@ -346,9 +378,11 @@ export default function EnvironmentDetail() {
         {pendingChange && (
           <div className="rounded-card bg-status-review-bg px-4 py-3 text-sm text-status-review-fg">
             A change that needs more infrastructure is waiting for approval. The environment keeps its current setup until then.{' '}
-            <Link to={requestPath(scope.role, pendingChange.id)} className="font-semibold underline underline-offset-2">
-              See the request
-            </Link>
+            {scope.role !== 'qa' && (
+              <Link to={requestPath(scope.role, pendingChange.id)} className="font-semibold underline underline-offset-2">
+                See the request
+              </Link>
+            )}
           </div>
         )}
         {tenant?.status === 'suspended' && (
@@ -362,11 +396,14 @@ export default function EnvironmentDetail() {
           const next = new URLSearchParams(params)
           if (v === 'overview') next.delete('tab')
           else next.set('tab', v)
+          if (v !== 'projects') next.delete('deployment')
           setParams(next, { replace: true })
         }}
       >
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          {env.status !== 'provisioning' && env.status !== 'provisioning_failed' && <TabsTrigger value="projects">Projects ({deployments.length})</TabsTrigger>}
+          {env.status !== 'provisioning_failed' && <TabsTrigger value="capabilities">Capabilities ({env.capabilities.length})</TabsTrigger>}
           {monitoringBlocked ? (
             <Tooltip content={monitoringBlocked}>
               <span>
@@ -384,8 +421,8 @@ export default function EnvironmentDetail() {
         <TabsContent value="overview">
           {monitoringBlocked && <p className="mb-4 text-caption text-text-muted">Monitoring: {monitoringBlocked}</p>}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <KpiCard label="Credits used" value={formatInt(env.creditsUsed)} trend={{ direction: 'flat', text: 'Since it started' }} />
-            <KpiCard label="Estimated per month" value={formatInt(est.credits)} trend={{ direction: 'flat', text: `${formatInt(est.gpuHours)} GPU-hours` }} />
+            <KpiCard label="Credits used" value={formatInt(spent)} trend={{ direction: 'flat', text: 'Since it started' }} />
+            <KpiCard label="Estimated per month" value={formatInt(est.total)} trend={{ direction: 'flat', text: `${formatInt(est.gpuHours)} GPU-hours` }} />
             <KpiCard label="Requests, last 7 days" value={formatCompact(requests7)} trend={{ direction: 'flat', text: env.status === 'active' ? 'Serving traffic' : 'No traffic right now' }} />
             <KpiCard label="Expires" value={env.expiresAt ? formatShortDate(env.expiresAt) : '—'} trend={{ direction: 'flat', text: env.expiresAt ? formatDate(env.expiresAt) : 'No end date' }} />
           </div>
@@ -467,7 +504,7 @@ export default function EnvironmentDetail() {
               </section>
 
               <ChartCard title="Usage" description="Credits and requests per day, last 30 days" height={240}>
-                {env.creditsUsed === 0 ? (
+                {spent === 0 ? (
                   <div className="flex h-full items-center justify-center text-sm text-text-secondary">No usage yet. It shows up once the environment serves requests.</div>
                 ) : (
                   <ResponsiveContainer width="100%" height="100%">
@@ -490,7 +527,7 @@ export default function EnvironmentDetail() {
               <section className="card p-6">
                 <h2 className="mb-4 font-heading text-h3 text-text-primary">Lifecycle</h2>
                 <LifecycleTimeline events={events} future={futureSteps(events, request)} users={users} />
-                {request && (
+                {request && scope.role !== 'qa' && (
                   <Link to={requestPath(scope.role, request.id)} className="link mt-4 inline-block text-caption">
                     Open the original request
                   </Link>
@@ -532,7 +569,9 @@ export default function EnvironmentDetail() {
                   {(
                     [
                       ['Owner', `${owner?.name ?? ''}${owner ? ` · ${roleLabel(owner.role)}` : ''}`],
-                      ['Compute', `${tier.label}${alloc.gpus > 1 ? ` × ${alloc.gpus}` : ''}`],
+                      ['Provider', est.provider ? `${est.provider.name} · ${est.region?.name ?? ''}` : '—'],
+                      ['Instance', `${env.spec.instance.name}${env.spec.instanceCount > 1 ? ` × ${env.spec.instanceCount}` : ''} · ${tier.label}`],
+                      ['Rate card', `v${env.rateCardVersion} at provisioning${est.rateCard && est.rateCard.version !== env.rateCardVersion ? ` · v${est.rateCard.version} now` : ''}`],
                       ['Allocation', `${alloc.vcpu} vCPU · ${alloc.ramGb} GB RAM · ${formatInt(alloc.storageGb)} GB`],
                       ['Auto-shutdown', autoShutdownLabel(env.spec.autoShutdownHours)],
                       ['Personal identifiers', env.spec.containsPii ? 'Yes' : 'No'],
@@ -545,9 +584,18 @@ export default function EnvironmentDetail() {
                   ))}
                 </dl>
               </section>
+
+              <section className="card p-6">
+                <h2 className="mb-4 font-heading text-h3 text-text-primary">Estimated cost</h2>
+                <CostBreakdown est={est} />
+              </section>
             </div>
           </div>
         </TabsContent>
+
+        <TabsContent value="projects">{tab === 'projects' && <ProjectsTab env={env} openId={openDeployment} onOpen={setOpenDeployment} />}</TabsContent>
+
+        <TabsContent value="capabilities">{tab === 'capabilities' && <EnvCapabilitiesTab env={env} />}</TabsContent>
 
         <TabsContent value="monitoring">{!monitoringBlocked && tab === 'monitoring' && <MonitoringPanel env={env} catalog={catalog} />}</TabsContent>
 

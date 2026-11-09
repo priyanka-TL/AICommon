@@ -31,9 +31,16 @@ const MATCH_LABELS: Record<TestCaseSeed['match'], string> = {
   similar: 'Similar meaning',
 }
 
-const fresh = (): Case[] => DEFAULT_TEST_CASES.map((c) => ({ ...c, id: uid('tc') }))
+const toCases = (seeds: TestCaseSeed[]): Case[] => seeds.map((c) => ({ ...c, id: uid('tc') }))
 
-export function FunctionalTests({ env }: { env: Environment }) {
+export interface FunctionalRun {
+  modelId: string
+  cases: TestCaseSeed[]
+  outcomes: TestOutcome[]
+}
+
+export function FunctionalTests({ env, initialCases, onFinished }: { env: Environment; initialCases?: TestCaseSeed[]; onFinished?: (run: FunctionalRun) => void }) {
+  const fresh = () => toCases(initialCases ?? DEFAULT_TEST_CASES)
   const catalog = useAppStore((s) => s.catalog)
   const providers = useAppStore((s) => s.providers)
   const recordTestRun = useAppStore((s) => s.recordTestRun)
@@ -101,6 +108,7 @@ export function FunctionalTests({ env }: { env: Environment }) {
         if (i === cases.length - 1) {
           const p = Object.values(outcomes).filter((x) => x.passed).length
           setHistory((h) => [{ id: uid('run'), at: new Date().toISOString(), modelName: model.name, passed: p, total: cases.length }, ...h].slice(0, 5))
+          onFinished?.({ modelId: model.id, cases: cases.map(({ input, expected, match }) => ({ input, expected, match })), outcomes: cases.map((x) => outcomes[x.id]!) })
           recordTestRun({ envId: env.id, kind: 'functional', summary: `Ran ${cases.length} functional tests with ${model.name}: ${p} of ${cases.length} passed`, passed: p === cases.length })
           if (p === cases.length) toast.success(`All ${p} tests passed.`)
           else toast.warning(`${p} of ${cases.length} tests passed.`, { description: 'Open the failed rows to see what the model returned.' })

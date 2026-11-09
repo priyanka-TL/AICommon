@@ -1,13 +1,19 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { BookOpen, FolderPlus, GitBranch, Lock, Plus } from 'lucide-react'
+import { Award, BookOpen, FolderPlus, GitBranch, Lock, Plus } from 'lucide-react'
 import { toast } from 'sonner'
-import { useAppStore, useCurrentTenant } from '@/store/useAppStore'
+import { useAppStore, useCurrentTenant, useCurrentUser } from '@/store/useAppStore'
 import { useScopedEnvironments, useScopedProjects, useTenantCatalog } from '@/store/selectors'
 import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Field } from '@/components/ui/field'
 import { CATEGORY_SINGULAR } from '@/lib/labels'
+import { relativeTime } from '@/lib/format'
+import { reportPath } from '@/lib/paths'
+import { qualityScore } from '@/lib/qa'
+import { ACCESS_MODE_LABELS, accessModesFor } from '@/lib/providers'
+import { canEditProject } from '@/lib/roles'
+import type { AccessMode } from '@/data/types'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CatalogStatusBadge, StatusBadge, Tag } from '@/components/shared/StatusBadge'
 import { CodeBlock } from '@/components/shared/CodeBlock'
@@ -30,9 +36,18 @@ export default function CatalogDetail() {
   const [addOpen, setAddOpen] = useState(false)
   const [projectOpen, setProjectOpen] = useState(false)
   const [projectId, setProjectId] = useState('')
+  const role = useCurrentUser()?.role
+  const readOnly = role === 'qa'
+  const users = useAppStore((s) => s.users)
+  const qaRuns = useAppStore((s) => s.qaRuns)
+  const infraProviders = useAppStore((s) => s.infraProviders)
+  const [access, setAccess] = useState<AccessMode>('direct')
+  const [version, setVersion] = useState('')
+  const me = useCurrentUser()
 
   if (!item) return <NotFound message="This item isn’t available to your tenant. It may have been removed or not published to you yet." />
 
+  const accessModes = accessModesFor(item, infraProviders, tenant)
   const allowed = item.enabled
   const usedIn = environments.filter(
     (e) =>
@@ -74,11 +89,13 @@ export default function CatalogDetail() {
                 </a>
               </Button>
             )}
+            {!readOnly && (<>
             <Button
               variant="secondary"
               disabled={!!blockedReason || projects.length === 0}
               onClick={() => {
                 setProjectId(projects.find((p) => !p.capabilityIds.includes(item.id))?.id ?? projects[0]?.id ?? '')
+                setAccess('direct')
                 setProjectOpen(true)
               }}
             >
@@ -91,9 +108,44 @@ export default function CatalogDetail() {
             ) : (
               addButton
             )}
+            </>)}
           </>
         }
       />
+
+      {projects
+        .filter((p) => p.recommendation?.modelId === item.id)
+        .map((p) => {
+          const rec = p.recommendation!
+          const run = qaRuns.find((x) => x.id === rec.runId)
+          const s = run?.models.find((m) => m.modelId === item.id)
+          return (
+            <section key={p.id} className="card mb-6 flex flex-col gap-3 border-indigo p-5 dark:border-indigo-text sm:flex-row sm:items-start">
+              <Award className="size-6 shrink-0 text-indigo-text" aria-hidden />
+              <div className="min-w-0 flex-1">
+                <p className="eyebrow">Recommended by QA</p>
+                <p className="mt-1 font-semibold text-text-primary">
+                  Recommended for {p.name}
+                  {run && run.models.length > 1 ? ` after comparing ${run.models.length} models` : ''}
+                </p>
+                {s && (
+                  <p className="tabular mt-1 text-caption text-text-secondary">
+                    Quality {qualityScore(s).toFixed(2)} · accuracy {s.accuracy.toFixed(2)} · p95 {s.latencyP95} ms · {s.costCredits.toFixed(3)} credits for the test set
+                  </p>
+                )}
+                {rec.note && <p className="mt-2 border-l-[3px] border-purple pl-3 text-sm italic text-text-primary">{rec.note}</p>}
+                <p className="mt-2 text-caption text-text-muted">
+                  {users.find((u) => u.id === rec.byId)?.name} · {relativeTime(rec.at)}
+                </p>
+              </div>
+              {run && role && (
+                <Button asChild variant="secondary" size="compact">
+                  <Link to={reportPath(role, run.id)}>View report</Link>
+                </Button>
+              )}
+            </section>
+          )
+        })}
 
       {blockedReason && (
         <div className="mb-6 flex items-center gap-2.5 rounded-card bg-status-stopped-bg px-4 py-3 text-sm text-status-stopped-fg">
@@ -214,14 +266,46 @@ export default function CatalogDetail() {
                 </SelectTrigger>
                 <SelectContent>
                   {projects.map((p) => (
-                    <SelectItem key={p.id} value={p.id} disabled={p.capabilityIds.includes(item.id)}>
+                    <SelectItem key={p.id} value={p.id} disabled={p.capabilityIds.includes(item.id) || !canEditProject(me, p)}>
                       {p.name}
-                      {p.capabilityIds.includes(item.id) ? ' · already added' : ''}
+                      {p.capabilityIds.includes(item.id) ? ' · already added' : !canEditProject(me, p) ? ' · view only' : ''}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </Field>
+            {item.versions.length > 1 && (
+              <Field label="Version" htmlFor="ap-version" helper="If an environment pins a different version, you’ll choose one before deploying." className="mt-4">
+                <Select value={version || item.version} onValueChange={setVersion}>
+                  <SelectTrigger id="ap-version">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {item.versions.map((v) => (
+                      <SelectItem key={v} value={v}>
+                        {v}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            )}
+            {item.category === 'llm' && (
+              <Field label="Access through" helper="How this project reaches the model. Cloud model services come from the infrastructure providers your organisation can use." className="mt-4">
+                <Select value={access} onValueChange={(v) => setAccess(v as AccessMode)}>
+                  <SelectTrigger aria-label="Access through">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {accessModes.map((m) => (
+                      <SelectItem key={m} value={m}>
+                        {ACCESS_MODE_LABELS[m]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            )}
           </DialogBody>
           <DialogFooter>
             <DialogClose asChild>
@@ -230,7 +314,7 @@ export default function CatalogDetail() {
             <Button
               disabled={!projectId}
               onClick={() => {
-                const res = addProjectCapability(projectId, item.id)
+                const res = addProjectCapability(projectId, item.id, item.category === 'llm' ? access : undefined, version || item.version)
                 if (!res.ok) {
                   toast.error(res.error)
                   return

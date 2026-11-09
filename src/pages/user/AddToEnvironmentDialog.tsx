@@ -1,3 +1,4 @@
+import { isAdmin } from '@/lib/roles'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -5,7 +6,8 @@ import { ArrowRight, Check, ServerOff } from 'lucide-react'
 import type { CatalogItem, EnvSpec, Language } from '@/data/types'
 import { useAppStore, useCurrentUser } from '@/store/useAppStore'
 import { useScopedEnvironments } from '@/store/selectors'
-import { estimateCost } from '@/lib/cost'
+import { costBreakdown } from '@/lib/cost'
+import { useCostContext } from '@/store/selectors'
 import { formatInt } from '@/lib/format'
 import { envPath, newEnvPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
@@ -29,7 +31,7 @@ export function useEligibleEnvironments(item: CatalogItem | undefined) {
         ? environments.filter(
             (e) =>
               ['active', 'stopped'].includes(e.status) &&
-              (user.role !== 'user' || e.ownerId === user.id) &&
+              (isAdmin(user.role) || e.ownerId === user.id) &&
               !includes(e.spec, item.id) &&
               !requests.some((r) => r.envId === e.id && r.kind === 'change' && ['submitted', 'under_review', 'resubmitted', 'escalated'].includes(r.status)),
           )
@@ -40,7 +42,6 @@ export function useEligibleEnvironments(item: CatalogItem | undefined) {
 
 export function AddToEnvironmentDialog({ item, open, onOpenChange }: { item: CatalogItem; open: boolean; onOpenChange: (o: boolean) => void }) {
   const user = useCurrentUser()!
-  const catalog = useAppStore((s) => s.catalog)
   const editEnvironment = useAppStore((s) => s.editEnvironment)
   const eligible = useEligibleEnvironments(item)
   const navigate = useNavigate()
@@ -70,8 +71,9 @@ export function AddToEnvironmentDialog({ item, open, onOpenChange }: { item: Cat
       : item.category === 'asr'
         ? { ...env.spec, asr: [...env.spec.asr, item.id], languages: [...new Set([...env.spec.languages, ...languages])], asrHoursPerMonth: env.spec.asrHoursPerMonth || 20 }
         : { ...env.spec, capabilities: [...env.spec.capabilities, item.id] }
-  const before = env ? estimateCost(env.spec, catalog) : null
-  const after = next ? estimateCost(next, catalog) : null
+  const costCtx = useCostContext(env?.tenantId)
+  const before = env ? costBreakdown(env.spec, costCtx) : null
+  const after = next ? costBreakdown(next, costCtx) : null
 
   const submit = () => {
     if (!env || !next) return
@@ -168,9 +170,9 @@ export function AddToEnvironmentDialog({ item, open, onOpenChange }: { item: Cat
               {before && after && (
                 <div className="flex flex-wrap items-center gap-3 rounded-card bg-bg-subtle p-4 text-sm">
                   <span className="text-caption text-text-secondary">Estimated cost</span>
-                  <span className="tabular text-text-secondary">{formatInt(before.credits)}</span>
+                  <span className="tabular text-text-secondary">{formatInt(before.total)}</span>
                   <ArrowRight className="size-4 text-text-muted" aria-hidden />
-                  <span className="tabular font-heading text-h3 text-text-primary">{formatInt(after.credits)}</span>
+                  <span className="tabular font-heading text-h3 text-text-primary">{formatInt(after.total)}</span>
                   <span className="text-caption text-text-secondary">credits / month</span>
                 </div>
               )}

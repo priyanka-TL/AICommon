@@ -4,7 +4,10 @@ import { toast } from 'sonner'
 import { ArrowRight, MessageSquare, MessageSquareWarning } from 'lucide-react'
 import { useAppStore } from '@/store/useAppStore'
 import { useScope } from '@/store/selectors'
-import { estimateCost } from '@/lib/cost'
+import { costBreakdown } from '@/lib/cost'
+import { useCostContext } from '@/store/selectors'
+import { ProviderCapacityWarning } from '@/components/shared/ProviderCapacityWarning'
+import { BudgetCapWarning, requestBudget, useBudgetInputs } from '@/components/shared/BudgetCapWarning'
 import { formatInt, relativeTime } from '@/lib/format'
 import { purposeLabel, roleLabel } from '@/lib/labels'
 import { allocationOf, tenantAllocated } from '@/lib/quota'
@@ -48,6 +51,9 @@ export default function RequestDetail() {
     if (id) openRequest(id)
   }, [id, openRequest])
 
+  const costCtx = useCostContext(request?.tenantId)
+  const budgetInputs = useBudgetInputs()
+  const infraProviders = costCtx.providers
   const quota = useRequestQuota(request ?? ({ tenantId: '', spec: {}, status: 'approved' } as never))
 
   const visible =
@@ -63,11 +69,12 @@ export default function RequestDetail() {
   const env = request.envId ? environments.find((e) => e.id === request.envId) : undefined
   const events = mergedHistory(request, request.kind === 'new' ? env : null)
   const future = futureSteps(events, request)
-  const est = estimateCost(request.spec, catalog)
+  const est = costBreakdown(request.spec, costCtx)
+  const budget = requestBudget(request, budgetInputs)
   const used = tenantAllocated(environments, tenant.id)
   const open = !['approved', 'rejected', 'cancelled', 'draft'].includes(request.status)
-  const requested = request.kind === 'change' && request.previousSpec ? diffSpecs(request.previousSpec, request.spec, catalog, projects) : []
-  const project = projects.find((p) => p.id === request.spec.projectId)
+  const requested = request.kind === 'change' && request.previousSpec ? diffSpecs(request.previousSpec, request.spec, catalog, projects, infraProviders) : []
+  const requestProjects = projects.filter((p) => request.spec.projectIds.includes(p.id))
   const lastAsk = [...request.history].reverse().find((h) => h.status === 'changes_requested')
 
   return (
@@ -79,8 +86,9 @@ export default function RequestDetail() {
           <span className="flex flex-wrap items-center gap-2">
             <StatusBadge status={request.status} />
             {open && quota.over && <StatusBadge status="over-quota" />}
+            {open && budget?.over && <StatusBadge status="over-quota" label="Over budget cap" />}
             <Tag>{purposeLabel(request.spec.purpose)}</Tag>
-            {project && <Tag>{project.name}</Tag>}
+            {requestProjects.length ? requestProjects.map((p) => <Tag key={p.id}>{p.name}</Tag>) : <Tag>No projects yet</Tag>}
           </span>
         }
         actions={<RequestActions request={request} />}
@@ -222,9 +230,12 @@ export default function RequestDetail() {
             {open && <p className="mt-3 text-caption text-text-muted">The lighter part shows this request.</p>}
           </Card>
 
+          {open && <ProviderCapacityWarning spec={request.spec} previous={request.kind === 'change' ? request.previousSpec : null} />}
+          {open && <BudgetCapWarning check={budget} audience={scope.user.id === request.requesterId ? 'requester' : 'reviewer'} />}
+
           <Card title="Estimated cost">
             <p className="mb-3 flex items-baseline gap-2">
-              <span className="tabular font-heading text-kpi text-text-primary">{formatInt(est.credits)}</span>
+              <span className="tabular font-heading text-kpi text-text-primary">{formatInt(est.total)}</span>
               <span className="text-sm text-text-secondary">credits / month</span>
             </p>
             <CostBreakdown est={est} />

@@ -1,27 +1,21 @@
 import { useEffect, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import { ArrowUpRight, CheckCircle2, ExternalLink, GitBranch, GitPullRequestArrow, Globe2, MessageSquareWarning, XCircle } from 'lucide-react'
-import type { CatalogCategory, Suggestion } from '@/data/types'
+import { ArrowUpRight, CheckCircle2, ExternalLink, GitBranch, Globe2, MessageSquareWarning, XCircle } from 'lucide-react'
+import type { Suggestion } from '@/data/types'
 import { useAppStore, type RegistryFields, type SuggestionAction } from '@/store/useAppStore'
-import { useScope, useScopedSuggestions, useVisibleTenants } from '@/store/selectors'
-import { useSimulatedLoading } from '@/hooks/useSimulatedLoading'
+import { useScope, useVisibleTenants } from '@/store/selectors'
 import { formatDateTime, relativeTime } from '@/lib/format'
 import { CATEGORY_SINGULAR, roleLabel, SUGGESTION_LABELS } from '@/lib/labels'
 import { itemPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
-import { PageHeader } from '@/components/layout/PageHeader'
-import { EmptyState } from '@/components/shared/EmptyState'
 import { SuggestionBadge, Tag } from '@/components/shared/StatusBadge'
 import { Avatar } from '@/components/shared/Avatar'
 import { Button } from '@/components/ui/button'
 import { Field } from '@/components/ui/field'
 import { Input, Textarea } from '@/components/ui/input'
 import { Checkbox, RadioGroup, RadioGroupItem } from '@/components/ui/controls'
-import { Skeleton } from '@/components/ui/skeleton'
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog'
-
-type Filter = 'open' | 'all'
 
 export function SuggestionHistory({ s }: { s: Suggestion }) {
   const users = useAppStore((st) => st.users)
@@ -47,7 +41,7 @@ export function SuggestionHistory({ s }: { s: Suggestion }) {
   )
 }
 
-function ReviewSheet({ suggestion, onClose }: { suggestion: Suggestion | null; onClose: () => void }) {
+export function ReviewSheet({ suggestion, onClose }: { suggestion: Suggestion | null; onClose: () => void }) {
   const scope = useScope()!
   const users = useAppStore((s) => s.users)
   const tenants = useVisibleTenants(true)
@@ -241,90 +235,5 @@ function ReviewSheet({ suggestion, onClose }: { suggestion: Suggestion | null; o
         )}
       </SheetContent>
     </Sheet>
-  )
-}
-
-export default function Suggestions() {
-  const loading = useSimulatedLoading()
-  const scope = useScope()!
-  const suggestions = useScopedSuggestions()
-  const tenants = useVisibleTenants(true)
-  const users = useAppStore((s) => s.users)
-  const [params, setParams] = useSearchParams()
-  const [filter, setFilter] = useState<Filter>('open')
-  const isSuper = scope.role === 'super_admin'
-  const selected = suggestions.find((s) => s.id === params.get('id')) ?? null
-
-  const needsMe = (s: Suggestion) =>
-    isSuper ? (s.forwarded && ['submitted', 'under_review'].includes(s.status)) || s.status === 'approved_tenant' : ['submitted', 'under_review'].includes(s.status) && !s.forwarded
-  const rows = suggestions.filter((s) => filter === 'all' || needsMe(s)).sort((a, b) => b.history[b.history.length - 1]!.at.localeCompare(a.history[a.history.length - 1]!.at))
-
-  return (
-    <>
-      <PageHeader
-        eyebrow={isSuper ? 'Platform' : tenants.find((t) => t.id === scope.user.tenantId)?.name}
-        title="Capability suggestions"
-        description={
-          isSuper
-            ? 'Suggestions forwarded by Tenant Admins, plus tenant-only approvals you can publish more widely. Nothing reaches another tenant until you publish it.'
-            : 'GitHub repositories your team has suggested. Approve them for your tenant, ask for more information, or forward them to the Super Admin.'
-        }
-      />
-      <div className="mb-4 flex gap-1 border-b border-border" role="tablist">
-        {(
-          [
-            ['open', isSuper ? 'Waiting for you' : 'Needs review'],
-            ['all', 'All suggestions'],
-          ] as const
-        ).map(([v, label]) => (
-          <button
-            key={v}
-            role="tab"
-            aria-selected={filter === v}
-            onClick={() => setFilter(v)}
-            className={cn('-mb-px border-b-2 px-3 py-2.5 text-sm font-semibold', filter === v ? 'border-indigo text-indigo-text' : 'border-transparent text-text-secondary hover:text-text-primary')}
-          >
-            {label} <span className="tabular text-text-muted">{v === 'open' ? suggestions.filter(needsMe).length : suggestions.length}</span>
-          </button>
-        ))}
-      </div>
-
-      {loading ? (
-        <div className="flex flex-col gap-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-24 rounded-card" />
-          ))}
-        </div>
-      ) : rows.length === 0 ? (
-        <div className="card">
-          <EmptyState icon={GitPullRequestArrow} title={filter === 'open' ? 'Nothing is waiting for you' : 'No suggestions yet'} description="People suggest GitHub repositories from the AI Capability Marketplace." />
-        </div>
-      ) : (
-        <ul className="flex flex-col gap-3">
-          {rows.map((s) => {
-            const by = users.find((u) => u.id === s.suggestedById)
-            return (
-              <li key={s.id}>
-                <button type="button" onClick={() => setParams({ id: s.id })} className="card card-interactive flex w-full flex-col gap-2 p-5 text-left sm:flex-row sm:items-center">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-heading text-h3 text-text-primary">{s.name}</span>
-                      <Tag>{CATEGORY_SINGULAR[s.category as CatalogCategory]}</Tag>
-                    </div>
-                    <p className="mt-1 truncate font-mono text-caption text-text-secondary">{s.githubUrl.replace('https://', '')}</p>
-                    <p className="mt-1 text-caption text-text-muted">
-                      {by?.name}
-                      {isSuper ? ` · ${tenants.find((t) => t.id === s.tenantId)?.name}` : ''} · {relativeTime(s.createdAt)}
-                    </p>
-                  </div>
-                  <SuggestionBadge status={s.status} forwarded={s.forwarded} />
-                </button>
-              </li>
-            )
-          })}
-        </ul>
-      )}
-      <ReviewSheet suggestion={selected} onClose={() => setParams({})} />
-    </>
   )
 }

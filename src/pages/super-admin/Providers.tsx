@@ -176,8 +176,8 @@ export default function Providers() {
     <>
       <PageHeader
         eyebrow="Platform"
-        title="Providers"
-        description="Model and speech providers behind the catalog. Keys are stored encrypted and never shown in full."
+        title="Model API providers"
+        description="Model and speech APIs behind the catalog, including the OpenRouter gateway. Keys are stored encrypted and never shown in full."
         actions={
           <Button onClick={testAll} disabled={testing.size > 0}>
             <RefreshCw /> Test all connections

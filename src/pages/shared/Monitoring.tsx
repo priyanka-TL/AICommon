@@ -3,12 +3,13 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Activity, Download, Info } from 'lucide-react'
 import type { Environment } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
-import { useScope, useScopedEnvironments, useScopedProjects, useVisibleTenants } from '@/store/selectors'
+import { useHostedProjectIds, useScope, useScopedEnvironments, useScopedProjects, useVisibleTenants } from '@/store/selectors'
 import { currentPoint, downloadText, LIVE_INTERVAL_MS, RANGES, seriesFor, type Range } from '@/lib/metrics'
 import { formatCompact, formatInt } from '@/lib/format'
 import { tenantAllocated } from '@/lib/quota'
 import { envPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
+import { isAdmin } from '@/lib/roles'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { MonitoringPanel, RangePicker } from '@/components/shared/MonitoringPanel'
@@ -65,6 +66,7 @@ export default function Monitoring() {
   const scope = useScope()!
   const environments = useScopedEnvironments()
   const projects = useScopedProjects()
+  const hosted = useHostedProjectIds()
   const tenants = useVisibleTenants()
   const allEnvs = useAppStore((s) => s.environments)
   const catalog = useAppStore((s) => s.catalog)
@@ -80,7 +82,7 @@ export default function Monitoring() {
     return () => clearInterval(t)
   }, [])
 
-  const filtered = environments.filter((e) => MONITORABLE.includes(e.status) && (projectId === 'all' || e.projectId === projectId) && (ownerId === 'all' || e.ownerId === ownerId))
+  const filtered = environments.filter((e) => MONITORABLE.includes(e.status) && (projectId === 'all' || !!hosted.get(e.id)?.includes(projectId)) && (ownerId === 'all' || e.ownerId === ownerId))
   const envId = params.get('env') ?? 'all'
   const selected = filtered.find((e) => e.id === envId)
   const owners = users.filter((u) => environments.some((e) => e.ownerId === u.id))
@@ -112,6 +114,8 @@ export default function Monitoring() {
         description={
           scope.role === 'user'
             ? 'Live metrics for environments you own or that belong to your projects.'
+            : scope.role === 'qa'
+              ? 'Live metrics for Active environments in the projects you test.'
             : scope.role === 'tenant_admin'
               ? 'Live metrics for every environment in your tenant.'
               : 'Live metrics across tenants. Use the tenant filter in the top bar to narrow it down.'
@@ -147,7 +151,7 @@ export default function Monitoring() {
             </SelectContent>
           </Select>
         )}
-        {scope.role !== 'user' && (
+        {isAdmin(scope.role) && (
           <Select value={ownerId} onValueChange={setOwnerId}>
             <SelectTrigger aria-label="Owner">
               <SelectValue />

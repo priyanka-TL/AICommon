@@ -1,33 +1,38 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, FolderKanban, Info, MessageSquareWarning, Save, Send, ShieldAlert } from 'lucide-react'
-import type { CatalogCategory, CatalogItem, EnvSpec, Language, Project, Role, Tenant } from '@/data/types'
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, Info, MessageSquareWarning, Save, Scale, Send, ShieldAlert, Sparkles } from 'lucide-react'
+import type { CatalogCategory, CatalogItem, EnvSpec, InfraProvider, Language, Project, Role, Tenant } from '@/data/types'
 import { useAppStore, useCurrentTenant, useCurrentUser } from '@/store/useAppStore'
 import { useTenantCatalog } from '@/store/selectors'
-import { activeHoursPerMonth, estimateCost, HOURLY_RATE } from '@/lib/cost'
+import { activeHoursPerMonth, costBreakdown, providerBudget, rateCardAt } from '@/lib/cost'
+import { approvalFor, providersOfferedTo, ensurePlacement, equivalentSpec, indiaResidency, instancesFor, isSensitive, PROVIDER_TYPE_LABELS, providerGpuTypes, providersFor, recommendProvider, residencyProblem, applyPlacement } from '@/lib/providers'
+import { useCostContext } from '@/store/selectors'
 import { allocationOf, checkQuota, quotaMessage, subQuota, tenantAllocated } from '@/lib/quota'
 import { addsInfrastructure } from '@/lib/spec'
-import { envPath, requestPath, requestsPath } from '@/lib/paths'
-import { EmptyState } from '@/components/shared/EmptyState'
-import { formatInt } from '@/lib/format'
-import { AUTO_SHUTDOWN_OPTIONS, CATEGORY_LABELS, COMPUTE_TIERS, DATA_CLASSES, LANGUAGES, PURPOSES } from '@/lib/labels'
+import { envPath, requestPath } from '@/lib/paths'
+import { formatDate, formatInt } from '@/lib/format'
+import { AUTO_SHUTDOWN_OPTIONS, CATEGORY_LABELS, DATA_CLASSES, LANGUAGES, PURPOSES } from '@/lib/labels'
 import { diffSpecs } from '@/lib/spec'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CostEstimate } from '@/components/shared/CostEstimate'
+import { Tag } from '@/components/shared/StatusBadge'
+import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog'
+import { ProviderRequestDialog } from '@/components/shared/ProviderRequestDialog'
 import { SelectableCard } from '@/components/shared/SelectableCard'
 import { SpecSummary } from '@/components/shared/SpecSummary'
 import { Button } from '@/components/ui/button'
 import { Field } from '@/components/ui/field'
 import { Input, Textarea } from '@/components/ui/input'
-import { RadioCardItem, RadioGroup, Slider } from '@/components/ui/controls'
+import { Checkbox, RadioCardItem, RadioGroup, Slider } from '@/components/ui/controls'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import NotFound from '@/pages/NotFound'
 
 const STEPS = [
   { title: 'Purpose', hint: 'What it is for' },
-  { title: 'Compute', hint: 'CPU or GPU, storage' },
+  { title: 'Provider & region', hint: 'Where it runs, compared' },
+  { title: 'Compute', hint: 'Instance, storage, shutdown' },
   { title: 'Language models', hint: 'Models and budgets' },
   { title: 'Speech recognition', hint: 'Providers and languages' },
   { title: 'Capabilities', hint: 'Frameworks and tools' },
@@ -35,14 +40,23 @@ const STEPS = [
   { title: 'Review', hint: 'Check and submit' },
 ]
 
+/** Step indexes, so validation and "Edit" links don't depend on magic numbers. */
+export const STEP = { purpose: 0, provider: 1, compute: 2, llms: 3, asr: 4, caps: 5, data: 6, review: 7 } as const
+
 const DURATIONS = [2, 4, 6, 8, 12, 16]
 
 export const DEFAULT_SPEC: EnvSpec = {
   name: '',
   description: '',
-  projectId: '',
+  projectIds: [],
   purpose: 'development',
   durationWeeks: 8,
+  providerId: '',
+  regionId: '',
+  instanceTypeId: '',
+  instance: { name: '', vcpu: 0, ramGb: 0, gpuType: 'none', gpuCount: 0 },
+  instanceCount: 1,
+  egressGbPerMonth: 50,
   compute: 't4',
   gpuCount: 1,
   storageGb: 100,
@@ -57,24 +71,31 @@ export const DEFAULT_SPEC: EnvSpec = {
   justification: '',
 }
 
-type Errors = Partial<Record<'name' | 'projectId' | 'languages' | 'justification' | 'changes', string>>
+type Errors = Partial<Record<'name' | 'regionId' | 'dataClassification' | 'languages' | 'justification' | 'changes', string>>
 
-function validate(spec: EnvSpec, step: number): Errors {
+function validate(spec: EnvSpec, step: number, providers: InfraProvider[]): Errors {
   const e: Errors = {}
-  if (step === 0 && !spec.projectId) e.projectId = 'Choose the project this environment is for.'
-  if (step === 0 && spec.name.trim().length < 3) e.name = 'Give the environment a name of at least 3 characters.'
-  if (step === 3 && spec.asr.length > 0 && spec.languages.length === 0) e.languages = 'Choose at least one language for speech recognition.'
-  if (step === 6 && spec.justification.trim().length < 10) e.justification = 'Tell your reviewers in a sentence or two why your organisation needs this.'
+  if (step === STEP.purpose && spec.name.trim().length < 3) e.name = 'Give the environment a name of at least 3 characters.'
+  if (step === STEP.provider && (!spec.providerId || !spec.regionId)) e.regionId = 'Choose a provider and a region.'
+  if (step === STEP.compute && !spec.instanceTypeId) e.regionId = 'Choose an instance type.'
+  const residency = residencyProblem(spec, providers)
+  if (step === STEP.provider && residency) e.regionId = residency
+  if (step === STEP.data && residency) e.dataClassification = residency
+  if (step === STEP.asr && spec.asr.length > 0 && spec.languages.length === 0) e.languages = 'Choose at least one language for speech recognition.'
+  if (step === STEP.review && spec.justification.trim().length < 10) e.justification = 'Tell your reviewers in a sentence or two why your organisation needs this.'
   return e
 }
 
 /* ---------- step components ---------- */
 
-function RadioCard({ value, title, description, extra }: { value: string; title: string; description: string; extra?: React.ReactNode }) {
+function RadioCard({ value, title, description, extra, disabled, reason }: { value: string; title: string; description: string; extra?: React.ReactNode; disabled?: boolean; reason?: string }) {
+  const reasonId = reason ? `rc-reason-${value}` : undefined
   return (
     <RadioCardItem
       value={value}
-      className="card relative flex flex-col gap-1 p-4 text-left transition-[box-shadow,border-color] hover:border-border-strong data-[state=checked]:border-2 data-[state=checked]:border-indigo data-[state=checked]:p-[15px] dark:data-[state=checked]:border-indigo-text [&[data-state=checked]_.check]:flex"
+      disabled={disabled}
+      aria-describedby={reasonId}
+      className="card relative flex flex-col gap-1 p-4 text-left disabled:cursor-not-allowed disabled:bg-bg-subtle disabled:opacity-70 transition-[box-shadow,border-color] hover:border-border-strong data-[state=checked]:border-2 data-[state=checked]:border-indigo data-[state=checked]:p-[15px] dark:data-[state=checked]:border-indigo-text [&[data-state=checked]_.check]:flex"
     >
       <span className="check absolute right-3 top-3 hidden size-5 items-center justify-center rounded-full bg-indigo text-white">
         <Check className="size-3.5" strokeWidth={3} aria-hidden />
@@ -82,27 +103,54 @@ function RadioCard({ value, title, description, extra }: { value: string; title:
       <span className="pr-6 font-semibold text-text-primary">{title}</span>
       <span className="text-caption text-text-secondary">{description}</span>
       {extra}
+      {reason && (
+        <span id={reasonId} className="mt-1 flex items-start gap-1.5 text-caption font-semibold text-status-over-fg">
+          <ShieldAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden /> {reason}
+        </span>
+      )}
     </RadioCardItem>
   )
 }
 
-function StepPurpose({ spec, set, errors, projects }: StepProps) {
+function StepPurpose({ spec, set, errors, projects, editing }: StepProps) {
+  const chosen = spec.projectIds.filter((id) => projects.some((p) => p.id === id))
   return (
     <div className="flex flex-col gap-6">
-      <Field label="Project" htmlFor="env-project" required error={errors.projectId} helper="Project members can see and use this environment.">
-        <Select value={spec.projectId} onValueChange={(v) => set({ projectId: v })}>
-          <SelectTrigger id="env-project" className="sm:max-w-md" aria-invalid={!!errors.projectId}>
-            <SelectValue placeholder="Choose a project" />
-          </SelectTrigger>
-          <SelectContent>
-            {projects.map((p) => (
-              <SelectItem key={p.id} value={p.id}>
-                {p.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </Field>
+      {!editing && (
+        <fieldset aria-describedby="env-projects-help">
+          <legend className="text-sm font-semibold text-text-primary">
+            Projects <span className="ml-1 font-normal text-text-muted">Optional</span>
+          </legend>
+          <p id="env-projects-help" className="mb-3 mt-0.5 text-caption text-text-secondary">
+            You can add projects later. Each project gets its own service, port and route on this environment, and its members can see and use it.
+          </p>
+          {projects.length === 0 ? (
+            <p className="rounded-control bg-bg-subtle px-3 py-2.5 text-caption text-text-secondary">
+              You aren’t in any project yet. You can still request the environment and add projects to it once it is active.
+            </p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {projects.map((p) => {
+                const on = chosen.includes(p.id)
+                return (
+                  <label key={p.id} className={cn('card flex cursor-pointer items-start gap-3 p-3 hover:border-border-strong', on && 'border-indigo dark:border-indigo-text')}>
+                    <Checkbox
+                      checked={on}
+                      onCheckedChange={(c) => set({ projectIds: c === true ? [...chosen, p.id] : chosen.filter((id) => id !== p.id) })}
+                      aria-label={`Host ${p.name}`}
+                      className="mt-0.5"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold text-text-primary">{p.name}</span>
+                      <span className="line-clamp-2 block text-caption text-text-secondary">{p.description}</span>
+                    </span>
+                  </label>
+                )
+              })}
+            </div>
+          )}
+        </fieldset>
+      )}
       <div>
         <p className="mb-3 text-sm font-semibold text-text-primary">What is this environment for?</p>
         <RadioGroup value={spec.purpose} onValueChange={(v) => set({ purpose: v as EnvSpec['purpose'] })} className="sm:grid-cols-2" aria-label="Purpose">
@@ -147,46 +195,373 @@ function StepPurpose({ spec, set, errors, projects }: StepProps) {
   )
 }
 
-function StepCompute({ spec, set }: StepProps) {
-  const hours = activeHoursPerMonth(spec.autoShutdownHours)
+function OtherProviders({ others, role, onAsk, dialog, pending }: { others: InfraProvider[]; role: Role; onAsk: (pid: string) => void; dialog: React.ReactNode; pending: string[] }) {
+  if (!others.length) return null
+  return (
+    <details className="rounded-card border border-border p-4">
+      <summary className="cursor-pointer text-sm font-semibold text-text-primary">Not enabled for your organisation ({others.length})</summary>
+      <p className="mt-2 text-caption text-text-secondary">
+        {role === 'tenant_admin' ? 'Not approved for your organisation yet. Request access from Infrastructure Providers.' : 'Not approved for your organisation yet. Your Tenant Admin can ask the Super Admin for them.'}
+      </p>
+      <ul className="mt-3 divide-y divide-border rounded-control border border-border">
+        {others.map((p) => (
+          <li key={p.id} className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold text-text-primary">{p.name}</span>
+              <span className="text-caption text-text-muted">
+                {PROVIDER_TYPE_LABELS[p.type]} · {p.regions.map((r) => r.name).join(', ')}
+              </span>
+            </span>
+            {pending.includes(p.id) ? (
+              <span className="text-caption text-text-muted">Already requested; it’s with your admins.</span>
+            ) : role === 'tenant_admin' ? (
+              <Link to="/tenant-admin/infra-providers" className="link text-caption">
+                Request access
+              </Link>
+            ) : (
+              <Button type="button" variant="ghost" size="compact" onClick={() => onAsk(p.id)} aria-label={`Ask my admin to enable ${p.name}`}>
+                Ask my admin to enable this provider
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {dialog}
+    </details>
+  )
+}
+
+function ProviderStepNotice({ note, onDismiss }: { note: string | null; onDismiss: () => void }) {
+  if (!note) return null
+  return (
+    <div className="flex items-start gap-3 rounded-card bg-status-provisioning-bg p-4 text-sm text-status-provisioning-fg" role="status">
+      <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
+      <p className="flex-1">{note}</p>
+      <button type="button" onClick={onDismiss} className="shrink-0 text-caption font-semibold underline underline-offset-2">
+        Dismiss
+      </button>
+    </div>
+  )
+}
+
+/** Note shown when switching provider or region changed the compute choice. */
+function placementChange(from: EnvSpec, to: EnvSpec, providerName: string): string | null {
+  if (!from.instance.name || from.instanceTypeId === to.instanceTypeId) return null
+  const gpu = (g: EnvSpec['instance']['gpuType']) => (g === 'none' ? 'CPU only' : `${g}`)
+  return `Changed the instance from ${from.instance.name} (${gpu(from.instance.gpuType)}) to ${to.instance.name} (${gpu(to.instance.gpuType)}) because ${providerName} doesn’t offer ${from.instance.name} there.`
+}
+
+function StepProvider({ spec, set, providers, tenant, errors, editing, role, placementNote, setPlacementNote }: StepProps) {
+  const environments = useAppStore((s) => s.environments)
+  const catalog = useAppStore((s) => s.catalog)
+  const allProviderRequests = useAppStore((s) => s.providerRequests)
+  const allowed = providersFor(providers, tenant)
+  const provider = providers.find((p) => p.id === spec.providerId)
+  const sensitive = isSensitive(spec)
+  const approval = approvalFor(tenant, spec.providerId)
+  const approvedRegions = (provider?.regions ?? []).filter((r) => !approval || approval.regionIds.includes(r.id))
+  const others = providersOfferedTo(providers, tenant.id).filter((p) => !approvalFor(tenant, p.id))
+  const [askFor, setAskFor] = useState<string | undefined>()
+  const [askOpen, setAskOpen] = useState(false)
+  const [compareOpen, setCompareOpen] = useState(false)
+  const [recommendation, setRecommendation] = useState<string | null>(null)
+  const pendingProviders = allProviderRequests
+    .filter((r) => r.tenantId === tenant.id && ['submitted', 'under_review', 'escalated', 'changes_requested', 'resubmitted'].includes(r.status))
+    .map((r) => r.providerId)
+
+  const ctx = { providers, catalog, tenant }
+  const rows = allowed.map((p) => {
+    const eq = equivalentSpec(spec, p, tenant, p.id === spec.providerId ? spec.regionId : undefined)
+    const est = eq ? costBreakdown(eq.spec, ctx) : null
+    const b = providerBudget(tenant, p.id, environments, { providers, catalog })
+    return { p, eq, est, remaining: b.cap - b.committed }
+  })
+  const cheapest = rows.filter((r) => r.est).reduce<(typeof rows)[number] | null>((a, r) => (!a || r.est!.total < a.est!.total ? r : a), null)
+
+  const apply = (next: EnvSpec, providerName: string) => {
+    setPlacementNote(placementChange(spec, next, providerName))
+    set(next)
+  }
+  const chooseProvider = (pid: string) => {
+    const p = providers.find((x) => x.id === pid)
+    const eq = p && equivalentSpec(spec, p, tenant)
+    if (eq && p) apply(eq.spec, p.name)
+    setRecommendation(null)
+  }
+  const chooseRegion = (rid: string) => {
+    if (!provider) return
+    const eq = equivalentSpec(spec, provider, tenant, rid)
+    if (eq) apply(eq.spec, `${provider.name} ${provider.regions.find((r) => r.id === rid)?.name ?? ''}`.trim())
+  }
+  const recommend = () => {
+    const rec = recommendProvider(spec, providers, tenant, (x) => costBreakdown(x, ctx).total, (pid) => rows.find((r) => r.p.id === pid)?.remaining ?? 0)
+    setRecommendation(rec.reason)
+    if ('providerId' in rec) apply(rec.spec, providers.find((p) => p.id === rec.providerId)?.name ?? '')
+  }
+
+  const otherProviders = (
+    <OtherProviders
+      others={others}
+      role={role}
+      onAsk={(pid) => {
+        setAskFor(pid)
+        setAskOpen(true)
+      }}
+      dialog={<ProviderRequestDialog open={askOpen} onOpenChange={setAskOpen} providerId={askFor} />}
+      pending={pendingProviders}
+    />
+  )
+
+  if (editing) {
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="rounded-card border border-border bg-bg-subtle p-4 text-sm">
+          <p className="font-semibold text-text-primary">
+            {provider?.name} · {provider?.regions.find((r) => r.id === spec.regionId)?.name}
+          </p>
+          <p className="mt-1 text-text-secondary">The provider and region are set when an environment is created. To run it elsewhere, request a new environment.</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <p className="mb-3 text-sm font-semibold text-text-primary">Compute tier</p>
-        <RadioGroup value={spec.compute} onValueChange={(v) => set({ compute: v as EnvSpec['compute'] })} className="sm:grid-cols-2" aria-label="Compute tier">
-          {COMPUTE_TIERS.map((t) => (
-            <RadioCard
-              key={t.value}
-              value={t.value}
-              title={t.label}
-              description={t.detail}
-              extra={
-                <span className="tabular mt-2 text-caption font-semibold text-text-primary">
-                  {HOURLY_RATE[t.value]} credits per active hour
-                  {t.value === 'a100' && <span className="font-normal text-text-secondary"> · for large models and heavy ASR</span>}
-                </span>
-              }
-            />
+        <p className="mb-1 text-sm font-semibold text-text-primary">What data will this environment use?</p>
+        <p className="mb-3 text-caption text-text-secondary">Personal and children’s data must stay in India, so it decides which regions you can use. You can change it on the Data step too.</p>
+        <RadioGroup
+          value={spec.dataClassification}
+          onValueChange={(v) => {
+            const d = v as EnvSpec['dataClassification']
+            const next: EnvSpec = { ...spec, dataClassification: d, containsPii: d === 'personal' || d === 'children' ? true : spec.containsPii }
+            const region = provider?.regions.find((r) => r.id === spec.regionId)
+            if (provider && region && !region.indiaResident && isSensitive(next)) {
+              const eq = equivalentSpec(next, provider, tenant)
+              if (eq) {
+                set(eq.spec)
+                setPlacementNote(`Moved from ${region.name} to ${provider.regions.find((r) => r.id === eq.spec.regionId)?.name} because ${d === 'children' ? 'children’s' : 'personal'} data must stay in India.`)
+              } else set(next)
+            } else set(next)
+            setRecommendation(null)
+          }}
+          className="grid-cols-2 lg:grid-cols-4"
+          aria-label="Data classification"
+        >
+          {DATA_CLASSES.map((d) => (
+            <RadioCard key={d.value} value={d.value} title={d.label} description={d.value === 'personal' || d.value === 'children' ? 'India only' : 'Any approved region'} />
           ))}
         </RadioGroup>
       </div>
 
-      {COMPUTE_TIERS.find((t) => t.value === spec.compute)!.gpu && (
-        <Field label="Number of GPUs" htmlFor="gpu-count" helper="Each GPU comes with its own vCPU and RAM, as listed above.">
-          <Select value={String(spec.gpuCount)} onValueChange={(v) => set({ gpuCount: Number(v) })}>
-            <SelectTrigger id="gpu-count" className="sm:max-w-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {[1, 2, 3, 4].map((n) => (
-                <SelectItem key={n} value={String(n)}>
-                  {n} GPU{n > 1 ? 's' : ''}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
+      {!allowed.length ? (
+        <div className="flex gap-3 rounded-card border border-border bg-bg-subtle p-4 text-sm text-text-secondary" role="alert">
+          <ShieldAlert className="mt-0.5 size-5 shrink-0 text-text-muted" aria-hidden />
+          <p>No infrastructure providers are approved for {tenant.name} yet, so an environment can’t be requested.</p>
+        </div>
+      ) : (
+        <>
+          <div>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-semibold text-text-primary">Provider</p>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="secondary" size="compact" onClick={recommend}>
+                  <Sparkles /> Recommend for me
+                </Button>
+                <Button type="button" variant="secondary" size="compact" onClick={() => setCompareOpen(true)}>
+                  <Scale /> Compare providers
+                </Button>
+              </div>
+            </div>
+            {recommendation && (
+              <p className="mb-3 flex items-start gap-2 rounded-control bg-indigo-50 px-3 py-2 text-caption font-semibold text-indigo-text" role="status" aria-label="Recommendation">
+                <Sparkles className="mt-0.5 size-3.5 shrink-0" aria-hidden /> {recommendation}
+              </p>
+            )}
+            <RadioGroup value={spec.providerId} onValueChange={chooseProvider} className="sm:grid-cols-2" aria-label="Provider">
+              {rows.map(({ p, est, remaining }) => {
+                const over = est ? est.total > remaining : false
+                const resid = indiaResidency(p)
+                return (
+                  <RadioCard
+                    key={p.id}
+                    value={p.id}
+                    title={p.name}
+                    description={`${PROVIDER_TYPE_LABELS[p.type]} · ${p.regions.filter((r) => approvalFor(tenant, p.id)?.regionIds.includes(r.id)).map((r) => r.name).join(', ')}`}
+                    extra={
+                      <span className="mt-2 flex flex-col gap-1.5">
+                        <span className="flex flex-wrap gap-1.5">
+                          <Tag>India residency: {resid}</Tag>
+                          <Tag>{providerGpuTypes(p).join(', ') || 'CPU only'}</Tag>
+                          {cheapest?.p.id === p.id && rows.length > 1 && <Tag className="border-indigo bg-indigo-50 text-indigo-text">Cheapest</Tag>}
+                        </span>
+                        <span className="tabular text-caption text-text-primary">
+                          <span className="font-semibold">{est ? `${formatInt(est.total)} credits / month` : 'No matching instance'}</span> for this configuration
+                        </span>
+                        <span className={cn('tabular text-caption', over ? 'font-semibold text-status-over-fg' : 'text-text-secondary')}>
+                          {formatInt(Math.max(0, remaining))} left of this month’s budget{over && est ? ` · over by ${formatInt(est.total - Math.max(0, remaining))}` : ''}
+                        </span>
+                      </span>
+                    }
+                  />
+                )
+              })}
+            </RadioGroup>
+          </div>
+
+          <div>
+            <p className="mb-3 text-sm font-semibold text-text-primary">Region</p>
+            <RadioGroup value={spec.regionId} onValueChange={chooseRegion} className="sm:grid-cols-3" aria-label="Region">
+              {approvedRegions.map((r) => {
+                const blocked = sensitive && !r.indiaResident
+                return (
+                  <RadioCard
+                    key={r.id}
+                    value={r.id}
+                    title={r.name}
+                    description={r.indiaResident ? 'Data stays in India' : 'Outside India'}
+                    disabled={blocked}
+                    reason={blocked ? 'Stores data outside India; personal and children’s data must stay in India.' : undefined}
+                    extra={<span className="mt-1 text-caption text-text-muted">GPUs: {r.gpuTypes.join(', ') || 'none'}</span>}
+                  />
+                )
+              })}
+            </RadioGroup>
+            {errors.regionId && (
+              <p className="mt-2 flex items-start gap-1.5 text-caption text-red-text" role="alert">
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden /> {errors.regionId}
+              </p>
+            )}
+          </div>
+          <ProviderStepNotice note={placementNote} onDismiss={() => setPlacementNote(null)} />
+        </>
       )}
+
+      {otherProviders}
+
+      <Dialog open={compareOpen} onOpenChange={setCompareOpen}>
+        <DialogContent size="lg" className="sm:max-w-4xl">
+          <DialogHeader title="Compare providers" description="The same configuration priced on each provider approved for your organisation, per month, from each one’s current rate card." />
+          <DialogBody>
+            <div className="overflow-x-auto rounded-control border border-border">
+              <table className="w-full min-w-[760px] text-sm" aria-label="Provider comparison">
+                <thead className="bg-bg-subtle text-left text-caption text-text-secondary">
+                  <tr>
+                    <th className="px-3 py-2.5 font-semibold">Provider</th>
+                    {['Compute', 'Storage', 'Egress', 'Models', 'Fee', 'Discount', 'GST', 'Total / month'].map((h) => (
+                      <th key={h} className="px-3 py-2.5 text-right font-semibold">
+                        {h}
+                      </th>
+                    ))}
+                    <th className="px-3 py-2.5" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {rows.map(({ p, eq, est }) => (
+                    <tr key={p.id} className={cn(cheapest?.p.id === p.id && 'bg-indigo-50')}>
+                      <th scope="row" className="px-3 py-2.5 text-left font-normal">
+                        <span className="block font-semibold text-text-primary">
+                          {p.name} {cheapest?.p.id === p.id && <span className="text-xs text-indigo-text">· Cheapest</span>}
+                        </span>
+                        <span className="text-caption text-text-muted">{eq ? `${eq.spec.instance.name}${eq.spec.instanceCount > 1 ? ` × ${eq.spec.instanceCount}` : ''} · ${p.regions.find((r) => r.id === eq.spec.regionId)?.name}` : `No ${spec.instance.gpuType} instance`}</span>
+                      </th>
+                      {est ? (
+                        [est.compute, est.storage, est.network, est.models, est.platformFee, -est.ngoDiscount, est.gst, est.total].map((v, i) => (
+                          <td key={i} className={cn('tabular px-3 py-2.5 text-right', i === 7 && 'font-semibold')}>
+                            {v < 0 ? `−${formatInt(-v)}` : formatInt(v)}
+                          </td>
+                        ))
+                      ) : (
+                        <td colSpan={8} className="px-3 py-2.5 text-right text-caption text-text-muted">
+                          Not available for this configuration
+                        </td>
+                      )}
+                      <td className="px-3 py-2.5 text-right">
+                        {eq && p.id !== spec.providerId && (
+                          <Button size="sm" variant="ghost" onClick={() => { chooseProvider(p.id); setCompareOpen(false) }}>
+                            Use this provider
+                          </Button>
+                        )}
+                        {p.id === spec.providerId && <span className="text-caption font-semibold text-indigo-text">Selected</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="secondary">Close</Button>
+            </DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+function StepCompute({ spec, set, providers, tenant, goTo, placementNote, setPlacementNote, editing }: StepProps) {
+  const hours = activeHoursPerMonth(spec.autoShutdownHours)
+  const provider = providers.find((p) => p.id === spec.providerId)
+  const region = provider?.regions.find((r) => r.id === spec.regionId)
+  const instances = instancesFor(provider, region)
+  const card = rateCardAt(provider)
+  void tenant
+  const choose = (instanceId: string, count = spec.instanceCount) => {
+    const it = instances.find((x) => x.id === instanceId)
+    if (!provider || !region || !it) return
+    set(applyPlacement(spec, provider.id, region.id, it, count))
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-control bg-bg-subtle px-4 py-3 text-sm">
+        <span className="text-text-primary">
+          <span className="font-semibold">{provider?.name}</span> · {region?.name} {card && <span className="text-text-secondary">· rate card v{card.version}</span>}
+        </span>
+        {!editing && (
+          <button type="button" className="link text-sm" onClick={() => goTo(STEP.provider)}>
+            Change provider or region
+          </button>
+        )}
+      </div>
+      <ProviderStepNotice note={placementNote} onDismiss={() => setPlacementNote(null)} />
+
+      <div>
+        <p className="mb-3 text-sm font-semibold text-text-primary">Instance type</p>
+        <RadioGroup value={spec.instanceTypeId} onValueChange={(v) => choose(v)} className="sm:grid-cols-2" aria-label="Instance type">
+          {instances.map((i) => (
+            <RadioCard
+              key={i.id}
+              value={i.id}
+              title={i.name}
+              description={`${i.vcpu} vCPU · ${i.ramGb} GB RAM${i.gpuType === 'none' ? ' · no GPU' : ` · ${i.gpuCount}× NVIDIA ${i.gpuType}`}`}
+              extra={<span className="tabular mt-2 text-caption font-semibold text-text-primary">{formatInt(i.hourlyRate)} credits per active hour (₹{formatInt(i.hourlyRate)})</span>}
+            />
+          ))}
+        </RadioGroup>
+        {card && (
+          <p className="mt-2 text-caption text-text-muted">
+            Only instances from {provider?.name} are shown. Rates from rate card v{card.version}, effective from {formatDate(card.effectiveFrom)}.
+          </p>
+        )}
+      </div>
+
+      <Field label="Number of instances" htmlFor="instance-count" helper="Each instance comes with the vCPU, RAM and GPUs listed above.">
+        <Select value={String(spec.instanceCount)} onValueChange={(v) => choose(spec.instanceTypeId, Number(v))}>
+          <SelectTrigger id="instance-count" className="sm:max-w-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {[1, 2, 3, 4].map((n) => (
+              <SelectItem key={n} value={String(n)}>
+                {n} instance{n > 1 ? 's' : ''}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
 
       <div className="flex flex-col gap-2">
         <div className="flex items-baseline justify-between">
@@ -196,7 +571,18 @@ function StepCompute({ spec, set }: StepProps) {
           <span className="tabular text-sm font-semibold text-text-primary">{spec.storageGb} GB</span>
         </div>
         <Slider id="storage" min={20} max={1000} step={10} value={[spec.storageGb]} onValueChange={([v]) => set({ storageGb: v! })} aria-label="Storage in GB" />
-        <p className="text-caption text-text-muted">For datasets, audio, embeddings and logs. 0.6 credits per GB each month.</p>
+        <p className="text-caption text-text-muted">For datasets, audio, embeddings and logs. {card ? `${card.storageRate} credits per GB each month.` : ''}</p>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <div className="flex items-baseline justify-between">
+          <label htmlFor="egress" className="text-sm font-semibold text-text-primary">
+            Network egress
+          </label>
+          <span className="tabular text-sm font-semibold text-text-primary">{spec.egressGbPerMonth} GB a month</span>
+        </div>
+        <Slider id="egress" min={0} max={2000} step={10} value={[spec.egressGbPerMonth]} onValueChange={([v]) => set({ egressGbPerMonth: v! })} aria-label="Network egress in GB per month" />
+        <p className="text-caption text-text-muted">Data sent out of the cloud, such as answers to apps and downloads. {card ? `${card.egressRate} credits per GB.` : ''}</p>
       </div>
 
       <Field label="Auto-shutdown" htmlFor="shutdown" helper={`We estimate about ${hours} active hours a month with this setting. Shutting down when idle saves credits.`}>
@@ -342,7 +728,7 @@ function StepAsr({ spec, set, catalog, selectable, tenant, errors }: StepProps) 
   )
 }
 
-const CAPABILITY_GROUPS: CatalogCategory[] = ['agent-framework', 'vector-db', 'evaluation', 'low-code']
+const CAPABILITY_GROUPS: CatalogCategory[] = ['agent-framework', 'embedding', 'vector-db', 'evaluation', 'low-code']
 
 function StepCapabilities({ spec, set, selectable, tenant }: StepProps) {
   const toggle = (id: string) =>
@@ -371,7 +757,7 @@ function StepCapabilities({ spec, set, selectable, tenant }: StepProps) {
   )
 }
 
-function StepData({ spec, set }: StepProps) {
+function StepData({ spec, set, errors }: StepProps) {
   const sensitive = spec.dataClassification === 'personal' || spec.dataClassification === 'children'
   return (
     <div className="flex flex-col gap-6">
@@ -390,6 +776,11 @@ function StepData({ spec, set }: StepProps) {
             <RadioCard key={d.value} value={d.value} title={d.label} description={d.description} />
           ))}
         </RadioGroup>
+        {errors.dataClassification && (
+          <p className="mt-2 flex items-start gap-1.5 text-caption text-red-text" role="alert">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden /> {errors.dataClassification}
+          </p>
+        )}
       </div>
 
       <div>
@@ -412,8 +803,8 @@ function StepData({ spec, set }: StepProps) {
           <div>
             <p className="font-semibold">{spec.dataClassification === 'children' ? 'Children’s data gets an extra review' : 'Personal data gets an extra review'}</p>
             <p className="mt-1">
-              Keep only what you need, and have consent in place. Hosted APIs may process data outside India; open models stay on platform servers in
-              Bengaluru. Your admin may ask for a data-processing agreement.
+              Keep only what you need, and have consent in place. The environment must run in an India-resident region. Hosted model APIs may still
+              process data outside India. Your admin may ask for a data-processing agreement.
             </p>
           </div>
         </div>
@@ -478,6 +869,12 @@ interface StepProps {
   tenant: Tenant
   role: Role
   errors: Errors
+  providers: InfraProvider[]
+  editing: boolean
+  goTo: (step: number) => void
+  /** What changed in the compute choice after switching provider or region. */
+  placementNote: string | null
+  setPlacementNote: (n: string | null) => void
 }
 
 /* ---------- page ---------- */
@@ -504,16 +901,23 @@ export default function NewEnvironment() {
   const mode: 'new' | 'draft' | 'resubmit' | 'edit' = editId ? 'edit' : existing?.status === 'draft' ? 'draft' : existing?.status === 'changes_requested' ? 'resubmit' : 'new'
   const editing = mode === 'edit'
   const projects = useMemo(
-    () => allProjects.filter((p) => p.tenantId === tenant.id && p.status === 'active' && (user.role === 'tenant_admin' || p.memberIds.includes(user.id))),
+    () => allProjects.filter((p) => p.tenantId === tenant.id && p.status === 'active' && (user.role === 'tenant_admin' || p.memberIds.includes(user.id) || p.ownerId === user.id)),
     [allProjects, tenant.id, user],
   )
   const [draftId, setDraftId] = useState<string | undefined>(mode === 'draft' ? existing?.id : undefined)
+  const infraProviders = useAppStore((s) => s.infraProviders)
+  const costCtx = useCostContext(tenant.id)
   const [spec, setSpec] = useState<EnvSpec>(() =>
-    editingEnv ? structuredClone(editingEnv.spec) : existing && mode !== 'new' ? structuredClone(existing.spec) : { ...DEFAULT_SPEC, projectId: projects[0]?.id ?? '' },
+    editingEnv
+      ? structuredClone(editingEnv.spec)
+      : existing && mode !== 'new'
+        ? ensurePlacement(structuredClone(existing.spec), infraProviders, tenant)
+        : ensurePlacement({ ...DEFAULT_SPEC, projectIds: projects.some((p) => p.id === params.get('project')) ? [params.get('project')!] : [] }, infraProviders, tenant),
   )
   const [step, setStep] = useState(0)
   const [maxStep, setMaxStep] = useState(mode === 'new' ? 0 : STEPS.length - 1)
   const [errors, setErrors] = useState<Errors>({})
+  const [placementNote, setPlacementNote] = useState<string | null>(null)
   const headingRef = useRef<HTMLHeadingElement>(null)
   const firstRender = useRef(true)
 
@@ -526,7 +930,7 @@ export default function NewEnvironment() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [step])
 
-  const est = useMemo(() => estimateCost(spec, catalog), [spec, catalog])
+  const est = useMemo(() => costBreakdown(spec, costCtx), [spec, costCtx])
   const used = useMemo(() => tenantAllocated(environments, tenant.id), [environments, tenant.id])
 
   if (editing && (!editingEnv || editingEnv.tenantId !== tenant.id || (user.role === 'user' && editingEnv.ownerId !== user.id))) {
@@ -535,23 +939,6 @@ export default function NewEnvironment() {
   if (requestId && (!existing || existing.requesterId !== user.id || mode === 'new')) {
     return <NotFound message="This request can’t be edited. Only your own drafts and requests with changes requested can be." />
   }
-  if (!editing && projects.length === 0) {
-    return (
-      <div className="card">
-        <EmptyState
-          icon={FolderKanban}
-          title="You’re not in a project yet"
-          description="Every environment belongs to a project. Ask your Tenant Admin to add you to one, then come back."
-          action={
-            <Button asChild variant="secondary">
-              <Link to={requestsPath(user.role)}>Back to requests</Link>
-            </Button>
-          }
-        />
-      </div>
-    )
-  }
-
   const selectedIds = [...spec.llms.map((l) => l.id), ...spec.asr, ...spec.capabilities]
   const enabledIds = new Set(tenantItems.filter((i) => i.enabled).map((i) => i.id))
   const selectable = catalog.filter((c) => enabledIds.has(c.id) || selectedIds.includes(c.id))
@@ -577,7 +964,7 @@ export default function NewEnvironment() {
   const goTo = (target: number) => {
     if (target > step) {
       for (let s = step; s < target; s++) {
-        const e = validate(spec, s)
+        const e = validate(spec, s, infraProviders)
         if (Object.keys(e).length) {
           setErrors(e)
           setStep(s)
@@ -592,7 +979,7 @@ export default function NewEnvironment() {
 
   const submit = () => {
     for (let s = 0; s < STEPS.length; s++) {
-      const e = validate(spec, s)
+      const e = validate(spec, s, infraProviders)
       if (Object.keys(e).length) {
         setErrors(e)
         setStep(s)
@@ -645,7 +1032,7 @@ export default function NewEnvironment() {
     toast.success('Draft saved.', { description: 'Continue it any time from My requests.' })
   }
 
-  const props: StepProps = { spec, set, catalog, selectable, projects, tenant, role: user.role, errors }
+  const props: StepProps = { spec, set, catalog, selectable, projects, tenant, role: user.role, errors, providers: infraProviders, editing, goTo, placementNote, setPlacementNote }
   const last = step === STEPS.length - 1
 
   return (
@@ -749,16 +1136,17 @@ export default function NewEnvironment() {
           </div>
           <div className="flex-1 px-5 py-6 sm:px-6">
             {step === 0 && <StepPurpose {...props} />}
-            {step === 1 && <StepCompute {...props} />}
-            {step === 2 && <StepLlms {...props} />}
-            {step === 3 && <StepAsr {...props} />}
-            {step === 4 && <StepCapabilities {...props} />}
-            {step === 5 && <StepData {...props} />}
-            {step === 6 && <StepReview {...props} goTo={goTo} editing={editing} quotaNote={quotaNote} />}
+            {step === STEP.provider && <StepProvider {...props} />}
+            {step === STEP.compute && <StepCompute {...props} />}
+            {step === STEP.llms && <StepLlms {...props} />}
+            {step === STEP.asr && <StepAsr {...props} />}
+            {step === STEP.caps && <StepCapabilities {...props} />}
+            {step === STEP.data && <StepData {...props} />}
+            {step === STEP.review && <StepReview {...props} goTo={goTo} editing={editing} quotaNote={quotaNote} />}
           </div>
 
           <div className="2xl:hidden">
-            <CostEstimate spec={spec} tenant={tenant} used={used} previous={previous} catalog={catalog} audience={user.role} className="mx-5 mb-6 sm:mx-6" />
+            <CostEstimate spec={spec} tenant={tenant} used={used} previous={previous} catalog={catalog} audience={user.role} editingEnvId={editingEnv?.id} className="mx-5 mb-6 sm:mx-6" />
           </div>
 
           <div className="sticky bottom-0 flex flex-wrap items-center gap-2 rounded-b-card border-t border-border bg-bg-surface px-5 py-4 sm:px-6">
@@ -775,7 +1163,7 @@ export default function NewEnvironment() {
                 <Link to={envPath(user.role, editId!)}>Cancel</Link>
               </Button>
             )}
-            <span className="tabular ml-auto hidden text-caption text-text-secondary xl:inline 2xl:hidden">{formatInt(est.credits)} credits / month</span>
+            <span className="tabular ml-auto hidden text-caption text-text-secondary xl:inline 2xl:hidden">{formatInt(est.total)} credits / month</span>
             {last ? (
               <Button onClick={submit} className="ml-auto sm:ml-0">
                 <Send /> {editing ? (needsApproval ? 'Send for approval' : 'Save changes') : mode === 'resubmit' ? 'Resubmit request' : 'Submit request'}
@@ -790,7 +1178,7 @@ export default function NewEnvironment() {
 
         <div className="hidden 2xl:block">
           <div className="sticky top-24">
-            <CostEstimate spec={spec} tenant={tenant} used={used} previous={previous} catalog={catalog} audience={user.role} />
+            <CostEstimate spec={spec} tenant={tenant} used={used} previous={previous} catalog={catalog} audience={user.role} editingEnvId={editingEnv?.id} />
           </div>
         </div>
       </div>

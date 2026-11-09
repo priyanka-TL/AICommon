@@ -4,6 +4,7 @@ import { Lock, Save } from 'lucide-react'
 import { useAppStore, useCurrentTenant } from '@/store/useAppStore'
 import { formatDate } from '@/lib/format'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { TenantProviders } from '@/components/shared/TenantProviders'
 import { Button } from '@/components/ui/button'
 import { Field } from '@/components/ui/field'
 import { Input, Textarea } from '@/components/ui/input'
@@ -73,6 +74,7 @@ export default function Settings() {
           </Button>
         </div>
       </section>
+      <TenantProviders tenantId={tenant.id} className="mt-6 max-w-3xl" />
     </>
   )
 }

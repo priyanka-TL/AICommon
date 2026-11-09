@@ -11,6 +11,7 @@ import { tenantAllocated } from '@/lib/quota'
 import { envPath } from '@/lib/paths'
 import { axisProps, CHART_COLORS, CHART_GRID } from '@/lib/chart'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { TenantProviders } from '@/components/shared/TenantProviders'
 import { KpiCard } from '@/components/shared/KpiCard'
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { EmptyState } from '@/components/shared/EmptyState'
@@ -33,6 +34,7 @@ export default function TenantDetail() {
   const allUsers = useAppStore((s) => s.users)
   const allEnvs = useAppStore((s) => s.environments)
   const allProjects = useAppStore((s) => s.projects)
+  const allDeployments = useAppStore((s) => s.deployments)
   const allUsage = useAppStore((s) => s.usage)
   const allAudit = useAppStore((s) => s.audit)
   const updateUser = useAppStore((s) => s.updateUser)
@@ -90,7 +92,7 @@ export default function TenantDetail() {
       cell: (e) => (
         <div className="min-w-0">
           <p className="truncate font-semibold text-text-primary">{e.spec.name}</p>
-          <p className="truncate text-caption text-text-muted">{projects.find((p) => p.id === e.projectId)?.name}</p>
+          <p className="truncate text-caption text-text-muted">{[...new Set(allDeployments.filter((d) => d.envId === e.id).map((d) => d.projectId))].map((pid) => projects.find((p) => p.id === pid)?.name).filter(Boolean).join(', ') || 'No projects yet'}</p>
         </div>
       ),
     },
@@ -141,6 +143,8 @@ export default function TenantDetail() {
         <KpiCard label="Projects" value={String(projects.filter((p) => p.status === 'active').length)} trend={{ direction: 'flat', text: `${projects.length} in total` }} />
         <KpiCard label="Active environments" value={String(envs.filter((e) => e.status === 'active').length)} trend={{ direction: 'flat', text: `${envs.filter((e) => e.status !== 'terminated').length} not terminated` }} />
       </div>
+
+      <TenantProviders tenantId={tenant.id} className="mt-6" manage />
 
       <section className="card mt-6 p-6">
         <h2 className="mb-4 font-heading text-h3 text-text-primary">Quota and allocation</h2>

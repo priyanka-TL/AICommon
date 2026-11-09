@@ -5,19 +5,31 @@ import { formatInt, relativeTime } from '@/lib/format'
 import { computeLabel, purposeLabel } from '@/lib/labels'
 import { envPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
+import { spendToDate } from '@/lib/cost'
+import { needsMigration } from '@/lib/providers'
+import { MigrateBadge } from './TenantProviders'
+import { useAppStore } from '@/store/useAppStore'
+import { useCostContext } from '@/store/selectors'
+import { useMemo } from 'react'
 import { StatusBadge, Tag } from './StatusBadge'
 import { Avatar } from './Avatar'
+import { OpenTerminalButton } from './OpenTerminalButton'
 
 interface Props {
   env: Environment
   catalog: CatalogItem[]
   role: Role
   owner?: User
-  project?: Project
+  /** Projects on the environment (through deployments); may be empty. */
+  projects?: Project[]
   hasPendingChange?: boolean
 }
 
-export function EnvironmentCard({ env, catalog, role, owner, project, hasPendingChange }: Props) {
+export function EnvironmentCard({ env, catalog, role, owner, projects = [], hasPendingChange }: Props) {
+  const costCtx = useCostContext(env.tenantId)
+  const spent = useMemo(() => spendToDate(env, costCtx).total, [env, costCtx])
+  const provider = useAppStore((s) => s.infraProviders.find((p) => p.id === env.spec.providerId))
+  const migrate = useAppStore((s) => needsMigration(env, s.tenants))
   const name = (id: string) => catalog.find((c) => c.id === id)?.name ?? id
   const models = [...env.spec.llms.map((l) => name(l.id)), ...env.spec.asr.map(name)]
   const shown = models.slice(0, 3)
@@ -33,19 +45,20 @@ export function EnvironmentCard({ env, catalog, role, owner, project, hasPending
         </div>
         <div className="flex flex-col items-end gap-1.5">
           <StatusBadge status={env.status} />
+          {migrate && <MigrateBadge />}
           {hasPendingChange && <StatusBadge status="under_review" label="Change pending" />}
         </div>
       </div>
 
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-caption text-text-secondary">
-        {project && (
-          <span className="flex items-center gap-1.5">
-            <FolderKanban className="size-3.5 text-text-muted" aria-hidden /> {project.name}
-          </span>
-        )}
+        <span className="flex items-center gap-1.5">
+          <FolderKanban className="size-3.5 text-text-muted" aria-hidden />{' '}
+          {projects.length === 0 ? 'No projects yet' : projects.length > 2 ? `${projects[0]!.name} + ${projects.length - 1} more` : projects.map((p) => p.name).join(', ')}
+        </span>
         <span className="flex items-center gap-1.5">
           <Cpu className="size-3.5 text-text-muted" aria-hidden /> {computeLabel(env.spec.compute)}
           {env.spec.compute !== 'cpu' && env.spec.gpuCount > 1 ? ` × ${env.spec.gpuCount}` : ''}
+          {provider ? ` · ${provider.code}` : ''}
         </span>
         <span className="flex items-center gap-1.5">
           <HardDrive className="size-3.5 text-text-muted" aria-hidden /> {env.spec.storageGb} GB
@@ -71,14 +84,18 @@ export function EnvironmentCard({ env, catalog, role, owner, project, hasPending
         </p>
       )}
 
-      <div className="mt-auto flex items-center justify-between gap-3 border-t border-border pt-3 text-caption">
+      <div className="mt-auto flex flex-wrap items-center justify-between gap-2">
+        <OpenTerminalButton env={env} compact />
+      </div>
+
+      <div className="flex items-center justify-between gap-3 border-t border-border pt-3 text-caption">
         <span className="flex min-w-0 items-center gap-2 text-text-secondary">
           {owner && <Avatar name={owner.name} size="sm" />}
           <span className="truncate">{owner?.name}</span>
         </span>
         <span className="tabular shrink-0 text-right text-text-secondary">
           {env.status === 'active' || env.status === 'stopped' || env.status === 'suspended'
-            ? `${formatInt(env.creditsUsed)} credits used`
+            ? `${formatInt(spent)} credits used`
             : last
               ? relativeTime(last.at)
               : ''}

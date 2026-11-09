@@ -256,7 +256,7 @@ export const P95_THRESHOLD_MS = 800
 export const ERROR_THRESHOLD_PCT = 1
 
 /** Approximate sustained requests per second for each tier. */
-export const TIER_CAPACITY: Record<ComputeTier, number> = { cpu: 40, t4: 120, a10: 250, a100: 600 }
+export const TIER_CAPACITY: Record<ComputeTier, number> = { cpu: 40, t4: 120, l4: 180, a10: 250, a100: 600 }
 
 export interface LoadConfig {
   vus: number

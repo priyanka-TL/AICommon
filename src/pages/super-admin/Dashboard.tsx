@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { KpiCard } from '@/components/shared/KpiCard'
 import { ChartCard, ChartLegend, ChartTooltip } from '@/components/shared/ChartCard'
+import { ProviderCharts } from './ProviderCharts'
 import { ActivityFeed } from '@/components/shared/ActivityFeed'
 import { ResourceQuota } from '@/components/shared/ResourceQuota'
 import { Button } from '@/components/ui/button'
@@ -160,6 +161,8 @@ export default function SuperAdminDashboard() {
           </ResponsiveContainer>
         </ChartCard>
       </div>
+
+      <ProviderCharts tenants={tenants} loading={loading} />
 
       <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-3">
         <section className="card p-6 xl:col-span-2">

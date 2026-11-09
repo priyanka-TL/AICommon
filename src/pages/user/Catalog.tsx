@@ -1,13 +1,10 @@
 import { useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
-import { GitBranch, GitPullRequestArrow, Lock, PencilLine, Plus, SearchX } from 'lucide-react'
-import type { CatalogCategory, CatalogItem, Language, Suggestion } from '@/data/types'
+import { Link, Navigate, useSearchParams } from 'react-router-dom'
+import { Award, GitBranch, Lock, Plus, SearchX } from 'lucide-react'
+import type { CatalogCategory, CatalogItem, Language } from '@/data/types'
 import { useAppStore, useCurrentTenant } from '@/store/useAppStore'
-import { useScopedSuggestions, useTenantCatalog } from '@/store/selectors'
-import { relativeTime } from '@/lib/format'
-import { CATEGORY_SINGULAR } from '@/lib/labels'
-import { SuggestionBadge } from '@/components/shared/StatusBadge'
-import { SuggestionHistory } from '@/pages/shared/Suggestions'
+import { useScopedProjects, useTenantCatalog } from '@/store/selectors'
+import { suggestionsPath } from '@/lib/paths'
 import { SuggestDialog } from './SuggestDialog'
 import { useSimulatedLoading } from '@/hooks/useSimulatedLoading'
 import { CATEGORY_LABELS, LANGUAGES } from '@/lib/labels'
@@ -25,7 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 
 const CATEGORIES = Object.keys(CATEGORY_LABELS) as CatalogCategory[]
 
-function CatalogCard({ item, allowed, inUse }: { item: CatalogItem; allowed: boolean; inUse: number }) {
+function CatalogCard({ item, allowed, inUse, recommendedFor }: { item: CatalogItem; allowed: boolean; inUse: number; recommendedFor: string[] }) {
   return (
     <Link to={`/app/catalog/${item.id}`} className={cn('card card-interactive flex flex-col gap-3 p-5', item.status === 'deprecated' && 'opacity-70')}>
       <div className="flex items-start gap-3">
@@ -38,6 +35,12 @@ function CatalogCard({ item, allowed, inUse }: { item: CatalogItem; allowed: boo
         </div>
         {item.status !== 'active' && <CatalogStatusBadge status={item.status} />}
       </div>
+      {recommendedFor.length > 0 && (
+        <p className="flex items-start gap-1.5 rounded-control bg-indigo-50 px-2.5 py-1.5 text-caption font-semibold text-indigo-text">
+          <Award className="mt-px size-3.5 shrink-0" aria-hidden />
+          Recommended for {recommendedFor.join(', ')}
+        </p>
+      )}
       <p className="line-clamp-2 text-caption text-text-secondary">{item.description}</p>
       <div className="flex flex-wrap gap-1.5">
         <Tag>{item.hosting === 'hosted' ? 'Hosted API' : 'Open source'}</Tag>
@@ -62,59 +65,13 @@ function CatalogCard({ item, allowed, inUse }: { item: CatalogItem; allowed: boo
   )
 }
 
-function MySuggestions({ onEdit }: { onEdit: (s: Suggestion) => void }) {
-  const suggestions = useScopedSuggestions()
-  if (!suggestions.length) {
-    return (
-      <div className="card">
-        <EmptyState icon={GitPullRequestArrow} title="You haven’t suggested anything yet" description="Know an open-source project your team needs? Suggest it with its GitHub link." />
-      </div>
-    )
-  }
-  return (
-    <ul className="flex flex-col gap-4">
-      {suggestions.map((s) => (
-        <li key={s.id} className="card flex flex-col gap-4 p-5">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <p className="flex flex-wrap items-center gap-2 font-heading text-h3 text-text-primary">
-                {s.name} <Tag className="font-sans">{CATEGORY_SINGULAR[s.category]}</Tag>
-              </p>
-              <a href={s.githubUrl} target="_blank" rel="noreferrer" className="link mt-1 block truncate font-mono text-caption">
-                {s.githubUrl.replace('https://', '')}
-              </a>
-              <p className="mt-1 text-caption text-text-muted">Suggested {relativeTime(s.createdAt)}</p>
-            </div>
-            <SuggestionBadge status={s.status} forwarded={s.forwarded} />
-          </div>
-          <SuggestionHistory s={s} />
-          <div className="flex flex-wrap gap-2">
-            {s.status === 'needs_info' && (
-              <Button variant="secondary" size="compact" onClick={() => onEdit(s)}>
-                <PencilLine /> Add information
-              </Button>
-            )}
-            {s.catalogItemId && (s.status === 'approved_tenant' || s.status === 'published') && (
-              <Button asChild variant="ghost" size="compact">
-                <Link to={`/app/catalog/${s.catalogItemId}`}>Open in the marketplace</Link>
-              </Button>
-            )}
-          </div>
-        </li>
-      ))}
-    </ul>
-  )
-}
-
 export default function UserCatalog() {
   const loading = useSimulatedLoading()
   const tenant = useCurrentTenant()!
   const catalog = useTenantCatalog()
-  const [params, setParams] = useSearchParams()
-  const tab = params.get('tab') === 'suggestions' ? 'suggestions' : 'browse'
+  const [params] = useSearchParams()
   const [suggestOpen, setSuggestOpen] = useState(false)
-  const [editing, setEditing] = useState<Suggestion | undefined>()
-  const mySuggestions = useScopedSuggestions()
+  const myProjects = useScopedProjects(false)
   const environments = useAppStore((s) => s.environments)
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<'all' | CatalogCategory>('all')
@@ -156,6 +113,9 @@ export default function UserCatalog() {
     setLanguage('all')
   }
 
+  // "My suggestions" moved into My requests.
+  if (params.get('tab') === 'suggestions') return <Navigate to={suggestionsPath('user')} replace />
+
   return (
     <>
       <PageHeader
@@ -163,45 +123,11 @@ export default function UserCatalog() {
         title="AI Capability Marketplace"
         description="Models, speech providers and open-source tools you can add to your projects and environments. Missing something? Suggest it."
         actions={
-          <Button
-            onClick={() => {
-              setEditing(undefined)
-              setSuggestOpen(true)
-            }}
-          >
+          <Button onClick={() => setSuggestOpen(true)}>
             <Plus /> Suggest a capability
           </Button>
         }
       />
-
-      <div className="mb-6 flex gap-1 border-b border-border" role="tablist">
-        {(
-          [
-            ['browse', 'Browse'],
-            ['suggestions', `My suggestions (${mySuggestions.length})`],
-          ] as const
-        ).map(([v, label]) => (
-          <button
-            key={v}
-            role="tab"
-            aria-selected={tab === v}
-            onClick={() => setParams(v === 'browse' ? {} : { tab: v })}
-            className={cn('-mb-px border-b-2 px-3 py-2.5 text-sm font-semibold', tab === v ? 'border-indigo text-indigo-text' : 'border-transparent text-text-secondary hover:text-text-primary')}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'suggestions' ? (
-        <MySuggestions
-          onEdit={(s) => {
-            setEditing(s)
-            setSuggestOpen(true)
-          }}
-        />
-      ) : (
-      <>
 
       <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3 lg:grid-cols-[1fr_170px_210px_170px]">
         <SearchInput value={query} onChange={setQuery} placeholder="Search models and tools" className="sm:col-span-3 lg:col-span-1" />
@@ -296,16 +222,14 @@ export default function UserCatalog() {
               </h2>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {g.items.map((item) => (
-                  <CatalogCard key={item.id} item={item} allowed={item.enabled} inUse={inUse.get(item.id) ?? 0} />
+                  <CatalogCard key={item.id} item={item} allowed={item.enabled} inUse={inUse.get(item.id) ?? 0} recommendedFor={myProjects.filter((p) => p.recommendation?.modelId === item.id).map((p) => p.name)} />
                 ))}
               </div>
             </section>
           ))}
         </div>
       )}
-      </>
-      )}
-      <SuggestDialog open={suggestOpen} onOpenChange={setSuggestOpen} existing={editing} />
+      <SuggestDialog open={suggestOpen} onOpenChange={setSuggestOpen} />
     </>
   )
 }

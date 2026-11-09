@@ -88,6 +88,11 @@ export default function UsersPage() {
       .sort((a, b) => (a.role === 'super_admin' ? -1 : b.role === 'super_admin' ? 1 : a.name.localeCompare(b.name)))
   }, [users, query, role, status])
 
+  const qaScope = (u: User) => {
+    const n = u.qa?.projectIds.length ?? 0
+    const base = n === 0 ? 'No projects' : n === 1 ? '1 project' : `${n} projects`
+    return u.qa?.tenantWideAllowed ? `${base} · tenant-wide allowed` : base
+  }
   const canManage = (u: User) => u.role !== 'super_admin' && u.id !== scope.user.id
   const openEdit = (u: User) => {
     setEditing(u)
@@ -109,7 +114,16 @@ export default function UsersPage() {
       ),
     },
     ...(isSuper ? [{ key: 'tenant', header: 'Tenant', cell: (u: User) => <span>{tenantName(u.tenantId)}</span> }] : []),
-    { key: 'role', header: 'Role', cell: (u) => <Tag>{ROLE_LABELS[u.role]}</Tag> },
+    {
+      key: 'role',
+      header: 'Role',
+      cell: (u) => (
+        <div className="flex flex-col items-start gap-0.5">
+          <Tag>{ROLE_LABELS[u.role]}</Tag>
+          {u.role === 'qa' && <span className="text-caption text-text-muted">{qaScope(u)}</span>}
+        </div>
+      ),
+    },
     {
       key: 'projects',
       header: 'Projects',
@@ -144,7 +158,7 @@ export default function UsersPage() {
       <PageHeader
         eyebrow={isSuper ? 'All tenants' : tenantName(scope.user.tenantId)}
         title="Users"
-        description={isSuper ? 'Everyone with access to the platform. Make someone a Tenant Admin by editing their role.' : 'People in your tenant. You can add Users and Tenant Admins.'}
+        description={isSuper ? 'Everyone with access to the platform. Make someone a Tenant Admin by editing their role.' : 'People in your tenant. You can add Users, QA Engineers and Tenant Admins.'}
         actions={
           <Button
             onClick={() => {
@@ -168,6 +182,7 @@ export default function UsersPage() {
             {isSuper && <SelectItem value="super_admin">Super Admin</SelectItem>}
             <SelectItem value="tenant_admin">Tenant Admin</SelectItem>
             <SelectItem value="user">User</SelectItem>
+            <SelectItem value="qa">QA Engineer</SelectItem>
           </SelectContent>
         </Select>
         <Select value={status} onValueChange={(v) => setStatus(v as typeof status)}>
@@ -267,8 +282,11 @@ function UserSheet({
                     <dd className="mt-1 text-text-primary">{relativeTime(user.lastActiveAt)}</dd>
                   </div>
                   <div>
-                    <dt className="eyebrow">Projects</dt>
-                    <dd className="mt-1 text-text-primary">{projects.filter((p) => p.memberIds.includes(user.id)).map((p) => p.name).join(', ') || 'None'}</dd>
+                    <dt className="eyebrow">{user.role === 'qa' ? 'Tests projects' : 'Projects'}</dt>
+                    <dd className="mt-1 text-text-primary">
+                      {(user.role === 'qa' ? projects.filter((p) => user.qa?.projectIds.includes(p.id)) : projects.filter((p) => p.memberIds.includes(user.id))).map((p) => p.name).join(', ') || 'None'}
+                      {user.role === 'qa' && user.qa?.tenantWideAllowed && <span className="block text-caption text-text-secondary">Tenant-wide view allowed</span>}
+                    </dd>
                   </div>
                 </dl>
               </section>

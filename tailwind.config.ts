@@ -55,6 +55,13 @@ export default {
         'text-muted': v('text-muted'),
         'stopped-dot': v('stopped-dot'),
         status: statusColors,
+        term: {
+          bg: v('term-bg'),
+          chrome: v('term-chrome'),
+          border: v('term-border'),
+          fg: v('term-fg'),
+          muted: v('term-muted'),
+        },
       },
       fontFamily: {
         heading: ['Comfortaa', 'ui-rounded', 'sans-serif'],

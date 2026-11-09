@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { Building2, ShieldCheck, UserRound } from 'lucide-react'
+import { Building2, ClipboardCheck, ShieldCheck, UserRound } from 'lucide-react'
 import { useAppStore, useCurrentUser } from '@/store/useAppStore'
 import { QUICK_SIGN_IN, SAMPLE_PASSWORD } from '@/data/seed'
 import type { Role } from '@/data/types'
@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Field } from '@/components/ui/field'
 import { AuthLayout } from './AuthLayout'
 
-const ICONS: Record<Role, typeof ShieldCheck> = { super_admin: ShieldCheck, tenant_admin: Building2, user: UserRound }
+const ICONS: Record<Role, typeof ShieldCheck> = { super_admin: ShieldCheck, tenant_admin: Building2, user: UserRound, qa: ClipboardCheck }
 
 export default function Login() {
   const user = useCurrentUser()
@@ -27,7 +27,7 @@ export default function Login() {
   if (user) return <Navigate to={homeFor(user.role)} replace />
 
   const from = (location.state as { from?: string } | null)?.from
-  const finish = (role: Role) => navigate(from && from.startsWith(homeFor(role)) ? from : homeFor(role), { replace: true })
+  const finish = (role: Role) => navigate(from && (from.startsWith(homeFor(role)) || from.startsWith('/environments/')) ? from : homeFor(role), { replace: true })
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
