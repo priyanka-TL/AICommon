@@ -59,6 +59,23 @@
     --st-terminated-bg: 91 85 102;
     --st-terminated-fg: 255 255 255;
 
+    /* Simulated terminal: always dark, in both themes */
+    --term-bg: 22 17 31;
+    --term-chrome: 33 26 46;
+    --term-border: 56 47 72;
+    --term-fg: 232 228 240;
+    --term-muted: 160 152 176;
+    --term-cursor: 237 35 136;
+    --term-selection: 87 46 145;
+    --term-black: 22 17 31;
+    --term-red: 255 107 129;
+    --term-green: 0 221 187;
+    --term-yellow: 255 199 102;
+    --term-blue: 138 170 255;
+    --term-magenta: 215 155 216;
+    --term-cyan: 51 220 238;
+    --term-white: 232 228 240;
+
     color-scheme: light;
   }
 

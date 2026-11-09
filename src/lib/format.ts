@@ -64,3 +64,14 @@ export function relativeTime(iso: string) {
 }
 
 export const plural = (n: number, word: string) => `${formatInt(n)} ${word}${n === 1 ? '' : 's'}`
+
+/** 4 min 12 s, 1 h 5 min, 38 s */
+export function formatDuration(ms: number) {
+  const total = Math.max(0, Math.round(ms / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  if (h) return `${h} h ${m} min`
+  if (m) return `${m} min ${s} s`
+  return `${s} s`
+}

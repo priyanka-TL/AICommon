@@ -27,7 +27,7 @@ export default function Login() {
   if (user) return <Navigate to={homeFor(user.role)} replace />
 
   const from = (location.state as { from?: string } | null)?.from
-  const finish = (role: Role) => navigate(from && from.startsWith(homeFor(role)) ? from : homeFor(role), { replace: true })
+  const finish = (role: Role) => navigate(from && (from.startsWith(homeFor(role)) || from.startsWith('/environments/')) ? from : homeFor(role), { replace: true })
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()

@@ -2,7 +2,7 @@ import { Navigate, Route, Routes, useSearchParams } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { AppShell } from '@/components/layout/AppShell'
-import { RequireRole, homeFor } from '@/components/layout/RequireRole'
+import { RequireAuth, RequireRole, homeFor } from '@/components/layout/RequireRole'
 import { useCurrentUser } from '@/store/useAppStore'
 import Login from '@/pages/auth/Login'
 import ForgotPassword from '@/pages/auth/ForgotPassword'
@@ -43,6 +43,7 @@ import ReportDetail, { SharedReportRedirect } from '@/pages/qa/ReportDetail'
 import ProviderRequestDetail from '@/pages/shared/ProviderRequestDetail'
 import TenantInfraProviders from '@/pages/tenant-admin/InfraProviders'
 import NotFound from '@/pages/NotFound'
+import TerminalPage from '@/pages/shared/TerminalPage'
 import { AppEffects } from '@/components/layout/AppEffects'
 
 function RootRedirect() {
@@ -156,6 +157,9 @@ export default function App() {
           </Route>
         </Route>
 
+        <Route element={<RequireAuth />}>
+          <Route path="/environments/:id/terminal" element={<TerminalPage />} />
+        </Route>
         <Route path="/reports/:id" element={<SharedReportRedirect />} />
         <Route path="*" element={<RootRedirect />} />
       </Routes>

@@ -13,6 +13,7 @@ import { useCostContext } from '@/store/selectors'
 import { useMemo } from 'react'
 import { StatusBadge, Tag } from './StatusBadge'
 import { Avatar } from './Avatar'
+import { OpenTerminalButton } from './OpenTerminalButton'
 
 interface Props {
   env: Environment
@@ -83,7 +84,11 @@ export function EnvironmentCard({ env, catalog, role, owner, project, hasPending
         </p>
       )}
 
-      <div className="mt-auto flex items-center justify-between gap-3 border-t border-border pt-3 text-caption">
+      <div className="mt-auto flex flex-wrap items-center justify-between gap-2">
+        <OpenTerminalButton env={env} compact />
+      </div>
+
+      <div className="flex items-center justify-between gap-3 border-t border-border pt-3 text-caption">
         <span className="flex min-w-0 items-center gap-2 text-text-secondary">
           {owner && <Avatar name={owner.name} size="sm" />}
           <span className="truncate">{owner?.name}</span>

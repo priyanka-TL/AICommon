@@ -37,6 +37,7 @@ import NotFound from '@/pages/NotFound'
 import { isAdmin } from '@/lib/roles'
 import { needsMigration } from '@/lib/providers'
 import { MigrateBadge } from '@/components/shared/TenantProviders'
+import { OpenTerminalButton } from '@/components/shared/OpenTerminalButton'
 
 function snippets(env: Environment, model: string, kind: 'chat' | 'asr') {
   const url = `${env.endpoint}/${kind === 'chat' ? 'chat/completions' : 'audio/transcriptions'}`
@@ -314,6 +315,7 @@ export default function EnvironmentDetail() {
                 )}
               </>
             )}
+            <OpenTerminalButton env={env} />
             {scope.role === 'qa' && env.status === 'active' && (
               <Button asChild>
                 <Link to={`/qa/functional?env=${env.id}`}>

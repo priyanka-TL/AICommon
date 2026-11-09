@@ -44,7 +44,7 @@ import { seedQaRuns } from '@/lib/qa'
 import { ACCESS_MODE_LABELS, residencyProblem } from '@/lib/providers'
 import { environmentsInUse } from '@/lib/cost'
 import { parseGithubUrl } from '@/lib/suggestions'
-import { formatInt } from '@/lib/format'
+import { formatDuration, formatInt } from '@/lib/format'
 import { roleLabel } from '@/lib/labels'
 import { isAdmin } from '@/lib/roles'
 import { uid, slugify } from '@/lib/utils'
@@ -148,6 +148,9 @@ interface AppState extends SeedState {
   // environments
   transitionEnv: (id: string, to: EnvStatus, opts?: { comment?: string }) => Result
   restartEnv: (id: string) => void
+  /** Simulated terminal: audit who opened and closed a session, and for how long. Command contents are never stored. */
+  openTerminalSession: (envId: string, readOnly: boolean) => void
+  closeTerminalSession: (envId: string, startedAt: number) => void
   extendEnv: (id: string, weeks: number) => void
   scheduleProvisioning: () => void
 
@@ -824,6 +827,20 @@ export const useAppStore = create<AppState>()(
           pushEnvEvent(id, event('active', 'Restarted'))
           audit('environment.restarted', 'environment', id, `${user.name} restarted “${env.spec.name}”`, env.tenantId)
           notify([env.ownerId], `${user.name} restarted “${env.spec.name}”.`, envLink(id))
+        },
+
+        openTerminalSession: (envId, readOnly) => {
+          const user = me()
+          const env = get().environments.find((e) => e.id === envId)
+          if (!user || !env) return
+          audit('environment.terminal_opened', 'environment', envId, `${user.name} opened a terminal session on “${env.spec.name}”${readOnly ? ' (read-only)' : ''}`, env.tenantId)
+        },
+
+        closeTerminalSession: (envId, startedAt) => {
+          const user = me()
+          const env = get().environments.find((e) => e.id === envId)
+          if (!user || !env) return
+          audit('environment.terminal_closed', 'environment', envId, `${user.name} closed a terminal session on “${env.spec.name}” after ${formatDuration(Date.now() - startedAt)}`, env.tenantId)
         },
 
         extendEnv: (id, weeks) => {
