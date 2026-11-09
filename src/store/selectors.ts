@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import type { CatalogItem, Environment, Project, Role, User } from '@/data/types'
 import { isEnabledFor, isVisibleTo } from '@/lib/suggestions'
-import { fromRequest, fromSuggestion, type RequestItem } from '@/lib/requestItems'
+import { fromProviderRequest, fromRequest, fromSuggestion, type RequestItem } from '@/lib/requestItems'
 import { useAppStore, useCurrentUser, useSessionStore } from './useAppStore'
 
 export interface Scope {
@@ -38,13 +38,33 @@ export function useVisibleTenants(ignoreFilter = false) {
   )
 }
 
-export function canSeeEnvironment(scope: Scope, env: Environment, memberProjectIds: string[]) {
+/**
+ * `hostedProjectIds`: projects deployed on the environment besides its primary one.
+ * Members of any of them can see it.
+ */
+export function canSeeEnvironment(scope: Scope, env: Environment, memberProjectIds: string[], hostedProjectIds: string[] = []) {
   if (scope.role === 'super_admin') return true
   if (env.tenantId !== scope.user.tenantId) return false
   if (scope.role === 'tenant_admin') return true
+  const inProject = memberProjectIds.includes(env.projectId) || hostedProjectIds.some((p) => memberProjectIds.includes(p))
   // QA Engineers see Active environments in the projects they test, read-only.
-  if (scope.role === 'qa') return env.status === 'active' && memberProjectIds.includes(env.projectId)
-  return env.ownerId === scope.user.id || memberProjectIds.includes(env.projectId)
+  if (scope.role === 'qa') return env.status === 'active' && inProject
+  return env.ownerId === scope.user.id || inProject
+}
+
+/** Project ids deployed on each environment. */
+export function useHostedProjectIds() {
+  const deployments = useAppStore((s) => s.deployments)
+  return useMemo(() => {
+    const map = new Map<string, string[]>()
+    for (const d of deployments) map.set(d.envId, [...(map.get(d.envId) ?? []), d.projectId])
+    return map
+  }, [deployments])
+}
+
+export function useEnvDeployments(envId: string | undefined) {
+  const deployments = useAppStore((s) => s.deployments)
+  return useMemo(() => deployments.filter((d) => d.envId === envId), [deployments, envId])
 }
 
 /** Projects the current QA Engineer tests: assigned ones, or the whole tenant when allowed and switched on. */
@@ -70,12 +90,13 @@ export function useScopedEnvironments(includeTerminated = false) {
   const scope = useScope()
   const envs = useAppStore((s) => s.environments)
   const memberOf = useMemberProjectIds()
+  const hosted = useHostedProjectIds()
   return useMemo(
     () =>
       scope
-        ? envs.filter((e) => (includeTerminated || e.status !== 'terminated') && inTenant(scope, e.tenantId) && canSeeEnvironment(scope, e, memberOf))
+        ? envs.filter((e) => (includeTerminated || e.status !== 'terminated') && inTenant(scope, e.tenantId) && canSeeEnvironment(scope, e, memberOf, hosted.get(e.id)))
         : [],
-    [envs, scope, memberOf, includeTerminated],
+    [envs, scope, memberOf, hosted, includeTerminated],
   )
 }
 
@@ -160,7 +181,25 @@ export function useTenantCatalog(): (CatalogItem & { enabled: boolean })[] {
 export function useRequestItems(): RequestItem[] {
   const requests = useScopedRequests()
   const suggestions = useScopedSuggestions()
-  return useMemo(() => [...requests.map(fromRequest), ...suggestions.map(fromSuggestion)], [requests, suggestions])
+  const providerRequests = useScopedProviderRequests()
+  const providers = useAppStore((s) => s.infraProviders)
+  return useMemo(
+    () => [...requests.map(fromRequest), ...suggestions.map(fromSuggestion), ...providerRequests.map((r) => fromProviderRequest(r, providers))],
+    [requests, suggestions, providerRequests, providers],
+  )
+}
+
+/** Provider access requests: users see their own, Tenant Admins their tenant's, the Super Admin anything that reached them. */
+export function useScopedProviderRequests() {
+  const scope = useScope()
+  const all = useAppStore((s) => s.providerRequests)
+  return useMemo(() => {
+    if (!scope) return []
+    if (scope.role === 'qa') return []
+    if (scope.role === 'user') return all.filter((r) => r.requesterId === scope.user.id)
+    if (scope.role === 'tenant_admin') return all.filter((r) => r.tenantId === scope.user.tenantId)
+    return all.filter((r) => inTenant(scope, r.tenantId) && r.history.some((h) => h.status === 'escalated'))
+  }, [all, scope])
 }
 
 /** Everything the cost engine needs for one tenant. */

@@ -7,6 +7,8 @@ import { useScope, useScopedEnvironments, useScopedProjects } from '@/store/sele
 import { useSimulatedLoading } from '@/hooks/useSimulatedLoading'
 import { formatDate, formatInt } from '@/lib/format'
 import { computeLabel, STATUS_LABELS } from '@/lib/labels'
+import { needsMigration } from '@/lib/providers'
+import { MigrateBadge } from '@/components/shared/TenantProviders'
 import { allocationOf, tenantAllocated } from '@/lib/quota'
 import { envPath, newEnvPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
@@ -29,6 +31,7 @@ export default function Infrastructure() {
   const scope = useScope()!
   const [showTerminated, setShowTerminated] = useState(false)
   const environments = useScopedEnvironments(true)
+  const tenantsAll = useAppStore((s) => s.tenants)
   const projects = useScopedProjects()
   const tenants = useAppStore((s) => s.tenants)
   const users = useAppStore((s) => s.users)
@@ -82,7 +85,16 @@ export default function Infrastructure() {
       className: 'hidden lg:table-cell',
     },
     { key: 'expires', header: 'Expires', cell: (e) => <span className="text-text-secondary">{e.expiresAt ? formatDate(e.expiresAt) : '—'}</span>, className: 'hidden xl:table-cell' },
-    { key: 'status', header: 'Status', cell: (e) => <StatusBadge status={e.status} /> },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (e) => (
+        <div className="flex flex-wrap gap-1.5">
+          <StatusBadge status={e.status} />
+          {needsMigration(e, tenantsAll) && <MigrateBadge />}
+        </div>
+      ),
+    },
     {
       key: 'actions',
       header: '',

@@ -226,9 +226,9 @@ export default function InfraProviderDetail() {
                   Offered to: {provider.allowedTenants === 'all' ? 'All tenants' : realTenants.filter((t) => (provider.allowedTenants as string[]).includes(t.id)).map((t) => t.name).join(', ') || 'No tenants'}
                 </p>
                 <p className="mt-1 text-sm text-text-primary">
-                  Chosen by: {realTenants.filter((t) => t.providerIds.includes(provider.id)).map((t) => t.name).join(', ') || 'No tenant yet'}
+                  Approved for: {realTenants.filter((t) => t.approvedProviders.some((a) => a.providerId === provider.id && a.status === 'approved')).map((t) => t.name).join(', ') || 'No tenant yet'}
                 </p>
-                <p className="mt-1 text-caption text-text-muted">Tenants choose their providers on the tenant page.</p>
+                <p className="mt-1 text-caption text-text-muted">Tenant Admins request access; the Super Admin approves it per tenant.</p>
               </section>
             </div>
           </div>

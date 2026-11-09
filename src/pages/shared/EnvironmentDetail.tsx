@@ -5,7 +5,8 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as ChartTi
 import { CalendarPlus, CheckCircle2, Eye, EyeOff, FlaskConical, GitBranch, Pause, Pencil, Play, XCircle } from 'lucide-react'
 import type { Environment } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
-import { canSeeEnvironment, useMemberProjectIds, useScope } from '@/store/selectors'
+import { canSeeEnvironment, useEnvDeployments, useMemberProjectIds, useScope } from '@/store/selectors'
+import { ProjectsTab } from '@/components/deploy/ProjectsTab'
 import { costBreakdown, dailySpend, spendToDate } from '@/lib/cost'
 import { useCostContext } from '@/store/selectors'
 import { CostBreakdown } from '@/components/shared/CostBreakdown'
@@ -34,6 +35,8 @@ import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHea
 import { RadioCardItem, RadioGroup } from '@/components/ui/controls'
 import NotFound from '@/pages/NotFound'
 import { isAdmin } from '@/lib/roles'
+import { needsMigration } from '@/lib/providers'
+import { MigrateBadge } from '@/components/shared/TenantProviders'
 
 function snippets(env: Environment, model: string, kind: 'chat' | 'asr') {
   const url = `${env.endpoint}/${kind === 'chat' ? 'chat/completions' : 'audio/transcriptions'}`
@@ -225,13 +228,15 @@ export default function EnvironmentDetail() {
   const [extendOpen, setExtendOpen] = useState(false)
   const [extendWeeks, setExtendWeeks] = useState('4')
   const costCtx = useCostContext(env?.tenantId)
+  const tenants = useAppStore((s) => s.tenants)
   const usage = useMemo(
     () => (env ? dailySpend(env, 30, costCtx).map((d, i) => ({ ...d, requests: Math.round(d.credits * (3.2 + ((i * 37) % 10) / 10)) })) : []),
     [env, costCtx],
   )
   const spent = useMemo(() => (env ? spendToDate(env, costCtx).total : 0), [env, costCtx])
+  const deployments = useEnvDeployments(env?.id)
 
-  if (!env || !canSeeEnvironment(scope, env, memberOf)) {
+  if (!env || !canSeeEnvironment(scope, env, memberOf, deployments.map((d) => d.projectId))) {
     return <NotFound message="This environment doesn’t exist or is outside what you can see." />
   }
 
@@ -253,7 +258,16 @@ export default function EnvironmentDetail() {
   const last = env.history[env.history.length - 1]
   const actions = actionsFor(env)
   const monitoringBlocked = NO_MONITORING[env.status]
-  const tab = params.get('tab') === 'monitoring' && !monitoringBlocked ? 'monitoring' : params.get('tab') === 'tests' ? 'tests' : 'overview'
+  const tabParam = params.get('tab')
+  const tab = tabParam === 'monitoring' && !monitoringBlocked ? 'monitoring' : tabParam === 'tests' || tabParam === 'projects' ? tabParam : 'overview'
+  const openDeployment = params.get('deployment')
+  const setOpenDeployment = (depId: string | null) => {
+    const next = new URLSearchParams(params)
+    if (depId) next.set('deployment', depId)
+    else next.delete('deployment')
+    setParams(next, { replace: true })
+  }
+  const hostedNames = [...new Set([env.projectId, ...deployments.map((d) => d.projectId)])].map((pid) => projects.find((p) => p.id === pid)?.name).filter(Boolean)
   const attached = [
     ...env.spec.llms.map((l) => ({ it: item(l.id), extra: `${l.tokenBudget}M tokens / month` })),
     ...env.spec.asr.map((a) => ({ it: item(a), extra: env.spec.languages.join(', ') || 'No languages' })),
@@ -263,7 +277,7 @@ export default function EnvironmentDetail() {
   return (
     <>
       <PageHeader
-        eyebrow={`${scope.role === 'super_admin' ? `${tenant?.name} · ` : ''}${project?.name ?? ''}`}
+        eyebrow={`${scope.role === 'super_admin' ? `${tenant?.name} · ` : ''}${hostedNames.length > 2 ? `${hostedNames[0]} + ${hostedNames.length - 1} more projects` : hostedNames.join(' · ') || (project?.name ?? '')}`}
         title={env.spec.name}
         description={env.spec.description || undefined}
         actions={
@@ -321,6 +335,7 @@ export default function EnvironmentDetail() {
       <div className="mb-6 flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={env.status} />
+          {needsMigration(env, tenants) && <MigrateBadge />}
           {pendingChange && <StatusBadge status={pendingChange.status} label={`Change ${pendingChange.status === 'escalated' ? 'with Super Admin' : 'under review'}`} />}
           <Tag>
             {tier.label}
@@ -379,11 +394,13 @@ export default function EnvironmentDetail() {
           const next = new URLSearchParams(params)
           if (v === 'overview') next.delete('tab')
           else next.set('tab', v)
+          if (v !== 'projects') next.delete('deployment')
           setParams(next, { replace: true })
         }}
       >
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          {env.status !== 'provisioning' && env.status !== 'provisioning_failed' && <TabsTrigger value="projects">Projects ({deployments.length})</TabsTrigger>}
           {monitoringBlocked ? (
             <Tooltip content={monitoringBlocked}>
               <span>
@@ -572,6 +589,8 @@ export default function EnvironmentDetail() {
             </div>
           </div>
         </TabsContent>
+
+        <TabsContent value="projects">{tab === 'projects' && <ProjectsTab env={env} openId={openDeployment} onOpen={setOpenDeployment} />}</TabsContent>
 
         <TabsContent value="monitoring">{!monitoringBlocked && tab === 'monitoring' && <MonitoringPanel env={env} catalog={catalog} />}</TabsContent>
 

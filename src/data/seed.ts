@@ -4,6 +4,9 @@ import type {
   CatalogItem,
   ComputeTier,
   Dataset,
+  Deployment,
+  DeploymentConfig,
+  DeploymentVersion,
   EnvRequest,
   EnvSpec,
   EnvStatus,
@@ -17,6 +20,8 @@ import type {
   Notification,
   Project,
   Provider,
+  ProviderApproval,
+  ProviderRequest,
   QaMetric,
   QaRun,
   Quota,
@@ -32,9 +37,10 @@ import type {
   UsagePoint,
   User,
 } from './types'
+import { SEEDED_BUILD_ERROR, STEP_ORDER } from '@/lib/deploy'
 
 /** Bump to discard everyone's saved state and load this seed. */
-export const SEED_VERSION = 'v5'
+export const SEED_VERSION = 'v7'
 
 export const DEFAULT_TENANT_ID = 't-default'
 export const SUPER_ADMIN_ID = 'u-super'
@@ -105,6 +111,16 @@ const ev = (status: LifecycleStatus, when: string, actorId: string, actorRole: A
 const SL = 't-shikshalokam'
 const M4C = 't-mantra4change'
 
+const approval = (providerId: string, regionIds: string[], budgetCap: number, days: number): ProviderApproval => ({
+  providerId,
+  regionIds,
+  budgetCap,
+  approvedAt: at(days),
+  approvedById: SUPER_ADMIN_ID,
+  requestId: null,
+  status: 'approved',
+})
+
 export const seedTenants: Tenant[] = [
   {
     id: DEFAULT_TENANT_ID,
@@ -118,7 +134,7 @@ export const seedTenants: Tenant[] = [
     contactEmail: 'admin@sandbox.org',
     quota: { vcpu: 0, ramGb: 0, gpus: 0, storageGb: 0 },
     enabledItemIds: [],
-    providerIds: [],
+    approvedProviders: [],
     status: 'active',
     isSystem: true,
     createdAt: at(400),
@@ -140,7 +156,10 @@ export const seedTenants: Tenant[] = [
       'cap-langgraph', 'cap-crewai', 'cap-llamaindex', 'cap-qdrant', 'cap-pgvector', 'cap-chroma',
       'cap-ragas', 'cap-deepeval', 'cap-promptfoo', 'cap-langflow',
     ],
-    providerIds: ['ip-aws', 'ip-azure', 'ip-e2e', 'ip-yotta', 'ip-onprem'],
+    approvedProviders: [
+      approval('ip-aws', ['aws-mum', 'aws-hyd', 'aws-sin'], 60000, 180),
+      approval('ip-e2e', ['e2e-del', 'e2e-mum'], 95000, 180),
+    ],
     status: 'active',
     isSystem: false,
     createdAt: at(210),
@@ -162,7 +181,7 @@ export const seedTenants: Tenant[] = [
       'cap-langgraph', 'cap-crewai', 'cap-llamaindex', 'cap-weaviate', 'cap-pgvector',
       'cap-ragas', 'cap-promptfoo', 'cap-flowise', 'cap-haystack',
     ],
-    providerIds: ['ip-aws', 'ip-azure', 'ip-gcp', 'ip-e2e', 'ip-yotta'],
+    approvedProviders: [approval('ip-azure', ['azr-cin', 'azr-sin'], 120000, 150)],
     status: 'active',
     isSystem: false,
     createdAt: at(160),
@@ -485,27 +504,6 @@ export const seedInfraProviders: InfraProvider[] = [
     allowedTenants: 'all',
     createdAt: at(210),
   },
-  {
-    id: 'ip-onprem',
-    name: 'Shared On-premise GPU Pool',
-    code: 'ONP',
-    type: 'on_premise',
-    status: 'active',
-    regions: [region('onp-blr', 'Bengaluru', true, ['T4', 'A100'])],
-    rateCards: [
-      card(
-        1,
-        200,
-        'Internal cost allocation, Apr 2026',
-        [inst('onp-cpu', 'CPU node 8 vCPU', 8, 32, 'none', 0, 0), inst('onp-t4', 'T4 node', 8, 32, 'T4', 1, 0), inst('onp-a100', 'A100 node', 32, 128, 'A100', 1, 0)],
-        { storage: 2, egress: 0, fee: 5, ngo: 0 },
-      ),
-    ],
-    aiServices: [],
-    maxGpus: 6,
-    allowedTenants: 'all',
-    createdAt: at(210),
-  },
 ]
 
 export const GPU_TIER: Record<GpuType | 'none', ComputeTier> = { none: 'cpu', T4: 't4', L4: 'l4', A10: 'a10', A100: 'a100' }
@@ -526,13 +524,38 @@ export function placeSpec<T extends EnvSpec>(spec: T, providerId: string, region
   }
 }
 
+/** Where each tenant's environments go by tier, on its approved providers, in India-resident regions. */
+const TENANT_PLACEMENT: Record<string, Record<ComputeTier, [string, string, string]>> = {
+  [SL]: {
+    cpu: ['ip-e2e', 'e2e-del', 'e2e-c3-8'],
+    t4: ['ip-aws', 'aws-mum', 'aws-g4dn-2xl'],
+    l4: ['ip-aws', 'aws-mum', 'aws-g6-2xl'],
+    a10: ['ip-e2e', 'e2e-mum', 'e2e-a10'],
+    a100: ['ip-e2e', 'e2e-mum', 'e2e-a100'],
+  },
+  [M4C]: {
+    cpu: ['ip-azure', 'azr-cin', 'azr-d8s'],
+    t4: ['ip-azure', 'azr-cin', 'azr-nc8-t4'],
+    l4: ['ip-azure', 'azr-cin', 'azr-nc8-t4'],
+    a10: ['ip-azure', 'azr-cin', 'azr-nv18-a10'],
+    a100: ['ip-azure', 'azr-cin', 'azr-nc24-a100'],
+  },
+}
+
+/** Moves a seeded spec onto its tenant's approved providers. */
+function placeForTenant(spec: EnvSpec, tenantId: string, regionId?: string) {
+  const place = TENANT_PLACEMENT[tenantId]?.[spec.compute]
+  if (!place) return spec
+  return placeSpec(spec, place[0], regionId ?? place[1], place[2], spec.instanceCount)
+}
+
 /** Default placement for a tier, in an India-resident region. */
 const DEFAULT_PLACEMENT: Record<ComputeTier, [string, string, string]> = {
   cpu: ['ip-e2e', 'e2e-del', 'e2e-c3-8'],
   t4: ['ip-aws', 'aws-mum', 'aws-g4dn-2xl'],
   l4: ['ip-gcp', 'gcp-mum', 'gcp-g2-8'],
   a10: ['ip-azure', 'azr-cin', 'azr-nv18-a10'],
-  a100: ['ip-yotta', 'yta-nmb', 'yta-a100'],
+  a100: ['ip-e2e', 'e2e-mum', 'e2e-a100'],
 }
 
 /* ---------- environments and requests ---------- */
@@ -667,24 +690,13 @@ function approvalHistory(e: EnvSeed) {
   return { req, env, submitted, approvedAt }
 }
 
-/** Where each seeded environment runs. Personal and children's data stay in India-resident regions. */
-const PLACEMENT: Record<string, [string, string, string]> = {
-  'env-sl-tutor': ['ip-azure', 'azr-cin', 'azr-nv18-a10'],
-  'env-sl-lessonplan': ['ip-aws', 'aws-mum', 'aws-g4dn-2xl'],
-  'env-sl-asr-ft': ['ip-onprem', 'onp-blr', 'onp-a100'],
-  'env-sl-whatsapp': ['ip-e2e', 'e2e-mum', 'e2e-a10'],
-  'env-sl-asr-eval': ['ip-yotta', 'yta-nmb', 'yta-a100'],
-  'env-m4c-coach': ['ip-azure', 'azr-sin', 'azr-nv18-a10'],
-  'env-m4c-docparse': ['ip-gcp', 'gcp-mum', 'gcp-n2-8'],
-  'env-m4c-feedback': ['ip-gcp', 'gcp-del', 'gcp-n1-t4'],
-  'env-m4c-visits': ['ip-aws', 'aws-hyd', 'aws-g4dn-2xl'],
-  'env-m4c-ocr': ['ip-e2e', 'e2e-mum', 'e2e-a10'],
-  'env-m4c-pilot-v0': ['ip-aws', 'aws-sin', 'aws-c6i-2xl'],
+/** A few environments use a second region, so both appear in reports. */
+const REGION_OVERRIDE: Record<string, string> = {
+  'env-m4c-coach': 'azr-sin',
+  'env-m4c-visits': 'azr-sin',
+  'env-sl-lessonplan': 'aws-hyd',
 }
-for (const e of envSeeds) {
-  const place = PLACEMENT[e.id]
-  if (place) e.spec = placeSpec(e.spec, place[0], place[1], place[2], e.spec.compute === 'cpu' ? 1 : e.spec.instanceCount)
-}
+for (const e of envSeeds) e.spec = placeForTenant(e.spec, e.tenantId, REGION_OVERRIDE[e.id])
 
 /** Version of the provider's rate card in force on a date. */
 export function rateCardVersionAt(providerId: string, iso: string, providers: InfraProvider[] = seedInfraProviders) {
@@ -739,6 +751,193 @@ const built = envSeeds.map((e) => {
 })
 
 export const seedEnvironments: Environment[] = built.map((b) => b.environment)
+
+/* ---------- deployments (projects hosted on environments) ---------- */
+
+const ENV_SL_TUTOR = 'env-sl-tutor'
+const ENV_M4C_COACH = 'env-m4c-coach'
+
+const depCfg = (c: Omit<DeploymentConfig, 'domain' | 'healthStatus'> & Partial<Pick<DeploymentConfig, 'domain' | 'healthStatus'>>): DeploymentConfig => ({ domain: '', healthStatus: 200, ...c })
+
+const version = (n: number, config: DeploymentConfig, daysAgo: number, byId: string, commit: string, status: DeploymentVersion['status'], note?: string): DeploymentVersion => ({
+  version: n,
+  config,
+  at: at(daysAgo, 11, 20),
+  byId,
+  commit,
+  status,
+  ...(note ? { note } : {}),
+})
+
+interface DeploySeed {
+  id: string
+  tenantId: string
+  envId: string
+  projectId: string
+  serviceName: string
+  status: Deployment['status']
+  config: DeploymentConfig
+  history: DeploymentVersion[]
+  usage: Deployment['usage']
+  breakBuild?: boolean
+  createdDaysAgo: number
+}
+
+const slNodeApi = depCfg({
+  runtime: 'node',
+  runtimeVersion: '20',
+  source: { kind: 'git', repoUrl: 'https://github.com/shikshalokam/reading-tutor-api.git', branch: 'main' },
+  installCmd: 'npm ci',
+  buildCmd: 'npm run build',
+  startCmd: 'node dist/server.js',
+  processManager: 'systemd',
+  port: 3000,
+  basePath: '/api',
+  env: [
+    { key: 'NODE_ENV', value: 'production' },
+    { key: 'LOG_LEVEL', value: 'info' },
+  ],
+  healthPath: '/health',
+  limits: { vcpu: 2, ramGb: 4 },
+  dependencies: ['llm-sarvam', 'llm-llama'],
+})
+
+const slSpeechApi = depCfg({
+  runtime: 'python',
+  runtimeVersion: '3.11',
+  source: { kind: 'git', repoUrl: 'https://github.com/shikshalokam/speech-scoring-service.git', branch: 'main' },
+  installCmd: 'pip install -r requirements.txt',
+  buildCmd: 'python -m compileall app',
+  startCmd: 'uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2',
+  processManager: 'pm2',
+  port: 8000,
+  basePath: '/speech',
+  env: [{ key: 'MODEL_CACHE_DIR', value: '/srv/multilingual-speech-recognition/.cache' }],
+  healthPath: '/healthz',
+  limits: { vcpu: 4, ramGb: 8 },
+  dependencies: ['asr-indicconformer'],
+})
+
+const slFrontend = depCfg({
+  runtime: 'static',
+  runtimeVersion: '',
+  source: { kind: 'git', repoUrl: 'https://github.com/shikshalokam/teacher-support-web.git', branch: 'main' },
+  installCmd: 'npm ci',
+  buildCmd: 'npm run build',
+  startCmd: '',
+  processManager: 'systemd',
+  port: 0,
+  basePath: '/',
+  env: [{ key: 'VITE_API_BASE', value: '/api' }],
+  healthPath: '/',
+  limits: { vcpu: 1, ramGb: 1 },
+  dependencies: [],
+})
+
+const m4cNodeApi = depCfg({
+  runtime: 'node',
+  runtimeVersion: '20',
+  source: { kind: 'git', repoUrl: 'https://github.com/mantra4change/leader-coach-api.git', branch: 'main' },
+  installCmd: 'npm ci',
+  buildCmd: 'npm run build',
+  startCmd: 'node dist/index.js',
+  processManager: 'compose',
+  port: 3000,
+  basePath: '/coach',
+  domain: 'coach.mantra4change.org',
+  env: [{ key: 'NODE_ENV', value: 'production' }],
+  healthPath: '/health',
+  limits: { vcpu: 2, ramGb: 4 },
+  dependencies: ['llm-claude'],
+})
+
+const m4cDocsApi = depCfg({
+  runtime: 'python',
+  runtimeVersion: '3.12',
+  source: { kind: 'git', repoUrl: 'git@github.com:mantra4change/document-intelligence.git', branch: 'develop' },
+  installCmd: 'pip install -r requirements.txt',
+  buildCmd: '',
+  startCmd: 'uvicorn docs.api:app --host 127.0.0.1 --port 8000',
+  processManager: 'systemd',
+  port: 8000,
+  basePath: '/docs-api',
+  env: [{ key: 'OCR_LANGS', value: 'eng+tel+hin' }],
+  healthPath: '/health',
+  limits: { vcpu: 2, ramGb: 4 },
+  dependencies: ['llm-claude'],
+})
+
+const deploySeeds: DeploySeed[] = [
+  {
+    id: 'dep-sl-api', tenantId: SL, envId: ENV_SL_TUTOR, projectId: 'p-sl-edu', serviceName: 'reading-tutor-api', status: 'running', config: slNodeApi, createdDaysAgo: 30,
+    usage: { cpuPct: 38, ramGb: 1.6 },
+    history: [
+      version(1, { ...slNodeApi, startCmd: 'node dist/index.js' }, 30, 'u-sl-dev', '4e1a9c2', 'superseded'),
+      version(2, slNodeApi, 6, 'u-sl-dev', 'b7d03f1', 'running', 'Renamed the entry point to server.js'),
+    ],
+  },
+  {
+    id: 'dep-sl-speech', tenantId: SL, envId: ENV_SL_TUTOR, projectId: 'p-sl-speech', serviceName: 'speech-scoring-api', status: 'failed', config: slSpeechApi, createdDaysAgo: 3,
+    usage: { cpuPct: 0, ramGb: 0 },
+    breakBuild: true,
+    history: [version(1, slSpeechApi, 1, 'u-sl-meera', '9c2e771', 'failed', 'Build failed')],
+  },
+  {
+    id: 'dep-sl-web', tenantId: SL, envId: ENV_SL_TUTOR, projectId: 'p-sl-teacher', serviceName: 'teacher-support-web', status: 'running', config: slFrontend, createdDaysAgo: 20,
+    usage: { cpuPct: 4, ramGb: 0.1 },
+    history: [version(1, slFrontend, 20, 'u-sl-kiran', 'f00b5a3', 'running')],
+  },
+  {
+    id: 'dep-m4c-api', tenantId: M4C, envId: ENV_M4C_COACH, projectId: 'p-m4c-coach', serviceName: 'leader-coach-api', status: 'running', config: m4cNodeApi, createdDaysAgo: 26,
+    usage: { cpuPct: 52, ramGb: 2.3 },
+    history: [version(1, m4cNodeApi, 26, 'u-m4c-dev', '1d8e4b0', 'running')],
+  },
+  {
+    id: 'dep-m4c-docs', tenantId: M4C, envId: ENV_M4C_COACH, projectId: 'p-m4c-docs', serviceName: 'document-intelligence', status: 'stopped', config: m4cDocsApi, createdDaysAgo: 14,
+    usage: { cpuPct: 0, ramGb: 0 },
+    history: [version(1, m4cDocsApi, 14, 'u-m4c-sanjay', 'a3f9e12', 'running')],
+  },
+]
+
+export const seedDeployments: Deployment[] = deploySeeds.map((d) => {
+  const last = d.history[d.history.length - 1]!
+  const failed = d.status === 'failed'
+  const failAt = STEP_ORDER.indexOf('build')
+  return {
+    id: d.id,
+    tenantId: d.tenantId,
+    envId: d.envId,
+    projectId: d.projectId,
+    serviceName: d.serviceName,
+    config: d.config,
+    status: d.status,
+    history: d.history,
+    usage: d.usage,
+    ...(d.breakBuild ? { breakBuild: true } : {}),
+    createdAt: at(d.createdDaysAgo),
+    updatedAt: last.at,
+    lastRun: {
+      id: `run-${d.id}`,
+      version: last.version,
+      startedAt: last.at,
+      finishedAt: last.at,
+      actorId: last.byId,
+      steps: STEP_ORDER.map((key, i) => ({
+        key,
+        status: failed ? (i < failAt ? 'ok' : i === failAt ? 'failed' : 'pending') : d.config.runtime === 'static' && (key === 'service' || key === 'start') ? 'skipped' : 'ok',
+      })),
+      log: failed
+        ? [
+            { at: last.at, level: 'INFO', text: `$ ${d.config.buildCmd}` },
+            { at: last.at, level: 'ERROR', text: "ModuleNotFoundError: No module named 'app.scoring'" },
+            { at: last.at, level: 'ERROR', text: SEEDED_BUILD_ERROR },
+          ]
+        : [{ at: last.at, level: 'INFO', text: `Deployed version ${last.version} (${last.commit}).` }],
+      failedStep: failed ? 'build' : null,
+      error: failed ? SEEDED_BUILD_ERROR : null,
+    },
+  }
+})
 
 interface OpenSeed {
   id: string
@@ -862,7 +1061,55 @@ const openRequests: EnvRequest[] = [
   }),
 ]
 
-export const seedRequests: EnvRequest[] = [...openRequests, ...built.map((b) => b.request)]
+export const seedRequests: EnvRequest[] = [
+  ...openRequests.map((r) => ({ ...r, spec: placeForTenant(r.spec, r.tenantId), previousSpec: r.previousSpec ? placeForTenant(r.previousSpec, r.tenantId) : null })),
+  ...built.map((b) => b.request),
+]
+
+/* ---------- provider access requests ---------- */
+
+export const seedProviderRequests: ProviderRequest[] = [
+  {
+    id: 'pr-sl-yotta',
+    tenantId: SL,
+    requesterId: 'u-sl-fatima',
+    raisedByRole: 'user',
+    providerId: 'ip-yotta',
+    regionIds: ['yta-nmb'],
+    justification: 'Speech fine-tuning needs A100s for two weeks each month, and Yotta is cheaper per hour than our other providers.',
+    workloads: ['gpu', 'testing'],
+    expectedMonthlySpend: 45000,
+    requestedCap: 60000,
+    dataClassification: 'children',
+    status: 'under_review',
+    history: [
+      { status: 'submitted', at: at(2, 15, 10), actorId: 'u-sl-fatima', actorRole: 'user' },
+      { status: 'under_review', at: at(1, 10, 0), actorId: 'u-sl-ta', actorRole: 'tenant_admin' },
+    ],
+    createdAt: at(2, 15, 10),
+    updatedAt: at(1, 10, 0),
+  },
+  {
+    id: 'pr-m4c-e2e',
+    tenantId: M4C,
+    requesterId: 'u-m4c-ta',
+    raisedByRole: 'tenant_admin',
+    providerId: 'ip-e2e',
+    regionIds: ['e2e-mum'],
+    justification: 'Document parsing pilots in Telangana need cheaper CPU and A10 capacity inside India.',
+    workloads: ['development', 'pilot'],
+    expectedMonthlySpend: 30000,
+    requestedCap: 50000,
+    dataClassification: 'personal',
+    status: 'escalated',
+    history: [
+      { status: 'submitted', at: at(3, 11, 0), actorId: 'u-m4c-ta', actorRole: 'tenant_admin' },
+      { status: 'escalated', at: at(3, 11, 1), actorId: 'system', actorRole: 'system', comment: 'Raised by a Tenant Admin, so it went straight to the Super Admin.' },
+    ],
+    createdAt: at(3, 11, 0),
+    updatedAt: at(3, 11, 1),
+  },
+]
 
 /* ---------- providers ---------- */
 
@@ -1363,6 +1610,7 @@ export interface SeedState {
   users: User[]
   projects: Project[]
   environments: Environment[]
+  deployments: Deployment[]
   requests: EnvRequest[]
   catalog: CatalogItem[]
   providers: Provider[]
@@ -1373,6 +1621,7 @@ export interface SeedState {
   quotaRequests: QuotaRequest[]
   testRuns: TestRun[]
   infraProviders: InfraProvider[]
+  providerRequests: ProviderRequest[]
   datasets: Dataset[]
   testConfigs: TestConfig[]
   qaRuns: QaRun[]
@@ -1386,6 +1635,7 @@ export function createSeed(): SeedState {
     users: seedUsers,
     projects: seedProjects,
     environments: seedEnvironments,
+    deployments: seedDeployments,
     requests: seedRequests,
     catalog: seedCatalog,
     providers: seedProviders,
@@ -1396,6 +1646,7 @@ export function createSeed(): SeedState {
     quotaRequests: seedQuotaRequests,
     testRuns: seedTestRuns,
     infraProviders: seedInfraProviders,
+    providerRequests: seedProviderRequests,
     datasets: seedDatasets,
     testConfigs: seedTestConfigs,
     qaRuns: [] as QaRun[],

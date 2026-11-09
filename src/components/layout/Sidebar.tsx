@@ -25,11 +25,13 @@ export function Sidebar({ collapsed = false, onToggleCollapse, onNavigate }: Sid
     return {
       tenantReviews:
         s.requests.filter((r) => mine(r.tenantId) && ['submitted', 'under_review', 'resubmitted'].includes(r.status) && r.raisedByRole !== 'tenant_admin').length +
-        s.suggestions.filter((x) => mine(x.tenantId) && !x.forwarded && open(x)).length,
+        s.suggestions.filter((x) => mine(x.tenantId) && !x.forwarded && open(x)).length +
+        s.providerRequests.filter((x) => mine(x.tenantId) && x.raisedByRole === 'user' && ['submitted', 'under_review', 'resubmitted'].includes(x.status)).length,
       escalated:
         s.requests.filter((r) => r.status === 'escalated').length +
         s.quotaRequests.filter((q) => q.status === 'pending').length +
-        s.suggestions.filter((x) => (x.forwarded && open(x)) || x.status === 'approved_tenant').length,
+        s.suggestions.filter((x) => (x.forwarded && open(x)) || x.status === 'approved_tenant').length +
+        s.providerRequests.filter((x) => x.status === 'escalated').length,
       }
     }),
   )

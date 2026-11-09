@@ -1,8 +1,9 @@
 import { cn } from '@/lib/utils'
-import type { LifecycleStatus, SuggestionStatus } from '@/data/types'
+import type { DeploymentStatus, LifecycleStatus, ProviderRequestStatus, SuggestionStatus } from '@/data/types'
+import { DEPLOYMENT_STATUS_LABELS } from '@/lib/deploy'
 import { STATUS_LABELS, SUGGESTION_LABELS } from '@/lib/labels'
 
-export type BadgeStatus = LifecycleStatus | 'over-quota'
+export type BadgeStatus = LifecycleStatus | 'over-quota' | Exclude<DeploymentStatus, 'stopped'>
 
 type Style = { pill: string; dot: string }
 
@@ -27,14 +28,20 @@ const styles: Record<BadgeStatus, Style> = {
   provisioning_failed: RED,
   terminated: { pill: 'bg-status-terminated-bg text-status-terminated-fg', dot: 'bg-border-strong' },
   'over-quota': { pill: 'bg-status-over-bg text-status-over-fg', dot: 'bg-vermilion' },
+  not_deployed: NEUTRAL,
+  deploying: { pill: BLUE.pill, dot: 'bg-blue animate-pulse-dot' },
+  running: { pill: 'bg-status-running-bg text-status-running-fg', dot: 'bg-teal' },
+  failed: RED,
 }
+
+const DEPLOY_KEYS = new Set<string>(['not_deployed', 'deploying', 'running', 'failed'])
 
 export function StatusBadge({ status, label, className }: { status: BadgeStatus; label?: string; className?: string }) {
   const s = styles[status]
   return (
     <span className={cn('inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 text-xs font-semibold', s.pill, className)}>
       <span className={cn('size-1.5 rounded-full', s.dot)} aria-hidden />
-      {label ?? (status === 'over-quota' ? 'Over quota' : STATUS_LABELS[status])}
+      {label ?? (status === 'over-quota' ? 'Over quota' : DEPLOY_KEYS.has(status) ? DEPLOYMENT_STATUS_LABELS[status as DeploymentStatus] : STATUS_LABELS[status as LifecycleStatus])}
     </span>
   )
 }
@@ -79,4 +86,21 @@ export function Tag({ children, className }: { children: React.ReactNode; classN
       {children}
     </span>
   )
+}
+
+const PROVIDER_REQUEST_STYLE: Record<ProviderRequestStatus, [BadgeStatus, string]> = {
+  submitted: ['submitted', 'Submitted'],
+  under_review: ['under_review', 'Under review'],
+  escalated: ['escalated', 'With Super Admin'],
+  changes_requested: ['changes_requested', 'Changes requested'],
+  resubmitted: ['resubmitted', 'Resubmitted'],
+  approved: ['approved', 'Approved'],
+  rejected: ['rejected', 'Rejected'],
+  revoked: ['stopped', 'Revoked'],
+  cancelled: ['cancelled', 'Cancelled'],
+}
+
+export function ProviderRequestBadge({ status, className }: { status: ProviderRequestStatus; className?: string }) {
+  const [style, label] = PROVIDER_REQUEST_STYLE[status]
+  return <StatusBadge status={style} label={label} className={className} />
 }

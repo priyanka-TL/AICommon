@@ -236,3 +236,55 @@ export function dailySpend(env: Environment, days: number, ctx: Omit<CostContext
   }
   return out
 }
+
+/* ---------- provider budget caps ---------- */
+
+const holdsCost = (e: Environment) => !['terminated', 'provisioning_failed'].includes(e.status)
+
+export interface ProviderBudget {
+  cap: number
+  /** Monthly estimate of the tenant's environments on this provider (the run rate the cap is checked against). */
+  committed: number
+  /** What it has actually cost so far this month. */
+  mtd: number
+}
+
+/** A tenant's spend on one provider against its approved monthly cap. */
+export function providerBudget(tenant: Tenant, providerId: string, environments: Environment[], ctx: Omit<CostContext, 'tenant' | 'at'>): ProviderBudget {
+  const approval = tenant.approvedProviders.find((a) => a.providerId === providerId && a.status === 'approved')
+  const envs = environments.filter((e) => e.tenantId === tenant.id && e.spec.providerId === providerId)
+  const full = { ...ctx, tenant }
+  return {
+    cap: approval?.budgetCap ?? 0,
+    committed: envs.filter(holdsCost).reduce((s, e) => s + costBreakdown(e.spec, full).total, 0),
+    mtd: envs.reduce((s, e) => s + spendThisMonth(e, full).total, 0),
+  }
+}
+
+export interface BudgetCheck extends ProviderBudget {
+  /** Monthly estimate this request adds (the difference, for a change). */
+  adds: number
+  over: boolean
+  providerName: string
+}
+
+/** Would this request push the provider's monthly spend past the tenant's cap? */
+export function budgetCheck(
+  spec: EnvSpec,
+  previous: EnvSpec | null | undefined,
+  tenant: Tenant | undefined,
+  environments: Environment[],
+  ctx: Omit<CostContext, 'tenant' | 'at'>,
+  excludeEnvId?: string,
+): BudgetCheck | null {
+  if (!tenant) return null
+  const approval = tenant.approvedProviders.find((a) => a.providerId === spec.providerId && a.status === 'approved')
+  if (!approval) return null
+  const others = excludeEnvId ? environments.filter((e) => e.id !== excludeEnvId) : environments
+  const b = providerBudget(tenant, spec.providerId, others, ctx)
+  const full = { ...ctx, tenant }
+  const after = costBreakdown(spec, full).total
+  const before = previous && previous.providerId === spec.providerId && excludeEnvId ? 0 : previous && previous.providerId === spec.providerId ? costBreakdown(previous, full).total : 0
+  const adds = after - before
+  return { ...b, adds, over: b.committed + adds > b.cap, providerName: ctx.providers.find((p) => p.id === spec.providerId)?.name ?? '' }
+}

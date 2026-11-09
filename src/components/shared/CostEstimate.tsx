@@ -7,6 +7,7 @@ import { formatINR, formatInt } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { CostBreakdown } from './CostBreakdown'
 import { ResourceQuota } from './ResourceQuota'
+import { BudgetCapWarning, useSpecBudget } from './BudgetCapWarning'
 
 interface Props {
   spec: EnvSpec
@@ -18,9 +19,12 @@ interface Props {
   catalog: CatalogItem[]
   audience: Role
   className?: string
+  /** When editing, the environment being changed (its own cost isn't counted twice). */
+  editingEnvId?: string
 }
 
-export function CostEstimate({ spec, tenant, used, previous, catalog, audience, className }: Props) {
+export function CostEstimate({ spec, tenant, used, previous, catalog, audience, className, editingEnvId }: Props) {
+  const budget = useSpecBudget(spec, tenant.id, editingEnvId)
   const ctx = useCostContext(tenant.id)
   const est = costBreakdown(spec, { ...ctx, catalog })
   const alloc = allocationOf(spec)
@@ -65,6 +69,8 @@ export function CostEstimate({ spec, tenant, used, previous, catalog, audience, 
           <p className="text-caption">Within {tenant.name}’s quota. The Super Admin gives final approval for new infrastructure.</p>
         </div>
       )}
+
+      <BudgetCapWarning check={budget} audience="requester" />
 
       <div className="border-t border-border pt-4">
         <p className="eyebrow">Estimated cost</p>

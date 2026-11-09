@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ArrowRight, CheckCircle2, Gauge, Inbox, Plus, SearchX, XCircle } from 'lucide-react'
-import type { EnvRequest, QuotaRequest, Suggestion } from '@/data/types'
+import type { EnvRequest, ProviderRequest, QuotaRequest, Suggestion } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
 import { useRequestItems, useScope, useScopedProjects } from '@/store/selectors'
 import { useSimulatedLoading } from '@/hooks/useSimulatedLoading'
@@ -10,13 +10,14 @@ import { allocationOf, checkQuota, RESOURCES, subQuota, tenantAllocated, ZERO } 
 import { formatDate, formatInt, relativeTime } from '@/lib/format'
 import { useRequestFilters } from '@/hooks/useRequestFilters'
 import { filterCommon, filterItems, sortItems, type RequestItem } from '@/lib/requestItems'
-import { newEnvPath, requestPath } from '@/lib/paths'
+import { newEnvPath, providerRequestPath, requestPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { ItemStatusBadge, RequestFilters, TypeLabel } from '@/components/shared/RequestFilters'
 import { ReviewSheet } from '@/components/shared/SuggestionReview'
+import { requestBudget, useBudgetInputs } from '@/components/shared/BudgetCapWarning'
 import { StatusBadge, Tag } from '@/components/shared/StatusBadge'
 import { CompactTimeline, futureSteps, mergedHistory } from '@/components/shared/LifecycleTimeline'
 import { Avatar } from '@/components/shared/Avatar'
@@ -162,7 +163,8 @@ export default function RequestsQueue() {
     isSuper ? r.status === 'escalated' : ['submitted', 'resubmitted', 'under_review'].includes(r.status) && r.raisedByRole !== 'tenant_admin'
   const capNeedsMe = (s: Suggestion) =>
     isSuper ? (s.forwarded && ['submitted', 'under_review'].includes(s.status)) || s.status === 'approved_tenant' : ['submitted', 'under_review'].includes(s.status) && !s.forwarded
-  const needsMe = (i: RequestItem) => (i.type === 'environment' ? envNeedsMe(i.source) : capNeedsMe(i.source))
+  const provNeedsMe = (r: ProviderRequest) => (isSuper ? r.status === 'escalated' : r.raisedByRole === 'user' && ['submitted', 'under_review', 'resubmitted'].includes(r.status))
+  const needsMe = (i: RequestItem) => (i.type === 'environment' ? envNeedsMe(i.source) : i.type === 'provider' ? provNeedsMe(i.source) : capNeedsMe(i.source))
 
   const overQuota = useMemo(() => {
     const m = new Map<string, boolean>()
@@ -180,6 +182,16 @@ export default function RequestsQueue() {
     return m
   }, [items, tenants, environments])
 
+  const budgetInputs = useBudgetInputs()
+  const overBudget = useMemo(() => {
+    const m = new Map<string, boolean>()
+    for (const i of items) {
+      if (i.type !== 'environment' || !['submitted', 'under_review', 'resubmitted', 'escalated'].includes(i.source.status)) continue
+      m.set(i.id, !!requestBudget(i.source, budgetInputs)?.over)
+    }
+    return m
+  }, [items, budgetInputs])
+
   const requesterName = (i: RequestItem) => users.find((u) => u.id === i.requesterId)?.name ?? ''
   const tabItems = tab === 'action' ? items.filter(needsMe) : items
   const common = filterCommon(tabItems, filters, (i) => [requesterName(i)])
@@ -187,12 +199,14 @@ export default function RequestsQueue() {
     all: common.length,
     environment: common.filter((i) => i.type === 'environment').length,
     capability: common.filter((i) => i.type === 'capability').length,
+    provider: common.filter((i) => i.type === 'provider').length,
   }
   const actionCount = items.filter(needsMe).length
   const rows = sortItems(filterItems(tabItems, filters, (i) => [requesterName(i)]), filters.sort)
 
   const openItem = (i: RequestItem) => {
     if (i.type === 'environment') return navigate(requestPath(scope.role, i.id))
+    if (i.type === 'provider') return navigate(providerRequestPath(scope.role, i.id))
     setParams((prev) => {
       const next = new URLSearchParams(prev)
       next.set('id', i.id)
@@ -251,6 +265,7 @@ export default function RequestsQueue() {
         <div className="flex flex-wrap gap-1.5">
           <ItemStatusBadge item={i} />
           {overQuota.get(i.id) && <StatusBadge status="over-quota" />}
+          {overBudget.get(i.id) && <StatusBadge status="over-quota" label="Over budget cap" />}
         </div>
       ),
     },

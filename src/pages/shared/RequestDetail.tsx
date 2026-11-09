@@ -7,6 +7,7 @@ import { useScope } from '@/store/selectors'
 import { costBreakdown } from '@/lib/cost'
 import { useCostContext } from '@/store/selectors'
 import { ProviderCapacityWarning } from '@/components/shared/ProviderCapacityWarning'
+import { BudgetCapWarning, requestBudget, useBudgetInputs } from '@/components/shared/BudgetCapWarning'
 import { formatInt, relativeTime } from '@/lib/format'
 import { purposeLabel, roleLabel } from '@/lib/labels'
 import { allocationOf, tenantAllocated } from '@/lib/quota'
@@ -51,6 +52,7 @@ export default function RequestDetail() {
   }, [id, openRequest])
 
   const costCtx = useCostContext(request?.tenantId)
+  const budgetInputs = useBudgetInputs()
   const infraProviders = costCtx.providers
   const quota = useRequestQuota(request ?? ({ tenantId: '', spec: {}, status: 'approved' } as never))
 
@@ -68,6 +70,7 @@ export default function RequestDetail() {
   const events = mergedHistory(request, request.kind === 'new' ? env : null)
   const future = futureSteps(events, request)
   const est = costBreakdown(request.spec, costCtx)
+  const budget = requestBudget(request, budgetInputs)
   const used = tenantAllocated(environments, tenant.id)
   const open = !['approved', 'rejected', 'cancelled', 'draft'].includes(request.status)
   const requested = request.kind === 'change' && request.previousSpec ? diffSpecs(request.previousSpec, request.spec, catalog, projects, infraProviders) : []
@@ -83,6 +86,7 @@ export default function RequestDetail() {
           <span className="flex flex-wrap items-center gap-2">
             <StatusBadge status={request.status} />
             {open && quota.over && <StatusBadge status="over-quota" />}
+            {open && budget?.over && <StatusBadge status="over-quota" label="Over budget cap" />}
             <Tag>{purposeLabel(request.spec.purpose)}</Tag>
             {project && <Tag>{project.name}</Tag>}
           </span>
@@ -227,6 +231,7 @@ export default function RequestDetail() {
           </Card>
 
           {open && <ProviderCapacityWarning spec={request.spec} previous={request.kind === 'change' ? request.previousSpec : null} />}
+          {open && <BudgetCapWarning check={budget} audience={scope.user.id === request.requesterId ? 'requester' : 'reviewer'} />}
 
           <Card title="Estimated cost">
             <p className="mb-3 flex items-baseline gap-2">

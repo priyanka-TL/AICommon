@@ -7,8 +7,8 @@ for (const width of [1600, 1366, 1280, 1100, 1024, 900, 768, 375]) {
     await page.getByRole('button', { name: /^ShikshaLokam . User/ }).click()
     await page.goto('/app/environments/new')
     await page.getByLabel('Environment name').fill('Width check')
-    await page.getByRole('button', { name: /^Next:/ }).click()
-    await page.getByRole('button', { name: /^Next:/ }).click()
+    // Purpose → Provider & region → Compute → Language models
+    for (let i = 0; i < 3; i++) await page.getByRole('button', { name: /^Next:/ }).click()
     await page.getByRole('checkbox', { name: /Claude/ }).click()
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
     expect(overflow).toBeLessThanOrEqual(1)

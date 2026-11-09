@@ -7,7 +7,7 @@ import { useSimulatedLoading } from '@/hooks/useSimulatedLoading'
 import { useRequestFilters } from '@/hooks/useRequestFilters'
 import { filterCommon, filterItems, sortItems, type RequestItem } from '@/lib/requestItems'
 import { formatDate, relativeTime } from '@/lib/format'
-import { continueRequestPath, newEnvPath, requestPath, suggestionPath } from '@/lib/paths'
+import { providerRequestPath, continueRequestPath, newEnvPath, requestPath, suggestionPath } from '@/lib/paths'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { EmptyState } from '@/components/shared/EmptyState'
@@ -34,6 +34,7 @@ export default function MyRequests() {
     all: common.length,
     environment: common.filter((i) => i.type === 'environment').length,
     capability: common.filter((i) => i.type === 'capability').length,
+    provider: common.filter((i) => i.type === 'provider').length,
   }
   const rows = useMemo(() => sortItems(filterItems(items, filters), filters.sort), [items, filters])
 
@@ -42,6 +43,7 @@ export default function MyRequests() {
 
   const open = (i: RequestItem) => {
     if (i.type === 'capability') return navigate(suggestionPath('user', i.id))
+    if (i.type === 'provider') return navigate(providerRequestPath('user', i.id))
     const editable = i.source.status === 'draft' || i.source.status === 'changes_requested'
     navigate(editable ? continueRequestPath('user', i.id) : requestPath('user', i.id))
   }

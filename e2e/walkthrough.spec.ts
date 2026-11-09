@@ -118,7 +118,7 @@ test('3: tenant admins cannot see the other tenant', async ({ page }) => {
 })
 
 async function wizardToReview(page: Page) {
-  for (let i = 0; i < 6; i++) await page.getByRole('button', { name: /^Next:/ }).click()
+  for (let i = 0; i < 7; i++) await page.getByRole('button', { name: /^Next:/ }).click()
   await expect(page.getByRole('heading', { name: 'Review', level: 2 })).toBeVisible()
 }
 
@@ -176,6 +176,7 @@ test('5: over-quota request can only be forwarded; Super Admin approves', async 
   await signIn(page, 'ShikshaLokam · User')
   await go(page, '/app/environments/new')
   await page.getByLabel('Environment name').fill('Large speech benchmark')
+  await page.getByRole('button', { name: /^Next:/ }).click()
   await page.getByRole('button', { name: /^Next:/ }).click()
   await page.getByRole('radiogroup', { name: 'Instance type' }).getByRole('radio', { name: /A100/ }).click()
   await chooseOption(page, page.locator('#instance-count'), '3 instances')
@@ -525,7 +526,7 @@ test('13: infrastructure providers, rate cards and the shared cost engine', asyn
   await signIn(page, 'Super Admin')
 
   // Baselines: an Azure environment, an AWS environment, and last month on Azure.
-  await go(page, '/super-admin/infrastructure/env-sl-tutor')
+  await go(page, '/super-admin/infrastructure/env-m4c-coach')
   await expect(breakdown(page)).toContainText('Microsoft Azure')
   const azureBefore = await totalOf(page)
   await go(page, '/super-admin/infrastructure/env-sl-lessonplan')
@@ -539,7 +540,7 @@ test('13: infrastructure providers, rate cards and the shared cost engine', asyn
   // Provider screens carry no sample-data labels.
   await go(page, '/super-admin/infra-providers')
   await noProviderLabels(page)
-  await expect(page.locator('table tbody tr')).toHaveCount(6)
+  await expect(page.locator('table tbody tr')).toHaveCount(5)
   for (const tab of ['overview', 'rates', 'environments', 'spend']) {
     await go(page, `/super-admin/infra-providers/ip-azure?tab=${tab}`)
     await noProviderLabels(page)
@@ -559,7 +560,7 @@ test('13: infrastructure providers, rate cards and the shared cost engine', asyn
   await expect(page.getByRole('heading', { name: 'Current: rate card v3' })).toBeVisible()
   await expect(page.getByText('Earlier rate cards')).toBeVisible()
 
-  await go(page, '/super-admin/infrastructure/env-sl-tutor')
+  await go(page, '/super-admin/infrastructure/env-m4c-coach')
   await expect(breakdown(page)).toContainText('rate card v3')
   expect(await totalOf(page)).toBeGreaterThan(azureBefore)
   await go(page, '/super-admin/infrastructure/env-sl-lessonplan')
@@ -569,10 +570,10 @@ test('13: infrastructure providers, rate cards and the shared cost engine', asyn
   expect(await monthRows.nth(4).innerText()).toBe(pastBefore)
 
   // Disabling a provider in use is blocked and lists the environments; an unused one can be disabled.
-  await go(page, '/super-admin/infra-providers/ip-onprem')
+  await go(page, '/super-admin/infra-providers/ip-aws')
   await page.getByRole('button', { name: 'Disable' }).click()
   await expect(dialog(page).getByText('can’t be disabled yet')).toBeVisible()
-  await expect(dialog(page).getByRole('list', { name: 'Environments using this provider' })).toContainText('IndicConformer fine-tuning')
+  await expect(dialog(page).getByRole('list', { name: 'Environments using this provider' })).toContainText('Lesson-plan assistant')
   await expect(dialog(page).getByRole('button', { name: 'Disable provider' })).toHaveCount(0)
   await dialog(page).getByRole('button', { name: 'Close' }).first().click()
   await go(page, '/super-admin/infra-providers/ip-yotta')
@@ -589,20 +590,17 @@ test('13: infrastructure providers, rate cards and the shared cost engine', asyn
   await go(page, '/app/environments/new')
   await page.getByLabel('Environment name').fill('Phonics practice pilot')
   await page.getByRole('button', { name: /^Next:/ }).click()
+  await page.getByRole('radiogroup', { name: 'Provider' }).getByRole('radio', { name: /Amazon Web Services/ }).click()
   const regions = page.getByRole('radiogroup', { name: 'Region' })
   await regions.getByRole('radio', { name: /Singapore/ }).click()
-  for (let i = 0; i < 4; i++) await page.getByRole('button', { name: /^Next:/ }).click()
-  await page.getByRole('radio', { name: /Children’s data/ }).click()
-  await page.getByRole('button', { name: /^Next:/ }).click()
-  await expect(page.getByRole('alert').filter({ hasText: 'Singapore stores data outside India' })).toBeVisible()
-  for (let i = 0; i < 4; i++) await page.getByRole('button', { name: 'Back' }).click()
-  await expect(regions.getByRole('radio', { name: /Singapore/ })).toHaveCount(0)
-  await expect(regions.getByRole('radio', { name: /Mumbai/ })).toBeVisible()
-  await expect(page.getByText('only India-resident regions are shown')).toBeVisible()
+  await page.getByRole('radiogroup', { name: 'Data classification' }).getByRole('radio', { name: /Children’s data/ }).click()
+  await expect(page.getByText('Moved from Singapore to Mumbai because children’s data must stay in India.')).toBeVisible()
+  await expect(regions.getByRole('radio', { name: /Singapore/ })).toBeDisabled()
+  await expect(regions.getByRole('radio', { name: /Singapore/ })).toContainText('personal and children’s data must stay in India')
+  await expect(regions.getByRole('radio', { name: /Mumbai/ })).toBeChecked()
 
   // The breakdown reads the same on the wizard, the request and the environment.
-  await regions.getByRole('radio', { name: /Mumbai/ }).click()
-  for (let i = 0; i < 5; i++) await page.getByRole('button', { name: /^Next:/ }).click()
+  for (let i = 0; i < 6; i++) await page.getByRole('button', { name: /^Next:/ }).click()
   await page.getByLabel(/Why does your organisation need this/).fill('Pilot with 20 schools in Dharwad for six weeks.')
   const wizardText = await breakdown(page).innerText()
   await page.getByRole('button', { name: 'Submit request' }).click()
@@ -624,7 +622,7 @@ test('13: infrastructure providers, rate cards and the shared cost engine', asyn
   expect(await breakdown(page).innerText()).toBe(wizardText)
 })
 
-test('14: tenants choose their infrastructure providers; the wizard only offers those', async ({ page }) => {
+test('14: new tenants start with approved providers; the wizard only offers approved ones', async ({ page }) => {
   await signIn(page, 'Super Admin')
   await go(page, '/super-admin/tenants')
   await page.getByRole('button', { name: 'Create tenant' }).click()
@@ -643,35 +641,140 @@ test('14: tenants choose their infrastructure providers; the wizard only offers 
   await expect(page.locator('main')).toContainText('E2E Networks')
   await expect(page.locator('main')).toContainText('Yotta')
 
-  // Providers with running environments can't be taken away.
-  await go(page, '/super-admin/tenants/t-shikshalokam')
-  await page.getByRole('button', { name: 'Edit providers' }).click()
-  await dialog(page).getByRole('checkbox', { name: 'Amazon Web Services' }).click()
-  await dialog(page).getByRole('button', { name: 'Save providers' }).click()
-  await expect(dialog(page).getByRole('alert')).toContainText('Amazon Web Services (“Lesson-plan assistant”)')
-  await page.keyboard.press('Escape')
-
-  // Removing an unused provider takes it out of that tenant's wizard.
-  await go(page, '/super-admin/tenants/t-mantra4change')
-  await page.getByRole('button', { name: 'Edit providers' }).click()
-  await dialog(page).getByRole('checkbox', { name: 'Yotta' }).click()
-  await dialog(page).getByRole('button', { name: 'Save providers' }).click()
-  await expect(page.getByText('Saved Mantra4Change’s providers.')).toBeVisible()
-
   await signIn(page, 'Mantra4Change · User')
   await go(page, '/app/environments/new')
   await page.getByLabel('Environment name').fill('Classroom audio notes')
   await page.getByRole('button', { name: /^Next:/ }).click()
-  await page.getByRole('combobox', { name: 'Infrastructure provider' }).click()
-  await expect(page.getByRole('option')).toHaveText([/Amazon Web Services/, /Microsoft Azure/, /Google Cloud/, /E2E Networks/])
-  await page.keyboard.press('Escape')
+  await expect(page.getByRole('radiogroup', { name: 'Provider' }).getByRole('radio')).toHaveCount(1)
+  await expect(page.getByRole('radiogroup', { name: 'Provider' })).toContainText('Microsoft Azure')
 
   await signIn(page, 'ShikshaLokam · User')
   await go(page, '/app/environments/new')
   await page.getByLabel('Environment name').fill('Phonics practice pilot')
   await page.getByRole('button', { name: /^Next:/ }).click()
-  await page.getByRole('combobox', { name: 'Infrastructure provider' }).click()
-  await expect(page.getByRole('option', { name: /Google Cloud/ })).toHaveCount(0)
+  await expect(page.getByRole('radiogroup', { name: 'Provider' }).getByRole('radio', { name: /Google Cloud/ })).toHaveCount(0)
+})
+
+test('15: provider access requests, budget caps and revoking', async ({ page }) => {
+  // Tenant Admin asks for Google Cloud.
+  await signIn(page, 'ShikshaLokam · Tenant Admin')
+  await go(page, '/tenant-admin/infra-providers')
+  await expect(page.getByRole('region', { name: 'Approved providers' })).toContainText('Amazon Web Services')
+  await page.getByRole('button', { name: 'Request access to Google Cloud' }).click()
+  await chooseOption(page, dialog(page).getByRole('combobox', { name: 'Data classification' }), 'Children’s data')
+  const regions = dialog(page).getByRole('group', { name: 'Regions' })
+  await expect(regions.getByRole('checkbox')).toHaveCount(2)
+  await expect(regions).not.toContainText('Singapore')
+  await dialog(page).getByRole('group', { name: 'Expected workloads' }).getByRole('checkbox', { name: 'Development' }).click()
+  await dialog(page).getByRole('group', { name: 'Expected workloads' }).getByRole('checkbox', { name: 'Pilot' }).click()
+  await dialog(page).getByLabel('Why does your organisation need this provider?').fill('Vertex AI and L4 GPUs for the reading tutor pilot in Dharwad.')
+  await dialog(page).getByRole('button', { name: 'Send to Super Admin' }).click()
+  await expect(page).toHaveURL(/\/tenant-admin\/provider-requests\//)
+  await expect(page.getByText('With Super Admin').first()).toBeVisible()
+
+  // Super Admin approves with a ₹2,00,000 cap from the unified queue.
+  await signIn(page, 'Super Admin')
+  await go(page, '/super-admin/requests?tab=all&type=provider')
+  await page.getByRole('row', { name: /Open request Google Cloud access/ }).click()
+  await expect(page.getByText('ShikshaLokam’s provider spend')).toBeVisible()
+  await page.getByRole('button', { name: 'Approve access' }).click()
+  await dialog(page).getByLabel('Monthly budget cap (₹)').fill('200000')
+  await dialog(page).getByRole('button', { name: 'Approve access' }).click()
+  await expect(page.getByText('Approved Google Cloud for ShikshaLokam.')).toBeVisible()
+  await go(page, '/super-admin/tenants/t-shikshalokam')
+  await expect(page.getByRole('region', { name: 'Approved providers' })).toContainText('Google Cloud')
+  await expect(page.getByRole('region', { name: 'Approved providers' })).toContainText('2,00,000')
+
+  // Google Cloud appears in ShikshaLokam's wizard only.
+  await signIn(page, 'ShikshaLokam · User')
+  await go(page, '/app/environments/new')
+  await page.getByLabel('Environment name').fill('Reading tutor on Vertex')
+  await page.getByRole('button', { name: /^Next:/ }).click()
+  const providerRadios = page.getByRole('radiogroup', { name: 'Provider' })
+  await expect(providerRadios.getByRole('radio', { name: /Google Cloud/ })).toBeVisible()
+  await providerRadios.getByRole('radio', { name: /E2E Networks/ }).click()
+  await page.getByRole('button', { name: /^Next:/ }).click()
+
+  // A request that would pass the cap is flagged.
+  await page.getByRole('radiogroup', { name: 'Instance type' }).getByRole('radio', { name: /A100/ }).click()
+  await chooseOption(page, page.locator('#instance-count'), '4 instances')
+  await expect(page.getByText('Over budget cap').locator('visible=true').first()).toBeVisible()
+
+  // A user asks their admin for a provider; the Tenant Admin forwards it.
+  await page.getByRole('button', { name: 'Change provider or region' }).click()
+  await page.getByText(/^Not enabled for your organisation/).click()
+  await page.getByRole('button', { name: 'Ask my admin to enable Microsoft Azure' }).click()
+  await dialog(page).getByRole('group', { name: 'Expected workloads' }).getByRole('checkbox', { name: 'Testing' }).click()
+  await dialog(page).getByLabel('Why does your organisation need this provider?').fill('Azure OpenAI for the teacher FAQ bot evaluation.')
+  await dialog(page).getByRole('button', { name: 'Send to my admin' }).click()
+  await expect(page.getByText('Asked your Tenant Admin to enable Microsoft Azure.')).toBeVisible()
+
+  await signIn(page, 'Mantra4Change · User')
+  await go(page, '/app/environments/new')
+  await page.getByLabel('Environment name').fill('Coaching notes')
+  await page.getByRole('button', { name: /^Next:/ }).click()
+  await expect(page.getByRole('radiogroup', { name: 'Provider' }).getByRole('radio', { name: /Google Cloud/ })).toHaveCount(0)
+
+  await signIn(page, 'ShikshaLokam · Tenant Admin')
+  await go(page, '/tenant-admin/requests?type=provider')
+  await page.getByRole('row', { name: /Open request Microsoft Azure access/ }).click()
+  await page.getByRole('button', { name: 'Forward to Super Admin' }).click()
+  await dialog(page).getByRole('button', { name: 'Forward to Super Admin' }).click()
+  await expect(page.getByText('With Super Admin').first()).toBeVisible()
+
+  // Revoking a provider in use needs "migrate later"; its environments are flagged.
+  await signIn(page, 'Super Admin')
+  await go(page, '/super-admin/requests?type=provider')
+  await expect(page.getByRole('row', { name: /Open request Microsoft Azure access/ })).toBeVisible()
+  await go(page, '/super-admin/tenants/t-shikshalokam')
+  await page.getByRole('region', { name: 'Approved providers' }).locator('li', { hasText: 'E2E Networks' }).getByRole('button', { name: 'Revoke' }).click()
+  await expect(dialog(page).getByRole('list', { name: 'Environments on this provider' })).toContainText('Teacher WhatsApp helpline')
+  await expect(dialog(page).getByRole('button', { name: 'Revoke access' })).toHaveCount(0)
+  await dialog(page).getByRole('button', { name: 'Revoke and migrate later' }).click()
+  await expect(page.getByText(/Revoked E2E Networks\. \d environments? (is|are) flagged to move\./)).toBeVisible()
+  await go(page, '/super-admin/infrastructure/env-sl-whatsapp')
+  await expect(page.getByText('Provider revoked · migrate').first()).toBeVisible()
+})
+
+test('16: provider & region step compares, recommends and keeps compute in step', async ({ page }) => {
+  await signIn(page, 'ShikshaLokam · User')
+  await go(page, '/app/environments/new')
+  await page.getByLabel('Environment name').fill('Teacher FAQ assistant')
+  await page.getByRole('button', { name: /^Next:/ }).click()
+  await expect(page.getByRole('heading', { name: 'Provider & region' })).toBeVisible()
+
+  const providers = page.getByRole('radiogroup', { name: 'Provider' })
+  await expect(providers.getByRole('radio')).toHaveCount(2)
+  await expect(providers).toContainText('India residency')
+  await expect(providers).toContainText('credits / month')
+  await expect(providers).toContainText('left of this month’s budget')
+
+  // Compare the same configuration across approved providers.
+  await page.getByRole('button', { name: 'Compare providers' }).click()
+  const table = dialog(page).getByRole('table', { name: 'Provider comparison' })
+  await expect(table.locator('tbody tr')).toHaveCount(2)
+  await expect(table.getByText('· Cheapest')).toHaveCount(1)
+  await dialog(page).getByRole('button', { name: 'Close' }).first().click()
+
+  // Recommend for me picks one and explains why.
+  await page.getByRole('button', { name: 'Recommend for me' }).click()
+  await expect(page.getByRole('status', { name: 'Recommendation' })).toContainText(/cheapest/i)
+
+  // Switching provider resets the instance and says so; Compute lists only that provider's instances.
+  await providers.getByRole('radio', { name: /Amazon Web Services/ }).click()
+  await providers.getByRole('radio', { name: /E2E Networks/ }).click()
+  await expect(page.getByText(/Changed the instance from g4dn\.2xlarge \(T4\) to GPU T4 1× \(T4\) because E2E Networks/).first()).toBeVisible()
+  await page.getByRole('button', { name: /^Next:/ }).click()
+  const instances = page.getByRole('radiogroup', { name: 'Instance type' })
+  await expect(instances.getByRole('radio', { name: /g4dn/ })).toHaveCount(0)
+  await expect(instances.getByRole('radio', { name: /GPU T4 1×/ })).toBeChecked()
+  await expect(page.getByText('Only instances from E2E Networks are shown.', { exact: false })).toBeVisible()
+
+  // Editing an existing environment keeps its provider and region.
+  await go(page, '/app/environments/env-sl-tutor/edit')
+  await page.getByRole('button', { name: /^Next:/ }).click()
+  await expect(page.getByText('The provider and region are set when an environment is created.')).toBeVisible()
+  await expect(page.getByRole('radiogroup', { name: 'Provider' })).toHaveCount(0)
 })
 
 test('responsive screenshots at 375, 768 and 1440 in light and dark', async ({ page }) => {

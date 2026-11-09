@@ -40,6 +40,8 @@ import TestConfigurations from '@/pages/qa/TestConfigurations'
 import EnvironmentTesting from '@/pages/qa/EnvironmentTesting'
 import TestReports from '@/pages/qa/TestReports'
 import ReportDetail, { SharedReportRedirect } from '@/pages/qa/ReportDetail'
+import ProviderRequestDetail from '@/pages/shared/ProviderRequestDetail'
+import TenantInfraProviders from '@/pages/tenant-admin/InfraProviders'
 import NotFound from '@/pages/NotFound'
 import { AppEffects } from '@/components/layout/AppEffects'
 
@@ -84,6 +86,8 @@ export default function App() {
             <Route path="/super-admin/monitoring" element={<Monitoring />} />
             <Route path="/super-admin/audit" element={<AuditLog />} />
             <Route path="/super-admin/reports/:id" element={<ReportDetail />} />
+            <Route path="/super-admin/provider-requests/:id" element={<ProviderRequestDetail />} />
+            <Route path="/super-admin/provider-requests" element={<Navigate to="/super-admin/requests?type=provider" replace />} />
             <Route path="/super-admin/*" element={<NotFound />} />
           </Route>
         </Route>
@@ -108,6 +112,9 @@ export default function App() {
             <Route path="/tenant-admin/audit" element={<AuditLog />} />
             <Route path="/tenant-admin/settings" element={<Settings />} />
             <Route path="/tenant-admin/reports/:id" element={<ReportDetail />} />
+            <Route path="/tenant-admin/infra-providers" element={<TenantInfraProviders />} />
+            <Route path="/tenant-admin/provider-requests/:id" element={<ProviderRequestDetail />} />
+            <Route path="/tenant-admin/provider-requests" element={<Navigate to="/tenant-admin/requests?type=provider" replace />} />
             <Route path="/tenant-admin/*" element={<NotFound />} />
           </Route>
         </Route>
@@ -126,6 +133,8 @@ export default function App() {
             <Route path="/app/requests/:id" element={<RequestDetail />} />
             <Route path="/app/suggestions/:id" element={<SuggestionDetail />} />
             <Route path="/app/reports/:id" element={<ReportDetail />} />
+            <Route path="/app/provider-requests/:id" element={<ProviderRequestDetail />} />
+            <Route path="/app/provider-requests" element={<Navigate to="/app/requests?type=provider" replace />} />
             <Route path="/app/*" element={<NotFound />} />
           </Route>
         </Route>

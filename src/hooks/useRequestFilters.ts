@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import type { Role } from '@/data/types'
 import { statusOptions, type AnyStatus, type RequestFilters, type SortKey, type TypeFilter } from '@/lib/requestItems'
 
-const TYPES: TypeFilter[] = ['all', 'environment', 'capability']
+const TYPES: TypeFilter[] = ['all', 'environment', 'capability', 'provider']
 const SORTS: SortKey[] = ['updated', 'submitted', 'status']
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
@@ -20,7 +20,7 @@ export function useRequestFilters(role: Role) {
     return {
       type,
       statuses: (params.get('status') ?? '').split(',').filter((x): x is AnyStatus => valid.has(x as AnyStatus)),
-      project: type === 'capability' ? '' : (params.get('project') ?? ''),
+      project: type === 'capability' || type === 'provider' ? '' : (params.get('project') ?? ''),
       from: date('from'),
       to: date('to'),
       q: params.get('q') ?? '',
@@ -37,7 +37,7 @@ export function useRequestFilters(role: Role) {
           if (patch.type !== undefined) {
             const valid = new Set(statusOptions(merged.type, role).map((o) => o.value))
             merged.statuses = merged.statuses.filter((x) => valid.has(x))
-            if (merged.type === 'capability') merged.project = ''
+            if (merged.type === 'capability' || merged.type === 'provider') merged.project = ''
           }
           const put = (k: string, v: string, def = '') => (v && v !== def ? next.set(k, v) : next.delete(k))
           put('type', merged.type, 'all')

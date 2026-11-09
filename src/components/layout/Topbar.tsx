@@ -36,6 +36,7 @@ function Breadcrumb() {
   const requests = useAppStore((s) => s.requests)
   const projects = useAppStore((s) => s.projects)
   const infraProviders = useAppStore((s) => s.infraProviders)
+  const providerRequests = useAppStore((s) => s.providerRequests)
   if (!user) return null
 
   const segs = pathname.split('/').filter(Boolean)
@@ -48,6 +49,10 @@ function Breadcrumb() {
         requests.find((r) => r.id === seg)?.spec.name ??
         projects.find((p) => p.id === seg)?.name ??
         infraProviders.find((p) => p.id === seg)?.name ??
+        (() => {
+          const pr = providerRequests.find((x) => x.id === seg)
+          return pr ? `${infraProviders.find((p) => p.id === pr.providerId)?.name ?? ''} access` : undefined
+        })() ??
         tenants.find((t) => t.id === seg)?.name ??
         catalog.find((c) => c.id === seg)?.name ??
         seg

@@ -6,6 +6,8 @@ import { computeLabel, purposeLabel } from '@/lib/labels'
 import { envPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
 import { spendToDate } from '@/lib/cost'
+import { needsMigration } from '@/lib/providers'
+import { MigrateBadge } from './TenantProviders'
 import { useAppStore } from '@/store/useAppStore'
 import { useCostContext } from '@/store/selectors'
 import { useMemo } from 'react'
@@ -25,6 +27,7 @@ export function EnvironmentCard({ env, catalog, role, owner, project, hasPending
   const costCtx = useCostContext(env.tenantId)
   const spent = useMemo(() => spendToDate(env, costCtx).total, [env, costCtx])
   const provider = useAppStore((s) => s.infraProviders.find((p) => p.id === env.spec.providerId))
+  const migrate = useAppStore((s) => needsMigration(env, s.tenants))
   const name = (id: string) => catalog.find((c) => c.id === id)?.name ?? id
   const models = [...env.spec.llms.map((l) => name(l.id)), ...env.spec.asr.map(name)]
   const shown = models.slice(0, 3)
@@ -40,6 +43,7 @@ export function EnvironmentCard({ env, catalog, role, owner, project, hasPending
         </div>
         <div className="flex flex-col items-end gap-1.5">
           <StatusBadge status={env.status} />
+          {migrate && <MigrateBadge />}
           {hasPendingChange && <StatusBadge status="under_review" label="Change pending" />}
         </div>
       </div>

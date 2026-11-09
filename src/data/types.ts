@@ -26,8 +26,8 @@ export interface Tenant {
   quota: Quota
   /** Catalog items this tenant has switched on (subset of what the Super Admin made available). */
   enabledItemIds: string[]
-  /** Infrastructure providers this tenant's environments may run on (chosen by the Super Admin). */
-  providerIds: string[]
+  /** Infrastructure providers the Super Admin approved for this tenant, with regions and a monthly budget cap. */
+  approvedProviders: ProviderApproval[]
   status: TenantStatus
   isSystem: boolean
   createdAt: string
@@ -126,6 +126,8 @@ export interface EnvSpec {
   dataClassification: DataClassification
   containsPii: boolean
   justification: string
+  /** Projects hosted alongside `projectId`, chosen in the wizard. Each gets a deployment when the environment is created. */
+  extraProjectIds?: string[]
 }
 
 export type RequestStatus =
@@ -327,6 +329,7 @@ export type AuditEntity =
   | 'capacity'
   | 'qa'
   | 'infra_provider'
+  | 'deployment'
 
 export interface AuditEntry {
   id: string
@@ -511,4 +514,143 @@ export interface InfraProvider {
   maxGpus: number
   allowedTenants: 'all' | string[]
   createdAt: string
+}
+
+/* ---------- provider access ---------- */
+
+export interface ProviderApproval {
+  providerId: string
+  regionIds: string[]
+  /** Monthly budget cap, in credits (₹). */
+  budgetCap: number
+  approvedAt: string
+  approvedById: string
+  requestId: string | null
+  status: 'approved' | 'revoked'
+  revokedAt?: string
+  /** Revoked while environments still ran on it; they are flagged to move. */
+  migrateLater?: boolean
+}
+
+export type ProviderWorkload = 'development' | 'testing' | 'gpu' | 'pilot'
+
+export type ProviderRequestStatus =
+  | 'submitted'
+  | 'under_review'
+  | 'escalated'
+  | 'changes_requested'
+  | 'resubmitted'
+  | 'approved'
+  | 'rejected'
+  | 'revoked'
+  | 'cancelled'
+
+export interface ProviderRequestEvent {
+  status: ProviderRequestStatus
+  at: string
+  actorId: string
+  actorRole: ActorRole
+  comment?: string
+}
+
+export interface ProviderRequest {
+  id: string
+  tenantId: string
+  requesterId: string
+  raisedByRole: Role
+  providerId: string
+  regionIds: string[]
+  justification: string
+  workloads: ProviderWorkload[]
+  expectedMonthlySpend: number
+  requestedCap: number
+  dataClassification: DataClassification
+  status: ProviderRequestStatus
+  history: ProviderRequestEvent[]
+  createdAt: string
+  updatedAt: string
+}
+
+/* ---------- deployments (project ↔ environment) ---------- */
+
+export type Runtime = 'node' | 'python' | 'docker' | 'static'
+export type ProcessManager = 'systemd' | 'pm2' | 'compose'
+export type DeploymentStatus = 'not_deployed' | 'deploying' | 'running' | 'failed' | 'stopped'
+export type DeployStepKey = 'connect' | 'runtime' | 'clone' | 'install' | 'build' | 'service' | 'start' | 'nginx' | 'health'
+export type DeployStepStatus = 'pending' | 'running' | 'ok' | 'failed' | 'skipped'
+
+export type DeploymentSource = { kind: 'git'; repoUrl: string; branch: string } | { kind: 'upload'; fileName: string }
+
+export interface EnvVar {
+  key: string
+  value: string
+}
+
+export interface DeploymentConfig {
+  runtime: Runtime
+  /** '20' for Node.js, '3.11' for Python; empty for Docker and static sites. */
+  runtimeVersion: string
+  source: DeploymentSource
+  installCmd: string
+  buildCmd: string
+  startCmd: string
+  processManager: ProcessManager
+  port: number
+  basePath: string
+  domain: string
+  env: EnvVar[]
+  healthPath: string
+  healthStatus: number
+  limits: { vcpu: number; ramGb: number }
+  /** Catalog item ids (models, speech, vector DBs, frameworks) this project needs on the environment. */
+  dependencies: string[]
+}
+
+export interface DeployLogLine {
+  at: string
+  level: 'INFO' | 'WARN' | 'ERROR'
+  text: string
+}
+
+export interface DeployRun {
+  id: string
+  version: number
+  startedAt: string
+  finishedAt: string | null
+  actorId: string
+  steps: { key: DeployStepKey; status: DeployStepStatus }[]
+  log: DeployLogLine[]
+  failedStep: DeployStepKey | null
+  error: string | null
+}
+
+export interface DeploymentVersion {
+  version: number
+  config: DeploymentConfig
+  at: string
+  byId: string
+  commit: string
+  status: 'running' | 'failed' | 'superseded' | 'rolled_back'
+  note?: string
+}
+
+export interface Deployment {
+  id: string
+  tenantId: string
+  envId: string
+  projectId: string
+  /** Slug used for the systemd unit, PM2 app and compose service. */
+  serviceName: string
+  config: DeploymentConfig
+  status: DeploymentStatus
+  lastRun: DeployRun | null
+  history: DeploymentVersion[]
+  createdAt: string
+  updatedAt: string
+  /** Simulated live usage while running. */
+  usage: { cpuPct: number; ramGb: number }
+  /** Seeded misconfiguration: the build fails until the install or build command changes. */
+  breakBuild?: boolean
+  /** Stopped because the environment stopped; restarts with it. */
+  stoppedWithEnv?: boolean
 }

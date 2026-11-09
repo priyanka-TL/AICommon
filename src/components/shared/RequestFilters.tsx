@@ -1,15 +1,15 @@
-import { ChevronDown, GitPullRequestArrow, Server, X } from 'lucide-react'
+import { ChevronDown, Cloud, GitPullRequestArrow, Server, X } from 'lucide-react'
 import type { Project, Role } from '@/data/types'
 import { statusOptions, TYPE_LABELS, type RequestFilters as Filters, type RequestItem, type SortKey, type TypeFilter } from '@/lib/requestItems'
 import { cn } from '@/lib/utils'
 import { SearchInput } from '@/components/shared/SearchInput'
-import { StatusBadge, SuggestionBadge } from '@/components/shared/StatusBadge'
+import { ProviderRequestBadge, StatusBadge, SuggestionBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { fieldBase, Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 
-const TYPE_ICON = { environment: Server, capability: GitPullRequestArrow } as const
+const TYPE_ICON = { environment: Server, capability: GitPullRequestArrow, provider: Cloud } as const
 
 export function TypeLabel({ type, className }: { type: RequestItem['type']; className?: string }) {
   const Icon = TYPE_ICON[type]
@@ -22,6 +22,7 @@ export function TypeLabel({ type, className }: { type: RequestItem['type']; clas
 }
 
 export function ItemStatusBadge({ item }: { item: RequestItem }) {
+  if (item.type === 'provider') return <ProviderRequestBadge status={item.source.status} />
   return item.type === 'capability' ? <SuggestionBadge status={item.source.status} forwarded={item.source.forwarded} /> : <StatusBadge status={item.source.status} />
 }
 
@@ -56,8 +57,8 @@ export function RequestFilters({ role, filters, update, clear, active, counts, p
   return (
     <div className="mb-4 flex flex-col gap-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div role="radiogroup" aria-label="Request type" className="inline-flex w-full rounded-control border border-border-strong bg-bg-surface p-1 sm:w-auto">
-          {(['all', 'environment', 'capability'] as TypeFilter[]).map((t) => (
+        <div role="radiogroup" aria-label="Request type" className="grid w-full grid-cols-2 gap-1 rounded-control border border-border-strong bg-bg-surface p-1 sm:inline-flex sm:w-auto sm:gap-0">
+          {(['all', 'environment', 'capability', 'provider'] as TypeFilter[]).map((t) => (
             <button
               key={t}
               type="button"
@@ -90,14 +91,14 @@ export function RequestFilters({ role, filters, update, clear, active, counts, p
         </div>
       </div>
 
-      <div className={cn('grid grid-cols-2 gap-3', filters.type === 'capability' ? 'lg:grid-cols-[1fr_200px_170px_170px]' : 'lg:grid-cols-[1fr_200px_200px_170px_170px]')}>
+      <div className={cn('grid grid-cols-2 gap-3', (filters.type === 'capability' || filters.type === 'provider') ? 'lg:grid-cols-[1fr_200px_170px_170px]' : 'lg:grid-cols-[1fr_200px_200px_170px_170px]')}>
         <SearchInput value={filters.q} onChange={(q) => update({ q }, { replace: true })} placeholder="Search by name, ID or repository" className="col-span-2 lg:col-span-1" />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
               aria-label="Filter by status"
-              className={cn(fieldBase, 'flex h-10 w-full min-w-0 items-center justify-between gap-2 px-3 text-left', filters.type === 'capability' && 'col-span-2 lg:col-span-1')}
+              className={cn(fieldBase, 'flex h-10 w-full min-w-0 items-center justify-between gap-2 px-3 text-left', (filters.type === 'capability' || filters.type === 'provider') && 'col-span-2 lg:col-span-1')}
             >
               <span className="truncate">{statusLabel}</span>
               <ChevronDown className="size-4 shrink-0 text-text-muted" aria-hidden />

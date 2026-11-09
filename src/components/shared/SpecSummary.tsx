@@ -61,18 +61,22 @@ export function SpecSummary({ spec, catalog, projects = [], onEdit, className }:
       <Section title="Purpose" step={0} onEdit={onEdit}>
         <dl>
           <Row label="Project">{projects.find((p) => p.id === spec.projectId)?.name ?? 'Not set'}</Row>
+          {!!spec.extraProjectIds?.length && <Row label="Also hosts">{spec.extraProjectIds.map((id) => projects.find((p) => p.id === id)?.name ?? id).join(', ')}</Row>}
           <Row label="Purpose">{purposeLabel(spec.purpose)}</Row>
           <Row label="Duration">{spec.durationWeeks} weeks</Row>
           {spec.description && <Row label="Description">{spec.description}</Row>}
         </dl>
       </Section>
 
-      <Section title="Compute" step={1} onEdit={onEdit}>
+      <Section title="Provider & region" step={1} onEdit={onEdit}>
         <dl>
-          <Row label="Provider">
-            {provider?.name ?? 'Not set'}
-            {region && <span className="text-text-muted"> · {region.name}{region.indiaResident ? ' · data stays in India' : ' · outside India'}</span>}
-          </Row>
+          <Row label="Provider">{provider?.name ?? 'Not set'}</Row>
+          <Row label="Region">{region ? `${region.name} · ${region.indiaResident ? 'data stays in India' : 'outside India'}` : 'Not set'}</Row>
+        </dl>
+      </Section>
+
+      <Section title="Compute" step={2} onEdit={onEdit}>
+        <dl>
           <Row label="Instance">
             {spec.instance.name || 'Not set'} <span className="text-text-muted">· {tier.label}</span>
           </Row>
@@ -89,7 +93,7 @@ export function SpecSummary({ spec, catalog, projects = [], onEdit, className }:
         </dl>
       </Section>
 
-      <Section title="Language models" step={2} onEdit={onEdit}>
+      <Section title="Language models" step={3} onEdit={onEdit}>
         {spec.llms.length ? (
           <ul className="flex flex-col gap-1.5">
             {spec.llms.map((l) => (
@@ -104,7 +108,7 @@ export function SpecSummary({ spec, catalog, projects = [], onEdit, className }:
         )}
       </Section>
 
-      <Section title="Speech recognition" step={3} onEdit={onEdit}>
+      <Section title="Speech recognition" step={4} onEdit={onEdit}>
         {spec.asr.length ? (
           <dl>
             <Row label="Providers">{spec.asr.map(name).join(', ')}</Row>
@@ -116,7 +120,7 @@ export function SpecSummary({ spec, catalog, projects = [], onEdit, className }:
         )}
       </Section>
 
-      <Section title="Capabilities" step={4} onEdit={onEdit}>
+      <Section title="Capabilities" step={5} onEdit={onEdit}>
         {caps.length ? (
           <div className="flex flex-wrap gap-1.5">
             {caps.map((id) => (
@@ -128,7 +132,7 @@ export function SpecSummary({ spec, catalog, projects = [], onEdit, className }:
         )}
       </Section>
 
-      <Section title="Data" step={5} onEdit={onEdit}>
+      <Section title="Data" step={6} onEdit={onEdit}>
         <dl>
           <Row label="Classification">
             <span
