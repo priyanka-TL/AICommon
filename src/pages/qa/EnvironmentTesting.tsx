@@ -4,7 +4,7 @@ import { toast } from 'sonner'
 import { FlaskConical } from 'lucide-react'
 import type { TestCaseSeed } from '@/data/seed'
 import { useAppStore } from '@/store/useAppStore'
-import { useScopedEnvironments } from '@/store/selectors'
+import { useHostedProjectIds, useScopedEnvironments } from '@/store/selectors'
 import { computeLabel } from '@/lib/labels'
 import { currentSpec, currentVersion, functionalSummary } from '@/lib/qa'
 import { reportPath } from '@/lib/paths'
@@ -27,8 +27,10 @@ export default function EnvironmentTesting({ mode }: { mode: 'functional' | 'loa
   const navigate = useNavigate()
   const running = useMemo(() => environments.filter((e) => e.status === 'active'), [environments])
   const env = running.find((e) => e.id === params.get('env')) ?? running[0]
+  const hosted = useHostedProjectIds()
+  const envProjectIds = env ? (hosted.get(env.id) ?? []).filter((pid) => projects.some((p) => p.id === pid)) : []
   const types = mode === 'load' ? (['load'] as const) : (['functional', 'evaluation'] as const)
-  const envConfigs = configs.filter((c) => !c.archived && env && currentSpec(c).projectId === env.projectId && (types as readonly string[]).includes(currentSpec(c).type))
+  const envConfigs = configs.filter((c) => !c.archived && env && envProjectIds.includes(currentSpec(c).projectId) && (types as readonly string[]).includes(currentSpec(c).type))
   const configParam = params.get('config')
   const config = configParam === NONE ? undefined : (envConfigs.find((c) => c.id === configParam) ?? envConfigs[0])
   const spec = config ? currentSpec(config) : undefined
@@ -69,7 +71,7 @@ export default function EnvironmentTesting({ mode }: { mode: 'functional' | 'loa
       ) : (
         <>
           <div className="card mb-6 grid gap-4 p-5 md:grid-cols-2">
-            <Field label="Environment" helper={`${projectName(env.projectId)} · read-only access`}>
+            <Field label="Environment" helper={`${envProjectIds.map(projectName).filter(Boolean).join(', ') || 'No projects yet'} · read-only access`}>
               <Select value={env.id} onValueChange={(v) => set({ env: v })}>
                 <SelectTrigger aria-label="Environment to test">
                   <SelectValue />
@@ -105,7 +107,7 @@ export default function EnvironmentTesting({ mode }: { mode: 'functional' | 'loa
                 const sum = functionalSummary(model, r.cases, r.outcomes)
                 save(
                   recordQaRun({
-                    projectId: env.projectId,
+                    projectId: spec?.projectId ?? envProjectIds[0] ?? '',
                     configId: config?.id ?? null,
                     configVersion: config ? currentVersion(config) : null,
                     kind: 'functional',
@@ -125,7 +127,7 @@ export default function EnvironmentTesting({ mode }: { mode: 'functional' | 'loa
               onFinished={(v, cfg) =>
                 save(
                   recordQaRun({
-                    projectId: env.projectId,
+                    projectId: spec?.projectId ?? envProjectIds[0] ?? '',
                     configId: config?.id ?? null,
                     configVersion: config ? currentVersion(config) : null,
                     kind: 'load',

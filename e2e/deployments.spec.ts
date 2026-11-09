@@ -52,46 +52,56 @@ test('a second project on the same port is blocked', async ({ page }) => {
   await port.fill('8000')
   await expect(sheet(page).getByText(/Port 8000 is already used by Multilingual Speech Recognition/)).toBeVisible()
   await expect(sheet(page).getByRole('button', { name: 'Save configuration' })).toBeDisabled()
+  await expect(sheet(page).getByRole('button', { name: /Review deployment/ })).toBeDisabled()
   await port.fill('3005')
   await expect(sheet(page).getByText(/already used by/)).toHaveCount(0)
   await expect(sheet(page).getByRole('button', { name: 'Save configuration' })).toBeEnabled()
 })
 
-test('the systemd unit follows the configured start command', async ({ page }) => {
+test('the review shows the generated systemd unit, which follows the start command', async ({ page }) => {
   await signIn(page, 'ShikshaLokam · User')
   await page.goto('/app/environments/env-sl-tutor?tab=projects')
   await openDeployment(page, 'AI Education Assistant')
-  await sheet(page).getByRole('tab', { name: 'Guide' }).click()
+  await sheet(page).getByRole('tab', { name: 'Review & steps' }).click()
+  await sheet(page).getByText('Create the service', { exact: true }).click()
   await expect(sheet(page).getByText('ExecStart=/home/deploy/.nvm/nvm-exec node dist/server.js')).toBeVisible()
+  await sheet(page).getByText('Enable and start the service', { exact: true }).click()
   await expect(sheet(page).getByText('sudo systemctl enable --now reading-tutor-api', { exact: false }).first()).toBeVisible()
 
-  await sheet(page).getByRole('tab', { name: 'Configuration' }).click()
+  await sheet(page).getByRole('button', { name: 'Edit configuration' }).click()
   await sheet(page).getByLabel('Start command').fill('node dist/cluster.js --workers 2')
-  await sheet(page).getByRole('tab', { name: 'Guide' }).click()
+  await sheet(page).getByRole('button', { name: /Review deployment/ }).click()
+  await sheet(page).getByText('Create the service', { exact: true }).click()
   await expect(sheet(page).getByText('ExecStart=/home/deploy/.nvm/nvm-exec node dist/cluster.js --workers 2')).toBeVisible()
 
   const download = page.waitForEvent('download')
-  await sheet(page).getByRole('button', { name: 'Download as script' }).click()
+  await sheet(page).getByRole('button', { name: 'Download deploy.sh' }).click()
   expect((await download).suggestedFilename()).toBe('deploy.sh')
 })
 
-test('a failed deployment shows the failing step and can be redeployed', async ({ page }) => {
+test('a failed deployment shows the failing step and can be redeployed after review', async ({ page }) => {
   await signIn(page, 'ShikshaLokam · User')
   await page.goto('/app/environments/env-sl-tutor?tab=projects')
   await openDeployment(page, 'Multilingual Speech Recognition')
   await expect(sheet(page).getByText('Failed at step: Build')).toBeVisible()
   await expect(sheet(page).getByText(/No module named 'app.scoring'/).first()).toBeVisible()
 
-  // Redeploying unchanged fails again at the same step.
-  await sheet(page).getByRole('button', { name: 'Redeploy', exact: true }).first().click()
-  await expect(sheet(page).getByText('Failed at step: Build')).toBeVisible({ timeout: 15_000 })
+  // Redeploy opens the review; HF_TOKEN isn't connected, so the warning must be overridden.
+  await sheet(page).getByRole('button', { name: 'Redeploy', exact: true }).last().click()
+  const confirm = sheet(page).getByRole('button', { name: 'Confirm & deploy' })
+  await expect(confirm).toBeDisabled()
+  await sheet(page).getByRole('checkbox', { name: /Deploy anyway/ }).click()
+  await confirm.click()
+  await expect(sheet(page).getByText('Failed at step: Build')).toBeVisible({ timeout: 20_000 })
 
-  // Fix the branch, then redeploy: it runs to the end.
-  await sheet(page).getByRole('tab', { name: 'Configuration' }).click()
+  // Fix the branch, review again, then deploy: it runs to the end.
+  await sheet(page).getByRole('button', { name: 'Fix configuration' }).click()
   await sheet(page).getByLabel('Branch').fill('release/2.3')
-  await sheet(page).getByRole('button', { name: 'Save and redeploy' }).first().click()
-  await expect(sheet(page).getByRole('log', { name: 'Deployment log' })).toContainText('Check health', { timeout: 15_000 })
-  await expect(sheet(page).getByText('Running').first()).toBeVisible({ timeout: 15_000 })
+  await sheet(page).getByRole('button', { name: /Review deployment/ }).click()
+  await sheet(page).getByRole('checkbox', { name: /Deploy anyway/ }).click()
+  await sheet(page).getByRole('button', { name: 'Confirm & deploy' }).click()
+  await expect(sheet(page).getByRole('log', { name: 'Deployment log' })).toContainText('Health check', { timeout: 20_000 })
+  await expect(sheet(page).getByText('Running').first()).toBeVisible({ timeout: 20_000 })
   await expect(sheet(page).getByText('Failed at step')).toHaveCount(0)
 })
 
@@ -100,21 +110,17 @@ test('projects can be added with the models they need, and removed again', async
   await page.goto('/app/environments/env-m4c-coach?tab=projects')
   await page.getByRole('button', { name: 'Add project' }).first().click()
   const dlg = sheet(page)
-  await dlg.getByRole('checkbox', { name: 'Add Feedback Analysis' }).click()
-  await expect(dlg.getByText(/Uses Mistral Small 3.1, GPT-5/)).toBeVisible()
+  await dlg.getByRole('checkbox', { name: 'Add Parent Survey Insights' }).click()
+  await expect(dlg.getByText(/Uses Gemini 2.5 Pro/)).toBeVisible()
   await dlg.getByRole('button', { name: 'Add project' }).click()
-  await expect(page.getByText(/Attached Mistral Small 3.1, GPT-5/)).toBeVisible()
-  await expect(page.locator('table').getByText('Feedback Analysis', { exact: true })).toBeVisible()
-
-  // Over capacity: the shortfall and an upgrade button appear.
-  await page.getByRole('button', { name: 'Add project' }).first().click()
-  await expect(dlg.getByText('Every project is already here')).toBeVisible()
+  await expect(page.getByText(/Attached Gemini 2.5 Pro/)).toBeVisible()
   await page.keyboard.press('Escape')
+  await expect(page.locator('table').getByText('Parent Survey Insights', { exact: true })).toBeVisible()
 
-  await page.getByRole('button', { name: 'Actions for Feedback Analysis' }).click()
+  await page.getByRole('button', { name: 'Actions for Parent Survey Insights' }).click()
   await page.getByRole('menuitem', { name: 'Remove from environment' }).click()
   await page.getByRole('button', { name: 'Stop and remove' }).click()
-  await expect(page.locator('table').getByText('Feedback Analysis', { exact: true })).toHaveCount(0)
+  await expect(page.locator('table').getByText('Parent Survey Insights', { exact: true })).toHaveCount(0)
 })
 
 test('a shortfall offers an upgrade request', async ({ page }) => {
@@ -134,10 +140,14 @@ test('a shortfall offers an upgrade request', async ({ page }) => {
   await expect(page.getByText('Upgrade request sent for review.')).toBeVisible()
 })
 
-test('the request wizard can host several projects', async ({ page }) => {
+test('the request wizard makes projects optional and multi-select', async ({ page }) => {
   await signIn(page, 'ShikshaLokam · User')
   await page.goto('/app/environments/new')
-  await expect(page.getByText('Also host these projects')).toBeVisible()
-  await page.getByRole('checkbox', { name: /Also host/ }).first().click()
-  await expect(page.getByRole('checkbox', { name: /Also host/ }).first()).toBeChecked()
+  await expect(page.getByText('You can add projects later.', { exact: false })).toBeVisible()
+  const boxes = page.getByRole('checkbox', { name: /^Host / })
+  await expect(boxes.first()).not.toBeChecked()
+  await boxes.nth(0).click()
+  await boxes.nth(1).click()
+  await expect(boxes.nth(0)).toBeChecked()
+  await expect(boxes.nth(1)).toBeChecked()
 })

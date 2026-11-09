@@ -20,11 +20,12 @@ interface Props {
   catalog: CatalogItem[]
   role: Role
   owner?: User
-  project?: Project
+  /** Projects on the environment (through deployments); may be empty. */
+  projects?: Project[]
   hasPendingChange?: boolean
 }
 
-export function EnvironmentCard({ env, catalog, role, owner, project, hasPendingChange }: Props) {
+export function EnvironmentCard({ env, catalog, role, owner, projects = [], hasPendingChange }: Props) {
   const costCtx = useCostContext(env.tenantId)
   const spent = useMemo(() => spendToDate(env, costCtx).total, [env, costCtx])
   const provider = useAppStore((s) => s.infraProviders.find((p) => p.id === env.spec.providerId))
@@ -50,11 +51,10 @@ export function EnvironmentCard({ env, catalog, role, owner, project, hasPending
       </div>
 
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-caption text-text-secondary">
-        {project && (
-          <span className="flex items-center gap-1.5">
-            <FolderKanban className="size-3.5 text-text-muted" aria-hidden /> {project.name}
-          </span>
-        )}
+        <span className="flex items-center gap-1.5">
+          <FolderKanban className="size-3.5 text-text-muted" aria-hidden />{' '}
+          {projects.length === 0 ? 'No projects yet' : projects.length > 2 ? `${projects[0]!.name} + ${projects.length - 1} more` : projects.map((p) => p.name).join(', ')}
+        </span>
         <span className="flex items-center gap-1.5">
           <Cpu className="size-3.5 text-text-muted" aria-hidden /> {computeLabel(env.spec.compute)}
           {env.spec.compute !== 'cpu' && env.spec.gpuCount > 1 ? ` × ${env.spec.gpuCount}` : ''}

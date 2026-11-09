@@ -11,14 +11,14 @@ export const terminalPath = (envId: string) => `/environments/${envId}/terminal`
  * Only Active environments accept a session.
  */
 export function terminalAccess(user: User, env: Environment, projects: Project[], deployments: Pick<Deployment, 'envId' | 'projectId'>[]): TerminalAccess {
-  const projectIds = new Set([env.projectId, ...deployments.filter((d) => d.envId === env.id).map((d) => d.projectId)])
+  const projectIds = new Set(deployments.filter((d) => d.envId === env.id).map((d) => d.projectId))
   let readOnly = false
   if (canManageEnvProjects(user, env)) {
     readOnly = false
   } else if (user.tenantId !== env.tenantId) {
     return { allowed: false, reason: 'This environment belongs to another organisation.' }
   } else if (user.role === 'user') {
-    const member = projects.some((p) => projectIds.has(p.id) && p.memberIds.includes(user.id))
+    const member = env.ownerId === user.id || projects.some((p) => projectIds.has(p.id) && (p.memberIds.includes(user.id) || p.ownerId === user.id))
     if (!member) return { allowed: false, reason: 'Only the owner, members of a project on this environment and admins can open a terminal.' }
   } else if (user.role === 'qa') {
     const assigned = projects.some((p) => projectIds.has(p.id) && p.status === 'active' && (user.qa?.tenantWideAllowed || user.qa?.projectIds.includes(p.id)))

@@ -44,7 +44,7 @@ function Breadcrumb() {
     .map((seg, i) => {
       const to = '/' + segs.slice(0, i + 1).join('/')
       const label =
-        segmentLabel(seg, user.role) ??
+        segmentLabel(seg, user.role, segs[i - 1]) ??
         environments.find((e) => e.id === seg)?.spec.name ??
         requests.find((r) => r.id === seg)?.spec.name ??
         projects.find((p) => p.id === seg)?.name ??

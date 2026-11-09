@@ -39,14 +39,14 @@ export function useVisibleTenants(ignoreFilter = false) {
 }
 
 /**
- * `hostedProjectIds`: projects deployed on the environment besides its primary one.
- * Members of any of them can see it.
+ * `hostedProjectIds`: projects on the environment (linked through deployments; may be none).
+ * Members of any of them can see it, and so can its owner.
  */
 export function canSeeEnvironment(scope: Scope, env: Environment, memberProjectIds: string[], hostedProjectIds: string[] = []) {
   if (scope.role === 'super_admin') return true
   if (env.tenantId !== scope.user.tenantId) return false
   if (scope.role === 'tenant_admin') return true
-  const inProject = memberProjectIds.includes(env.projectId) || hostedProjectIds.some((p) => memberProjectIds.includes(p))
+  const inProject = hostedProjectIds.some((p) => memberProjectIds.includes(p))
   // QA Engineers see Active environments in the projects they test, read-only.
   if (scope.role === 'qa') return env.status === 'active' && inProject
   return env.ownerId === scope.user.id || inProject
@@ -82,7 +82,7 @@ export function useMemberProjectIds() {
   return useMemo(() => {
     if (!scope) return []
     if (scope.role === 'qa') return qaProjectIds(scope.user, projects, tenantWide)
-    return projects.filter((p) => p.tenantId === scope.user.tenantId && p.memberIds.includes(scope.user.id)).map((p) => p.id)
+    return projects.filter((p) => p.tenantId === scope.user.tenantId && (p.memberIds.includes(scope.user.id) || p.ownerId === scope.user.id)).map((p) => p.id)
   }, [projects, scope, tenantWide])
 }
 

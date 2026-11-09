@@ -109,6 +109,7 @@ export const LANGUAGES: Language[] = ['Hindi', 'Kannada', 'Tamil', 'Telugu', 'Ma
 export const CATEGORY_LABELS: Record<CatalogCategory, string> = {
   llm: 'Language models',
   asr: 'Speech recognition',
+  embedding: 'Embedding models',
   'agent-framework': 'Agent frameworks',
   'vector-db': 'Vector databases',
   evaluation: 'Evaluation tools',
@@ -118,6 +119,7 @@ export const CATEGORY_LABELS: Record<CatalogCategory, string> = {
 export const CATEGORY_SINGULAR: Record<CatalogCategory, string> = {
   llm: 'Language model',
   asr: 'Speech recognition',
+  embedding: 'Embedding model',
   'agent-framework': 'Agent framework',
   'vector-db': 'Vector database',
   evaluation: 'Evaluation tool',

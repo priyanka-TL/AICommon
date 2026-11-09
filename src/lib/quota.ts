@@ -44,7 +44,11 @@ export function allocated(envs: Environment[], filter: (e: Environment) => boole
 }
 
 export const tenantAllocated = (envs: Environment[], tenantId: string) => allocated(envs, (e) => e.tenantId === tenantId)
-export const projectAllocated = (envs: Environment[], projectId: string) => allocated(envs, (e) => e.projectId === projectId)
+/** What a project's environments reserve. An environment shared by several projects counts towards each of them. */
+export const projectAllocated = (envs: Environment[], projectId: string, deployments: { envId: string; projectId: string }[]) => {
+  const ids = new Set(deployments.filter((d) => d.projectId === projectId).map((d) => d.envId))
+  return allocated(envs, (e) => ids.has(e.id))
+}
 
 export interface Overage {
   key: keyof Quota

@@ -12,6 +12,7 @@ import { relativeTime } from '@/lib/format'
 import { reportPath } from '@/lib/paths'
 import { qualityScore } from '@/lib/qa'
 import { ACCESS_MODE_LABELS, accessModesFor } from '@/lib/providers'
+import { canEditProject } from '@/lib/roles'
 import type { AccessMode } from '@/data/types'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CatalogStatusBadge, StatusBadge, Tag } from '@/components/shared/StatusBadge'
@@ -41,6 +42,8 @@ export default function CatalogDetail() {
   const qaRuns = useAppStore((s) => s.qaRuns)
   const infraProviders = useAppStore((s) => s.infraProviders)
   const [access, setAccess] = useState<AccessMode>('direct')
+  const [version, setVersion] = useState('')
+  const me = useCurrentUser()
 
   if (!item) return <NotFound message="This item isn’t available to your tenant. It may have been removed or not published to you yet." />
 
@@ -263,14 +266,30 @@ export default function CatalogDetail() {
                 </SelectTrigger>
                 <SelectContent>
                   {projects.map((p) => (
-                    <SelectItem key={p.id} value={p.id} disabled={p.capabilityIds.includes(item.id)}>
+                    <SelectItem key={p.id} value={p.id} disabled={p.capabilityIds.includes(item.id) || !canEditProject(me, p)}>
                       {p.name}
-                      {p.capabilityIds.includes(item.id) ? ' · already added' : ''}
+                      {p.capabilityIds.includes(item.id) ? ' · already added' : !canEditProject(me, p) ? ' · view only' : ''}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </Field>
+            {item.versions.length > 1 && (
+              <Field label="Version" htmlFor="ap-version" helper="If an environment pins a different version, you’ll choose one before deploying." className="mt-4">
+                <Select value={version || item.version} onValueChange={setVersion}>
+                  <SelectTrigger id="ap-version">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {item.versions.map((v) => (
+                      <SelectItem key={v} value={v}>
+                        {v}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            )}
             {item.category === 'llm' && (
               <Field label="Access through" helper="How this project reaches the model. Cloud model services come from the infrastructure providers your organisation can use." className="mt-4">
                 <Select value={access} onValueChange={(v) => setAccess(v as AccessMode)}>
@@ -295,7 +314,7 @@ export default function CatalogDetail() {
             <Button
               disabled={!projectId}
               onClick={() => {
-                const res = addProjectCapability(projectId, item.id, item.category === 'llm' ? access : undefined)
+                const res = addProjectCapability(projectId, item.id, item.category === 'llm' ? access : undefined, version || item.version)
                 if (!res.ok) {
                   toast.error(res.error)
                   return

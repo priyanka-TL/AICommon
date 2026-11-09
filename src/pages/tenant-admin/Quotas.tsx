@@ -22,6 +22,7 @@ export default function Quotas() {
   const tenant = useCurrentTenant()!
   const projects = useScopedProjects(false)
   const environments = useAppStore((s) => s.environments)
+  const deployments = useAppStore((s) => s.deployments)
   const quotaRequests = useAppStore((s) => s.quotaRequests.filter((q) => q.tenantId === tenant.id))
   const usage = useAppStore((s) => s.usage)
   const updateProject = useAppStore((s) => s.updateProject)
@@ -102,7 +103,7 @@ export default function Quotas() {
             </thead>
             <tbody className="divide-y divide-border">
               {projects.map((p) => {
-                const pu = projectAllocated(environments, p.id)
+                const pu = projectAllocated(environments, p.id, deployments)
                 return (
                   <tr key={p.id}>
                     <td className="py-3 pr-3 font-semibold text-text-primary">{p.name}</td>

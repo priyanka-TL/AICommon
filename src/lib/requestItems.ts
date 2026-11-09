@@ -13,6 +13,8 @@ interface Base {
   tenantId: string
   requesterId: string
   projectId: string | null
+  /** Environment requests can name several projects, or none. */
+  projectIds?: string[]
   repo: string | null
   submittedAt: string
   updatedAt: string
@@ -37,7 +39,8 @@ export function fromRequest(r: EnvRequest): RequestItem {
     name: r.spec.name,
     tenantId: r.tenantId,
     requesterId: r.requesterId,
-    projectId: r.spec.projectId,
+    projectId: r.spec.projectIds[0] ?? null,
+    projectIds: r.spec.projectIds,
     repo: null,
     submittedAt: r.history.find((h) => h.status === 'submitted')?.at ?? r.createdAt,
     updatedAt: r.updatedAt,
@@ -141,7 +144,7 @@ export interface RequestFilters {
 export function filterCommon(items: RequestItem[], f: RequestFilters, extraSearch?: (i: RequestItem) => string[]) {
   const q = f.q.trim().toLowerCase()
   return items.filter((i) => {
-    if (f.project && i.projectId !== f.project) return false
+    if (f.project && !(i.projectIds ?? (i.projectId ? [i.projectId] : [])).includes(f.project)) return false
     const day = i.submittedAt.slice(0, 10)
     if (f.from && day < f.from) return false
     if (f.to && day > f.to) return false

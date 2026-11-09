@@ -7,6 +7,7 @@ import type { Environment } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
 import { canSeeEnvironment, useEnvDeployments, useMemberProjectIds, useScope } from '@/store/selectors'
 import { ProjectsTab } from '@/components/deploy/ProjectsTab'
+import { EnvCapabilitiesTab } from '@/components/deploy/EnvCapabilitiesTab'
 import { costBreakdown, dailySpend, spendToDate } from '@/lib/cost'
 import { useCostContext } from '@/store/selectors'
 import { CostBreakdown } from '@/components/shared/CostBreakdown'
@@ -243,7 +244,6 @@ export default function EnvironmentDetail() {
 
   const item = (cid: string) => catalog.find((c) => c.id === cid)
   const owner = users.find((u) => u.id === env.ownerId)
-  const project = projects.find((p) => p.id === env.projectId)
   const est = costBreakdown(env.spec, costCtx)
   const alloc = allocationOf(env.spec)
   const tier = COMPUTE_TIERS.find((t) => t.value === env.spec.compute)!
@@ -260,7 +260,7 @@ export default function EnvironmentDetail() {
   const actions = actionsFor(env)
   const monitoringBlocked = NO_MONITORING[env.status]
   const tabParam = params.get('tab')
-  const tab = tabParam === 'monitoring' && !monitoringBlocked ? 'monitoring' : tabParam === 'tests' || tabParam === 'projects' ? tabParam : 'overview'
+  const tab = tabParam === 'monitoring' && !monitoringBlocked ? 'monitoring' : tabParam === 'tests' || tabParam === 'projects' || tabParam === 'capabilities' ? tabParam : 'overview'
   const openDeployment = params.get('deployment')
   const setOpenDeployment = (depId: string | null) => {
     const next = new URLSearchParams(params)
@@ -268,17 +268,17 @@ export default function EnvironmentDetail() {
     else next.delete('deployment')
     setParams(next, { replace: true })
   }
-  const hostedNames = [...new Set([env.projectId, ...deployments.map((d) => d.projectId)])].map((pid) => projects.find((p) => p.id === pid)?.name).filter(Boolean)
+  const hostedNames = [...new Set(deployments.map((d) => d.projectId))].map((pid) => projects.find((p) => p.id === pid)?.name).filter(Boolean)
   const attached = [
     ...env.spec.llms.map((l) => ({ it: item(l.id), extra: `${l.tokenBudget}M tokens / month` })),
     ...env.spec.asr.map((a) => ({ it: item(a), extra: env.spec.languages.join(', ') || 'No languages' })),
-    ...env.spec.capabilities.map((c) => ({ it: item(c), extra: null as string | null })),
+    ...env.capabilities.map((c) => ({ it: item(c.itemId), extra: `${c.version} · shared with all projects` as string | null })),
   ].filter((a) => a.it)
 
   return (
     <>
       <PageHeader
-        eyebrow={`${scope.role === 'super_admin' ? `${tenant?.name} · ` : ''}${hostedNames.length > 2 ? `${hostedNames[0]} + ${hostedNames.length - 1} more projects` : hostedNames.join(' · ') || (project?.name ?? '')}`}
+        eyebrow={`${scope.role === 'super_admin' ? `${tenant?.name} · ` : ''}${hostedNames.length > 2 ? `${hostedNames[0]} + ${hostedNames.length - 1} more projects` : hostedNames.join(' · ') || 'No projects yet'}`}
         title={env.spec.name}
         description={env.spec.description || undefined}
         actions={
@@ -403,6 +403,7 @@ export default function EnvironmentDetail() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           {env.status !== 'provisioning' && env.status !== 'provisioning_failed' && <TabsTrigger value="projects">Projects ({deployments.length})</TabsTrigger>}
+          {env.status !== 'provisioning_failed' && <TabsTrigger value="capabilities">Capabilities ({env.capabilities.length})</TabsTrigger>}
           {monitoringBlocked ? (
             <Tooltip content={monitoringBlocked}>
               <span>
@@ -593,6 +594,8 @@ export default function EnvironmentDetail() {
         </TabsContent>
 
         <TabsContent value="projects">{tab === 'projects' && <ProjectsTab env={env} openId={openDeployment} onOpen={setOpenDeployment} />}</TabsContent>
+
+        <TabsContent value="capabilities">{tab === 'capabilities' && <EnvCapabilitiesTab env={env} />}</TabsContent>
 
         <TabsContent value="monitoring">{!monitoringBlocked && tab === 'monitoring' && <MonitoringPanel env={env} catalog={catalog} />}</TabsContent>
 

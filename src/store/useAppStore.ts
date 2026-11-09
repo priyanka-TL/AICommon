@@ -12,6 +12,7 @@ import type {
   Deployment,
   DeploymentConfig,
   DeployRun,
+  EnvCapability,
   EnvRequest,
   EnvSpec,
   EnvStatus,
@@ -19,6 +20,8 @@ import type {
   InfraProvider,
   LifecycleEvent,
   Project,
+  ProjectAccess,
+  ProjectType,
   Provider,
   ProviderApproval,
   ProviderRequest,
@@ -30,6 +33,8 @@ import type {
   RateCard,
   RequestStatus,
   Role,
+  Runtime,
+  ServiceAccess,
   Suggestion,
   Tenant,
   TestConfigSpec,
@@ -39,24 +44,26 @@ import type {
 import { canTransition, partiesFor, findTransition } from '@/lib/lifecycle'
 import { addsInfrastructure, diffSpecs } from '@/lib/spec'
 import { alertLevel, currentPoint, utilisation } from '@/lib/metrics'
-import { envPath, itemPath, providerRequestPath, reportPath, requestPath, suggestionPath } from '@/lib/paths'
+import { envPath, itemPath, projectPath, providerRequestPath, reportPath, requestPath, suggestionPath } from '@/lib/paths'
 import { seedQaRuns } from '@/lib/qa'
 import { ACCESS_MODE_LABELS, residencyProblem } from '@/lib/providers'
 import { environmentsInUse } from '@/lib/cost'
 import { parseGithubUrl } from '@/lib/suggestions'
 import { formatDuration, formatInt } from '@/lib/format'
 import { roleLabel } from '@/lib/labels'
-import { isAdmin } from '@/lib/roles'
+import { canEditProject, isAdmin } from '@/lib/roles'
 import { uid, slugify } from '@/lib/utils'
 import {
   canManageEnvProjects,
   canOperateDeployment,
   capacityShortfall,
+  checksPass,
+  type CheckKey,
+  preDeployChecks,
   defaultConfig,
   envCapacity,
   fakeCommit,
   limitsUsed,
-  missingDependencies,
   serviceNameFor,
   shortfallText,
   simulateSteps,
@@ -67,6 +74,34 @@ import {
 import { allocationOf } from '@/lib/quota'
 
 export const STORAGE_KEY = `aic-demo-data-${SEED_VERSION}`
+
+/** What the project form edits. */
+export interface ProjectInput {
+  name: string
+  description: string
+  type: ProjectType
+  repoUrl: string
+  defaultBranch: string
+  defaultRuntime: Runtime
+  defaultRuntimeVersion: string
+  memberIds: string[]
+  memberAccess: Record<string, ProjectAccess>
+  limits?: Quota
+}
+
+const PROJECT_FIELD_LABELS: Partial<Record<keyof ProjectInput | 'status', string>> = {
+  name: 'name',
+  description: 'description',
+  type: 'project type',
+  repoUrl: 'repository',
+  defaultBranch: 'default branch',
+  defaultRuntime: 'default runtime',
+  defaultRuntimeVersion: 'runtime version',
+  memberIds: 'members',
+  memberAccess: 'member access',
+  limits: 'limits',
+  status: 'status',
+}
 const PROVISIONING_MS = 5000
 const FAILURE_REASON = 'Simulated: GPU capacity unavailable in pool'
 const DEPLOY_STEP_MS = 750
@@ -158,9 +193,14 @@ interface AppState extends SeedState {
   addProjectsToEnv: (envId: string, items: { projectId: string; limits: { vcpu: number; ramGb: number } }[]) => Result
   removeDeployment: (id: string) => Result
   updateDeploymentConfig: (id: string, config: DeploymentConfig) => Result
-  deploy: (id: string) => Result
+  /** Runs only after the review: blocked unless every pre-deploy check passes or its warning is overridden. */
+  deploy: (id: string, opts?: { overrides?: CheckKey[] }) => Result
   stopDeployment: (id: string) => Result
-  rollbackDeployment: (id: string) => Result
+  /** Redeploys an earlier version's configuration (the latest working one when `version` is omitted). */
+  rollbackDeployment: (id: string, opts?: { version?: number; overrides?: CheckKey[] }) => Result
+  setDeploymentChoices: (id: string, patch: { capabilityChoice?: Record<string, string>; serviceAccess?: Record<string, ServiceAccess> }) => Result
+  addEnvCapability: (envId: string, itemId: string, version?: string) => Result
+  removeEnvCapability: (envId: string, itemId: string) => Result
   /** Attach catalog items a project needs. Applies at once unless it adds infrastructure, then it becomes a change request. */
   attachDependencies: (envId: string, itemIds: string[]) => { mode: 'applied' | 'requested'; id: string } | { mode: 'error'; error: string }
   /** Ask for a bigger instance so `extra` vCPU/RAM fits on top of what projects already reserve. */
@@ -169,9 +209,11 @@ interface AppState extends SeedState {
   recoverDeployments: () => void
 
   // projects
-  createProject: (p: Pick<Project, 'name' | 'description' | 'memberIds' | 'limits'>) => string | null
-  updateProject: (id: string, patch: Partial<Pick<Project, 'name' | 'description' | 'memberIds' | 'limits' | 'status'>>) => void
-  addProjectCapability: (projectId: string, itemId: string, access?: AccessMode) => Result
+  createProject: (p: ProjectInput) => Result
+  updateProject: (id: string, patch: Partial<ProjectInput & Pick<Project, 'status'>>) => Result
+  addProjectCapability: (projectId: string, itemId: string, access?: AccessMode, version?: string) => Result
+  removeProjectCapability: (projectId: string, itemId: string) => Result
+  setProjectCapabilityVersion: (projectId: string, itemId: string, version: string) => Result
 
   // tenants & users
   createTenant: (t: Pick<Tenant, 'name' | 'code' | 'description' | 'orgType' | 'city' | 'state' | 'contactName' | 'contactEmail' | 'quota'> & { providers: { providerId: string; budgetCap: number }[] }) => string | null
@@ -301,6 +343,19 @@ export const useAppStore = create<AppState>()(
         if (tenant && approval && !approval.regionIds.includes(spec.regionId)) return `${p.regions.find((r) => r.id === spec.regionId)?.name ?? 'This region'} isn’t one of ${tenant.name}’s approved ${p.name} regions. Choose another region.`
         return residencyProblem(spec, get().infraProviders)
       }
+      /** Why a project's name or details can't be saved, or null. Names are unique within an organisation. */
+      const projectProblem = (p: Pick<ProjectInput, 'name' | 'repoUrl' | 'memberIds'>, tenantId: string, selfId?: string): string | null => {
+        const name = p.name.trim()
+        if (name.length < 3) return 'Give the project a name of at least 3 characters.'
+        if (name.length > 60) return 'Keep the project name under 60 characters.'
+        const clash = get().projects.find((x) => x.tenantId === tenantId && x.id !== selfId && x.name.trim().toLowerCase() === name.toLowerCase())
+        if (clash) return `${clash.name} already exists in your organisation. Choose another name.`
+        if (p.repoUrl.trim() && !/^(https:\/\/[\w.-]+(:\d+)?\/[\w.~/-]+?(\.git)?|git@[\w.-]+:[\w.~/-]+\.git)$/.test(p.repoUrl.trim()))
+          return 'Enter a Git URL such as https://github.com/org/repo.git, or leave the repository empty.'
+        const outsiders = p.memberIds.filter((m) => !get().users.some((u) => u.id === m && u.tenantId === tenantId))
+        if (outsiders.length) return 'Members must belong to your organisation.'
+        return null
+      }
       /** QA may act on assigned projects, or any project in the tenant when tenant-wide is allowed. */
       const qaCanUseProject = (user: User, projectId: string) => {
         const p = get().projects.find((x) => x.id === projectId)
@@ -412,6 +467,34 @@ export const useAppStore = create<AppState>()(
 
       /* ---------- deployment helpers ---------- */
 
+      const catalogVersion = (itemId: string) => get().catalog.find((c) => c.id === itemId)?.version ?? ''
+      /** Keeps environment-level capabilities in step with capabilities added or removed through the environment's spec. */
+      const syncCapabilities = (env: Environment, spec: EnvSpec): EnvCapability[] => {
+        const removed = env.spec.capabilities.filter((id) => !spec.capabilities.includes(id))
+        const kept = env.capabilities.filter((c) => !removed.includes(c.itemId))
+        const added = spec.capabilities.filter((id) => !kept.some((c) => c.itemId === id))
+        return [...kept, ...added.map((itemId) => ({ itemId, version: catalogVersion(itemId), addedById: me()?.id ?? 'system', at: now() }))]
+      }
+      const checksFor = (d: Deployment, config: DeploymentConfig = d.config) => {
+        const env = envOf(d)!
+        return preDeployChecks({
+          dep: { ...d, config },
+          env,
+          projectName: depName(d),
+          catalog: get().catalog,
+          project: get().projects.find((p) => p.id === d.projectId),
+          siblings: get().deployments.filter((x) => x.envId === env.id && x.id !== d.id),
+          tenant: get().tenants.find((t) => t.id === env.tenantId),
+          projectNameOf: projectName,
+        })
+      }
+      const blockedBy = (d: Deployment, config: DeploymentConfig, overrides: CheckKey[] = []) => {
+        const checks = checksFor(d, config)
+        if (checksPass(checks, overrides)) return null
+        const bad = checks.find((c) => !c.ok && !(c.severity === 'warning' && overrides.includes(c.key)))!
+        return `${bad.label}: ${bad.detail}`
+      }
+
       const patchDep = (id: string, patch: Partial<Deployment> | ((d: Deployment) => Partial<Deployment>)) =>
         set((s) => ({ deployments: s.deployments.map((d) => (d.id === id ? { ...d, ...(typeof patch === 'function' ? patch(d) : patch), updatedAt: now() } : d)) }))
       const depName = (d: Deployment) => projectName(d.projectId)
@@ -451,7 +534,7 @@ export const useAppStore = create<AppState>()(
         const env = envOf(d)!
         const commit = fakeCommit()
         const version = (d.history[d.history.length - 1]?.version ?? 0) + 1
-        const sim = simulateSteps({ dep: d, env, projectName: depName(d), catalog: get().catalog, breakBuild: d.breakBuild, commit })
+        const sim = simulateSteps({ dep: d, env, projectName: depName(d), catalog: get().catalog, project: get().projects.find((p) => p.id === d.projectId), breakBuild: d.breakBuild, commit })
         const run: DeployRun = {
           id: uid('run'),
           version,
@@ -582,8 +665,8 @@ export const useAppStore = create<AppState>()(
         submitRequest: (spec, draftId) => {
           const user = me()
           if (!user || user.role === 'super_admin') return fail('Only people in an organisation can request environments.')
-          const project = get().projects.find((p) => p.id === spec.projectId)
-          if (!project || project.tenantId !== user.tenantId) return fail('Choose a project in your organisation.')
+          const foreign = spec.projectIds.filter((pid) => !get().projects.some((p) => p.id === pid && p.tenantId === user.tenantId && p.status === 'active'))
+          if (foreign.length) return fail('One of the chosen projects isn’t an active project in your organisation. Remove it, or add projects later.')
           const placement = placementProblem(spec, user.tenantId)
           if (placement) return fail(placement)
           let id = draftId
@@ -629,7 +712,7 @@ export const useAppStore = create<AppState>()(
           if (placement) return { mode: 'error', error: placement }
           if (user.role === 'super_admin' || !addsInfrastructure(env.spec, spec)) {
             const changes = diffSpecs(env.spec, spec, get().catalog, get().projects, get().infraProviders)
-            patchEnv(envId, { spec })
+            patchEnv(envId, { spec, capabilities: syncCapabilities(env, spec) })
             audit('environment.config_updated', 'environment', envId, `${user.name} changed “${env.spec.name}”: ${changes.map((c) => c.field).join(', ') || 'no visible changes'}`, env.tenantId)
             if (user.role === 'user') notify(tenantAdmins(env.tenantId), `${user.name} changed the setup of “${env.spec.name}”. No new infrastructure was needed.`, envLink(envId))
             return { mode: 'applied', id: envId }
@@ -738,7 +821,6 @@ export const useAppStore = create<AppState>()(
                 const env: Environment = {
                   id: envId,
                   tenantId: r.tenantId,
-                  projectId: updated.spec.projectId,
                   ownerId: r.requesterId,
                   requestId: id,
                   status: 'provisioning',
@@ -754,9 +836,11 @@ export const useAppStore = create<AppState>()(
                   provisionDueAt: null,
                   hold: false,
                   loadProfile: 'normal',
+                  capabilities: updated.spec.capabilities.map((itemId) => ({ itemId, version: catalogVersion(itemId), addedById: r.requesterId, at: now() })),
                 }
                 set((s) => ({ environments: [env, ...s.environments] }))
-                const hosted = [...new Set([updated.spec.projectId, ...(updated.spec.extraProjectIds ?? [])])].filter((pid) => get().projects.some((p) => p.id === pid && p.tenantId === r.tenantId))
+                // Projects are optional: an environment can be approved with none and get them later.
+                const hosted = [...new Set(updated.spec.projectIds)].filter((pid) => get().projects.some((p) => p.id === pid && p.tenantId === r.tenantId && p.status === 'active'))
                 const deps: Deployment[] = []
                 for (const pid of hosted) {
                   const dep = newDeployment(env, pid, deps)
@@ -767,7 +851,8 @@ export const useAppStore = create<AppState>()(
                 patchRequest(id, { envId })
                 startProvisioning(envId, !!opts.simulateFailure)
               } else if (updated.envId) {
-                patchEnv(updated.envId, { spec: updated.spec })
+                const target = get().environments.find((e) => e.id === updated.envId)
+                patchEnv(updated.envId, { spec: updated.spec, ...(target ? { capabilities: syncCapabilities(target, updated.spec) } : {}) })
                 audit('environment.config_updated', 'environment', updated.envId, `Approved change applied to “${name}”`, r.tenantId)
               }
               break
@@ -867,13 +952,21 @@ export const useAppStore = create<AppState>()(
           const user = me()
           const env = get().environments.find((e) => e.id === envId)
           if (!user || !env) return fail('Environment not found.')
-          if (!canManageEnvProjects(user, env)) return fail('Only the environment owner or an admin can add projects.')
           if (!['active', 'stopped'].includes(env.status)) return fail('Projects can be added while the environment is active or stopped.')
           if (!items.length) return fail('Choose at least one project.')
           const current = get().deployments.filter((d) => d.envId === envId)
+          // Environment owners and admins can add any project; a project's editors can add it to an environment they can use.
+          const managesEnv = canManageEnvProjects(user, env)
+          const usesEnv =
+            user.tenantId === env.tenantId &&
+            current.some((d) => {
+              const hp = get().projects.find((x) => x.id === d.projectId)
+              return !!hp && (hp.ownerId === user.id || hp.memberIds.includes(user.id))
+            })
           for (const it of items) {
             const p = get().projects.find((x) => x.id === it.projectId)
             if (!p || p.tenantId !== env.tenantId || p.status !== 'active') return fail('One of those projects isn’t an active project in this organisation.')
+            if (!managesEnv && !(usesEnv && canEditProject(user, p))) return fail(`You can’t add ${p.name} here. Ask the environment owner or your Tenant Admin.`)
             if (current.some((d) => d.projectId === it.projectId)) return fail(`${p.name} is already on this environment.`)
             if (!(it.limits.vcpu > 0 && it.limits.ramGb > 0)) return fail(`Give ${p.name} some CPU and RAM.`)
           }
@@ -921,7 +1014,7 @@ export const useAppStore = create<AppState>()(
           return ok(id)
         },
 
-        deploy: (id) => {
+        deploy: (id, opts = {}) => {
           const user = me()
           const d = get().deployments.find((x) => x.id === id)
           const env = d && envOf(d)
@@ -929,13 +1022,11 @@ export const useAppStore = create<AppState>()(
           if (!canOperate(user, d)) return fail('You can’t deploy this project.')
           if (env.status !== 'active') return fail('Start the environment before deploying.')
           if (d.status === 'deploying') return fail('A deployment is already running.')
-          const missing = missingDependencies(env, d.config)
-          if (missing.length) {
-            const names = missing.map((m) => get().catalog.find((c) => c.id === m)?.name ?? m).join(', ')
-            return fail(`Attach ${names} to this environment before deploying.`)
-          }
-          const v = runDeploy(id)
-          audit('deployment.started', 'deployment', id, `${user.name} started deploying ${depName(d)} v${v} to “${env.spec.name}”`, env.tenantId)
+          const blocked = blockedBy(d, d.config, opts.overrides)
+          if (blocked) return fail(blocked)
+          const overridden = (opts.overrides ?? []).filter((k) => checksFor(d).some((c) => c.key === k && !c.ok))
+          const v = runDeploy(id, overridden.length ? `Confirmed with a warning overridden (${overridden.join(', ')})` : undefined)
+          audit('deployment.started', 'deployment', id, `${user.name} reviewed the steps and started deploying ${depName(d)} v${v} to “${env.spec.name}”`, env.tenantId, overridden.length ? `Overrode: ${overridden.join(', ')}` : undefined)
           return ok(id)
         },
 
@@ -952,7 +1043,7 @@ export const useAppStore = create<AppState>()(
           return ok(id)
         },
 
-        rollbackDeployment: (id) => {
+        rollbackDeployment: (id, opts = {}) => {
           const user = me()
           const d = get().deployments.find((x) => x.id === id)
           const env = d && envOf(d)
@@ -962,8 +1053,10 @@ export const useAppStore = create<AppState>()(
           if (d.status === 'deploying') return fail('Wait for the current deployment to finish.')
           const good = d.history.filter((h) => h.status === 'running' || h.status === 'superseded')
           const current = d.status === 'running' ? good[good.length - 1] : undefined
-          const target = [...good].reverse().find((h) => h !== current)
+          const target = opts.version !== undefined ? d.history.find((h) => h.version === opts.version) : [...good].reverse().find((h) => h !== current)
           if (!target) return fail('There is no earlier working version to roll back to.')
+          const blocked = blockedBy(d, target.config, opts.overrides)
+          if (blocked) return fail(blocked)
           patchDep(id, (x) => ({ config: target.config, history: x.history.map((h) => (h === current ? { ...h, status: 'rolled_back' as const } : h)) }))
           runDeploy(id, `Rollback to v${target.version}`)
           audit('deployment.rolled_back', 'deployment', id, `${user.name} rolled ${depName(d)} back to v${target.version} on “${env.spec.name}”`, env.tenantId)
@@ -978,15 +1071,24 @@ export const useAppStore = create<AppState>()(
           const items = itemIds.map((id) => get().catalog.find((c) => c.id === id)).filter((x): x is CatalogItem => !!x)
           const blocked = items.filter((i) => !tenant?.enabledItemIds.includes(i.id))
           if (blocked.length) return { mode: 'error', error: `${blocked.map((b) => b.name).join(', ')} isn’t switched on for ${tenant?.name ?? 'this organisation'}. Ask your Tenant Admin to enable it in the catalog.` }
-          const spec = { ...env.spec, llms: [...env.spec.llms], asr: [...env.spec.asr], capabilities: [...env.spec.capabilities] }
-          for (const it of items) {
+          // Shared capabilities go straight onto the environment; models change its spec (and may need approval).
+          for (const it of items.filter((i) => i.category !== 'llm' && i.category !== 'asr')) {
+            if (env.capabilities.some((c) => c.itemId === it.id)) continue
+            const r = get().addEnvCapability(envId, it.id)
+            if (!r.ok) return { mode: 'error', error: r.error }
+          }
+          const models = items.filter((i) => i.category === 'llm' || i.category === 'asr')
+          if (!models.length) return { mode: 'applied', id: envId }
+          const fresh = get().environments.find((e) => e.id === envId)!
+          const spec = { ...fresh.spec, llms: [...fresh.spec.llms], asr: [...fresh.spec.asr] }
+          for (const it of models) {
             if (it.category === 'llm') {
               if (!spec.llms.some((l) => l.id === it.id)) spec.llms.push({ id: it.id, tokenBudget: 1 })
-            } else if (it.category === 'asr') {
+            } else {
               if (!spec.asr.includes(it.id)) spec.asr.push(it.id)
               if (!spec.asrHoursPerMonth) spec.asrHoursPerMonth = 10
               if (!spec.languages.length) spec.languages = ['Hindi']
-            } else if (!spec.capabilities.includes(it.id)) spec.capabilities.push(it.id)
+            }
           }
           return get().editEnvironment(envId, spec)
         },
@@ -1055,47 +1157,178 @@ export const useAppStore = create<AppState>()(
           }
         },
 
+        setDeploymentChoices: (id, patch) => {
+          const user = me()
+          const d = get().deployments.find((x) => x.id === id)
+          const env = d && envOf(d)
+          if (!user || !d || !env) return fail('Project not found on this environment.')
+          if (!canOperate(user, d)) return fail('You can’t change this project’s deployment.')
+          if (d.status === 'deploying') return fail('Wait for the current deployment to finish.')
+          const config = {
+            ...d.config,
+            capabilityChoice: { ...d.config.capabilityChoice, ...(patch.capabilityChoice ?? {}) },
+            serviceAccess: { ...d.config.serviceAccess, ...(patch.serviceAccess ?? {}) },
+          }
+          patchDep(id, { config })
+          const parts = [
+            ...Object.entries(patch.capabilityChoice ?? {}).map(([item, v]) => `use ${get().catalog.find((c) => c.id === item)?.name ?? item} ${v}`),
+            ...Object.entries(patch.serviceAccess ?? {}).map(([item, v]) => `reach ${get().catalog.find((c) => c.id === item)?.name ?? item} as ${v === 'platform' ? 'a platform service' : v === 'external' ? 'an external service' : 'an environment service'}`),
+          ]
+          audit('deployment.capabilities_resolved', 'deployment', id, `${user.name} chose to ${parts.join(' and ')} for ${depName(d)} on “${env.spec.name}”`, env.tenantId)
+          return ok(id)
+        },
+
+        addEnvCapability: (envId, itemId, version) => {
+          const user = me()
+          const env = get().environments.find((e) => e.id === envId)
+          const item = get().catalog.find((c) => c.id === itemId)
+          if (!user || !env || !item) return fail('Environment not found.')
+          if (!canManageEnvProjects(user, env)) return fail('Only the environment owner or an admin can add shared capabilities.')
+          if (['terminated', 'provisioning_failed'].includes(env.status)) return fail('This environment is no longer running.')
+          const tenant = get().tenants.find((t) => t.id === env.tenantId)
+          if (!tenant?.enabledItemIds.includes(itemId)) return fail(`${item.name} isn’t switched on for ${tenant?.name ?? 'this organisation'}. Ask your Tenant Admin to enable it in the catalog.`)
+          if (env.capabilities.some((c) => c.itemId === itemId)) return fail(`${item.name} is already on this environment.`)
+          const v = version ?? item.version
+          patchEnv(envId, {
+            capabilities: [...env.capabilities, { itemId, version: v, addedById: user.id, at: now() }],
+            spec: { ...env.spec, capabilities: env.spec.capabilities.includes(itemId) ? env.spec.capabilities : [...env.spec.capabilities, itemId] },
+          })
+          const hosted = get().deployments.filter((d) => d.envId === envId)
+          audit('environment.capability_added', 'environment', envId, `${user.name} added ${item.name} ${v} to “${env.spec.name}” for all its projects`, env.tenantId)
+          notify([...hosted.flatMap(depMembers), env.ownerId], `${user.name} added ${item.name} ${v} to “${env.spec.name}”. It’s available to every project on it.`, envLink(envId))
+          return ok(envId)
+        },
+
+        removeEnvCapability: (envId, itemId) => {
+          const user = me()
+          const env = get().environments.find((e) => e.id === envId)
+          const item = get().catalog.find((c) => c.id === itemId)
+          if (!user || !env || !item) return fail('Environment not found.')
+          if (!canManageEnvProjects(user, env)) return fail('Only the environment owner or an admin can remove shared capabilities.')
+          patchEnv(envId, { capabilities: env.capabilities.filter((c) => c.itemId !== itemId), spec: { ...env.spec, capabilities: env.spec.capabilities.filter((x) => x !== itemId) } })
+          audit('environment.capability_removed', 'environment', envId, `${user.name} removed ${item.name} from “${env.spec.name}”`, env.tenantId)
+          return ok(envId)
+        },
+
         /* ---------- projects ---------- */
 
-        createProject: (p) => {
+        createProject: (input) => {
           const user = me()
-          if (!user || user.role !== 'tenant_admin') return null
+          if (!user || user.role === 'super_admin' || user.role === 'qa') return fail('Only people in an organisation can create projects.')
+          const problem = projectProblem(input, user.tenantId)
+          if (problem) return fail(problem)
           const id = uid('p')
-          set((s) => ({
-            projects: [...s.projects, { ...p, id, tenantId: user.tenantId, ownerId: user.id, status: 'active', capabilityIds: [], createdAt: now() }],
-          }))
-          audit('project.created', 'project', id, `${user.name} created the project “${p.name}”`, user.tenantId)
-          notify(p.memberIds, `${user.name} added you to the project “${p.name}”.`, null)
-          return id
+          const memberIds = [...new Set(input.memberIds.filter((m) => m !== user.id))]
+          const tenant = get().tenants.find((t) => t.id === user.tenantId)
+          const project: Project = {
+            id,
+            tenantId: user.tenantId,
+            name: input.name.trim(),
+            description: input.description.trim(),
+            type: input.type,
+            repoUrl: input.repoUrl.trim(),
+            defaultBranch: input.defaultBranch.trim() || 'main',
+            defaultRuntime: input.defaultRuntime,
+            defaultRuntimeVersion: input.defaultRuntimeVersion,
+            ownerId: user.id,
+            memberIds,
+            memberAccess: Object.fromEntries(memberIds.map((m) => [m, input.memberAccess[m] ?? 'viewer'])),
+            status: 'active',
+            limits: input.limits ?? { vcpu: 16, ramGb: 64, gpus: 0, storageGb: Math.min(200, tenant?.quota.storageGb ?? 200) },
+            capabilityIds: [],
+            capabilityVersions: {},
+            createdAt: now(),
+            updatedAt: now(),
+            updatedById: user.id,
+          }
+          set((s) => ({ projects: [...s.projects, project] }))
+          audit('project.created', 'project', id, `${user.name} created the project “${project.name}”`, user.tenantId)
+          notify(memberIds, `${user.name} added you to the project “${project.name}”.`, (role) => projectPath(role, id))
+          return ok(id)
         },
 
         updateProject: (id, patch) => {
           const user = me()
           const p = get().projects.find((x) => x.id === id)
-          if (!user || !p || user.role !== 'tenant_admin' || user.tenantId !== p.tenantId) return
-          set((s) => ({ projects: s.projects.map((x) => (x.id === id ? { ...x, ...patch } : x)) }))
-          const what = patch.status ? (patch.status === 'archived' ? 'archived' : 'restored') : patch.memberIds ? 'changed the members of' : patch.limits ? 'changed the limits of' : 'updated'
-          audit(`project.${patch.status ?? 'updated'}`, 'project', id, `${user.name} ${what} “${p.name}”`, p.tenantId)
-          if (patch.memberIds) {
-            const added = patch.memberIds.filter((m) => !p.memberIds.includes(m))
-            notify(added, `${user.name} added you to the project “${p.name}”.`, null)
+          if (!user || !p) return fail('Project not found.')
+          if (!canEditProject(user, p)) return fail('You can view this project but not change it. Ask its owner for edit rights.')
+          const next = { ...p, ...patch }
+          const problem = projectProblem(next, p.tenantId, id)
+          if (problem) return fail(problem)
+          if (patch.status === 'archived' && p.status !== 'archived') {
+            const live = get().deployments.filter((d) => d.projectId === id && (d.status === 'running' || d.status === 'deploying'))
+            if (live.length) {
+              const envs = live.map((d) => `“${envOf(d)?.spec.name ?? d.envId}”`).join(', ')
+              return fail(`${p.name} is still running on ${envs}. Stop it there before archiving.`)
+            }
           }
+          const memberIds = [...new Set(next.memberIds.filter((m) => m !== p.ownerId))]
+          const memberAccess = Object.fromEntries(memberIds.map((m) => [m, next.memberAccess[m] ?? 'viewer']))
+          const changed = (Object.keys(patch) as (keyof typeof patch)[]).filter((k) => JSON.stringify(patch[k]) !== JSON.stringify((p as unknown as Record<string, unknown>)[k]))
+          if (!changed.length) return ok(id)
+          set((s) => ({
+            projects: s.projects.map((x) =>
+              x.id === id ? { ...next, name: next.name.trim(), description: next.description.trim(), memberIds, memberAccess, updatedAt: now(), updatedById: user.id } : x,
+            ),
+          }))
+          const fields = [...new Set(changed.map((k) => PROJECT_FIELD_LABELS[k] ?? String(k)))]
+          const what = patch.status && changed.includes('status') ? (patch.status === 'archived' ? 'archived' : 'restored') : `updated ${fields.join(', ')} of`
+          audit(`project.${changed.includes('status') ? patch.status : 'updated'}`, 'project', id, `${user.name} ${what} “${p.name}”`, p.tenantId, changed.includes('name') ? `Renamed to “${next.name.trim()}”` : undefined)
+          const added = memberIds.filter((m) => !p.memberIds.includes(m))
+          notify(added, `${user.name} added you to the project “${next.name}”.`, (role) => projectPath(role, id))
+          return ok(id)
         },
 
-        addProjectCapability: (projectId, itemId, access) => {
+        addProjectCapability: (projectId, itemId, access, version) => {
           const user = me()
           const p = get().projects.find((x) => x.id === projectId)
           const item = get().catalog.find((c) => c.id === itemId)
           if (!user || !p || !item) return fail('Project not found.')
-          const allowed = (user.role === 'tenant_admin' && user.tenantId === p.tenantId) || (user.tenantId === p.tenantId && p.memberIds.includes(user.id))
-          if (!allowed) return fail('Only project members can add capabilities.')
+          if (!canEditProject(user, p)) return fail('Only the project owner, its editors or an admin can add capabilities.')
           if (p.capabilityIds.includes(itemId)) return fail(`${item.name} is already in this project.`)
+          const v = version && item.versions.includes(version) ? version : item.version
           set((s) => ({
             projects: s.projects.map((x) =>
-              x.id === projectId ? { ...x, capabilityIds: [...x.capabilityIds, itemId], ...(access ? { modelAccess: { ...x.modelAccess, [itemId]: access } } : {}) } : x,
+              x.id === projectId
+                ? {
+                    ...x,
+                    capabilityIds: [...x.capabilityIds, itemId],
+                    capabilityVersions: v !== item.version ? { ...x.capabilityVersions, [itemId]: v } : x.capabilityVersions,
+                    ...(access ? { modelAccess: { ...x.modelAccess, [itemId]: access } } : {}),
+                    updatedAt: now(),
+                    updatedById: user.id,
+                  }
+                : x,
             ),
           }))
-          audit('project.capability_added', 'project', projectId, `${user.name} added ${item.name} to “${p.name}”${access && access !== 'direct' ? ` (${ACCESS_MODE_LABELS[access].toLowerCase()})` : ''}`, p.tenantId)
+          audit('project.capability_added', 'project', projectId, `${user.name} added ${item.name} ${v} to “${p.name}”${access && access !== 'direct' ? ` (${ACCESS_MODE_LABELS[access].toLowerCase()})` : ''}`, p.tenantId)
+          return ok(projectId)
+        },
+
+        removeProjectCapability: (projectId, itemId) => {
+          const user = me()
+          const p = get().projects.find((x) => x.id === projectId)
+          const item = get().catalog.find((c) => c.id === itemId)
+          if (!user || !p || !item) return fail('Project not found.')
+          if (!canEditProject(user, p)) return fail('Only the project owner, its editors or an admin can remove capabilities.')
+          const { [itemId]: _v, ...versions } = p.capabilityVersions
+          const { [itemId]: _a, ...access } = p.modelAccess ?? {}
+          set((s) => ({ projects: s.projects.map((x) => (x.id === projectId ? { ...x, capabilityIds: x.capabilityIds.filter((c) => c !== itemId), capabilityVersions: versions, modelAccess: access, updatedAt: now(), updatedById: user.id } : x)) }))
+          audit('project.capability_removed', 'project', projectId, `${user.name} removed ${item.name} from “${p.name}”`, p.tenantId)
+          return ok(projectId)
+        },
+
+        setProjectCapabilityVersion: (projectId, itemId, version) => {
+          const user = me()
+          const p = get().projects.find((x) => x.id === projectId)
+          const item = get().catalog.find((c) => c.id === itemId)
+          if (!user || !p || !item || !p.capabilityIds.includes(itemId)) return fail('Capability not found on this project.')
+          if (!canEditProject(user, p)) return fail('Only the project owner, its editors or an admin can change versions.')
+          if (!item.versions.includes(version)) return fail(`${item.name} has no version ${version}.`)
+          const before = p.capabilityVersions[itemId] ?? item.version
+          if (before === version) return ok(projectId)
+          set((s) => ({ projects: s.projects.map((x) => (x.id === projectId ? { ...x, capabilityVersions: { ...x.capabilityVersions, [itemId]: version }, updatedAt: now(), updatedById: user.id } : x)) }))
+          audit('project.capability_version', 'project', projectId, `${user.name} changed ${item.name} from ${before} to ${version} in “${p.name}”`, p.tenantId)
           return ok(projectId)
         },
 
@@ -1118,7 +1351,7 @@ export const useAppStore = create<AppState>()(
             requestId: null,
             status: 'approved',
           }))
-          set((s) => ({ tenants: [...s.tenants, { ...t, id, approvedProviders, enabledItemIds: enabled, status: 'active', isSystem: false, createdAt: now() }] }))
+          set((s) => ({ tenants: [...s.tenants, { ...t, id, approvedProviders, enabledItemIds: enabled, connectedKeys: [], status: 'active', isSystem: false, createdAt: now() }] }))
           audit('tenant.created', 'tenant', id, `${user.name} created the tenant ${t.name} with ${usable.map((x) => providerName(x.providerId)).join(', ')}`, id)
           return id
         },
@@ -1811,7 +2044,9 @@ export const useAppStore = create<AppState>()(
     },
     {
       name: STORAGE_KEY,
-      version: 2,
+      // Bump whenever the shape of stored data changes: older saved data is replaced with fresh sample data.
+      // 3: projects gained type, memberAccess, capabilityVersions and updatedAt; environments gained capabilities.
+      version: 3,
       storage: createJSONStorage(() => localStorage),
       migrate: () => fullSeed() as unknown as AppState,
       partialize: (s) => ({

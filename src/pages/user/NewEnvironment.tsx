@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, FolderKanban, Info, MessageSquareWarning, Save, Scale, Send, ShieldAlert, Sparkles } from 'lucide-react'
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, Info, MessageSquareWarning, Save, Scale, Send, ShieldAlert, Sparkles } from 'lucide-react'
 import type { CatalogCategory, CatalogItem, EnvSpec, InfraProvider, Language, Project, Role, Tenant } from '@/data/types'
 import { useAppStore, useCurrentTenant, useCurrentUser } from '@/store/useAppStore'
 import { useTenantCatalog } from '@/store/selectors'
@@ -10,8 +10,7 @@ import { approvalFor, providersOfferedTo, ensurePlacement, equivalentSpec, india
 import { useCostContext } from '@/store/selectors'
 import { allocationOf, checkQuota, quotaMessage, subQuota, tenantAllocated } from '@/lib/quota'
 import { addsInfrastructure } from '@/lib/spec'
-import { envPath, requestPath, requestsPath } from '@/lib/paths'
-import { EmptyState } from '@/components/shared/EmptyState'
+import { envPath, requestPath } from '@/lib/paths'
 import { formatDate, formatInt } from '@/lib/format'
 import { AUTO_SHUTDOWN_OPTIONS, CATEGORY_LABELS, DATA_CLASSES, LANGUAGES, PURPOSES } from '@/lib/labels'
 import { diffSpecs } from '@/lib/spec'
@@ -49,7 +48,7 @@ const DURATIONS = [2, 4, 6, 8, 12, 16]
 export const DEFAULT_SPEC: EnvSpec = {
   name: '',
   description: '',
-  projectId: '',
+  projectIds: [],
   purpose: 'development',
   durationWeeks: 8,
   providerId: '',
@@ -72,11 +71,10 @@ export const DEFAULT_SPEC: EnvSpec = {
   justification: '',
 }
 
-type Errors = Partial<Record<'name' | 'projectId' | 'regionId' | 'dataClassification' | 'languages' | 'justification' | 'changes', string>>
+type Errors = Partial<Record<'name' | 'regionId' | 'dataClassification' | 'languages' | 'justification' | 'changes', string>>
 
 function validate(spec: EnvSpec, step: number, providers: InfraProvider[]): Errors {
   const e: Errors = {}
-  if (step === STEP.purpose && !spec.projectId) e.projectId = 'Choose the project this environment is for.'
   if (step === STEP.purpose && spec.name.trim().length < 3) e.name = 'Give the environment a name of at least 3 characters.'
   if (step === STEP.provider && (!spec.providerId || !spec.regionId)) e.regionId = 'Choose a provider and a region.'
   if (step === STEP.compute && !spec.instanceTypeId) e.regionId = 'Choose an instance type.'
@@ -115,47 +113,42 @@ function RadioCard({ value, title, description, extra, disabled, reason }: { val
 }
 
 function StepPurpose({ spec, set, errors, projects, editing }: StepProps) {
-  const extra = (spec.extraProjectIds ?? []).filter((id) => id !== spec.projectId)
-  const others = projects.filter((p) => p.id !== spec.projectId)
+  const chosen = spec.projectIds.filter((id) => projects.some((p) => p.id === id))
   return (
     <div className="flex flex-col gap-6">
-      <Field label="Project" htmlFor="env-project" required error={errors.projectId} helper="Project members can see and use this environment.">
-        <Select value={spec.projectId} onValueChange={(v) => set({ projectId: v, extraProjectIds: extra.filter((id) => id !== v) })}>
-          <SelectTrigger id="env-project" className="sm:max-w-md" aria-invalid={!!errors.projectId}>
-            <SelectValue placeholder="Choose a project" />
-          </SelectTrigger>
-          <SelectContent>
-            {projects.map((p) => (
-              <SelectItem key={p.id} value={p.id}>
-                {p.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </Field>
-      {!editing && others.length > 0 && (
-        <fieldset>
-          <legend className="text-sm font-semibold text-text-primary">Also host these projects</legend>
-          <p className="mb-3 mt-0.5 text-caption text-text-secondary">Optional. Each project gets its own service, port and route on this environment. You can add or remove projects later from the environment’s Projects tab.</p>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {others.map((p) => {
-              const on = extra.includes(p.id)
-              return (
-                <label key={p.id} className={cn('card flex cursor-pointer items-start gap-3 p-3 hover:border-border-strong', on && 'border-indigo dark:border-indigo-text')}>
-                  <Checkbox
-                    checked={on}
-                    onCheckedChange={(c) => set({ extraProjectIds: c === true ? [...extra, p.id] : extra.filter((id) => id !== p.id) })}
-                    aria-label={`Also host ${p.name}`}
-                    className="mt-0.5"
-                  />
-                  <span className="min-w-0">
-                    <span className="block text-sm font-semibold text-text-primary">{p.name}</span>
-                    <span className="line-clamp-2 block text-caption text-text-secondary">{p.description}</span>
-                  </span>
-                </label>
-              )
-            })}
-          </div>
+      {!editing && (
+        <fieldset aria-describedby="env-projects-help">
+          <legend className="text-sm font-semibold text-text-primary">
+            Projects <span className="ml-1 font-normal text-text-muted">Optional</span>
+          </legend>
+          <p id="env-projects-help" className="mb-3 mt-0.5 text-caption text-text-secondary">
+            You can add projects later. Each project gets its own service, port and route on this environment, and its members can see and use it.
+          </p>
+          {projects.length === 0 ? (
+            <p className="rounded-control bg-bg-subtle px-3 py-2.5 text-caption text-text-secondary">
+              You aren’t in any project yet. You can still request the environment and add projects to it once it is active.
+            </p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {projects.map((p) => {
+                const on = chosen.includes(p.id)
+                return (
+                  <label key={p.id} className={cn('card flex cursor-pointer items-start gap-3 p-3 hover:border-border-strong', on && 'border-indigo dark:border-indigo-text')}>
+                    <Checkbox
+                      checked={on}
+                      onCheckedChange={(c) => set({ projectIds: c === true ? [...chosen, p.id] : chosen.filter((id) => id !== p.id) })}
+                      aria-label={`Host ${p.name}`}
+                      className="mt-0.5"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold text-text-primary">{p.name}</span>
+                      <span className="line-clamp-2 block text-caption text-text-secondary">{p.description}</span>
+                    </span>
+                  </label>
+                )
+              })}
+            </div>
+          )}
         </fieldset>
       )}
       <div>
@@ -735,7 +728,7 @@ function StepAsr({ spec, set, catalog, selectable, tenant, errors }: StepProps) 
   )
 }
 
-const CAPABILITY_GROUPS: CatalogCategory[] = ['agent-framework', 'vector-db', 'evaluation', 'low-code']
+const CAPABILITY_GROUPS: CatalogCategory[] = ['agent-framework', 'embedding', 'vector-db', 'evaluation', 'low-code']
 
 function StepCapabilities({ spec, set, selectable, tenant }: StepProps) {
   const toggle = (id: string) =>
@@ -908,7 +901,7 @@ export default function NewEnvironment() {
   const mode: 'new' | 'draft' | 'resubmit' | 'edit' = editId ? 'edit' : existing?.status === 'draft' ? 'draft' : existing?.status === 'changes_requested' ? 'resubmit' : 'new'
   const editing = mode === 'edit'
   const projects = useMemo(
-    () => allProjects.filter((p) => p.tenantId === tenant.id && p.status === 'active' && (user.role === 'tenant_admin' || p.memberIds.includes(user.id))),
+    () => allProjects.filter((p) => p.tenantId === tenant.id && p.status === 'active' && (user.role === 'tenant_admin' || p.memberIds.includes(user.id) || p.ownerId === user.id)),
     [allProjects, tenant.id, user],
   )
   const [draftId, setDraftId] = useState<string | undefined>(mode === 'draft' ? existing?.id : undefined)
@@ -919,7 +912,7 @@ export default function NewEnvironment() {
       ? structuredClone(editingEnv.spec)
       : existing && mode !== 'new'
         ? ensurePlacement(structuredClone(existing.spec), infraProviders, tenant)
-        : ensurePlacement({ ...DEFAULT_SPEC, projectId: projects[0]?.id ?? '' }, infraProviders, tenant),
+        : ensurePlacement({ ...DEFAULT_SPEC, projectIds: projects.some((p) => p.id === params.get('project')) ? [params.get('project')!] : [] }, infraProviders, tenant),
   )
   const [step, setStep] = useState(0)
   const [maxStep, setMaxStep] = useState(mode === 'new' ? 0 : STEPS.length - 1)
@@ -946,23 +939,6 @@ export default function NewEnvironment() {
   if (requestId && (!existing || existing.requesterId !== user.id || mode === 'new')) {
     return <NotFound message="This request can’t be edited. Only your own drafts and requests with changes requested can be." />
   }
-  if (!editing && projects.length === 0) {
-    return (
-      <div className="card">
-        <EmptyState
-          icon={FolderKanban}
-          title="You’re not in a project yet"
-          description="Every environment belongs to a project. Ask your Tenant Admin to add you to one, then come back."
-          action={
-            <Button asChild variant="secondary">
-              <Link to={requestsPath(user.role)}>Back to requests</Link>
-            </Button>
-          }
-        />
-      </div>
-    )
-  }
-
   const selectedIds = [...spec.llms.map((l) => l.id), ...spec.asr, ...spec.capabilities]
   const enabledIds = new Set(tenantItems.filter((i) => i.enabled).map((i) => i.id))
   const selectable = catalog.filter((c) => enabledIds.has(c.id) || selectedIds.includes(c.id))

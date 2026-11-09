@@ -50,6 +50,7 @@ export const NAV: Record<Role, NavSection[]> = {
         { to: '/super-admin/users', label: 'Users', icon: Users },
         { to: '/super-admin/requests', label: 'Requests', icon: Inbox, badge: 'escalated' },
         { to: '/super-admin/infrastructure', label: 'Infrastructure', icon: Server },
+        { to: '/super-admin/projects', label: 'Projects', icon: FolderKanban },
       ],
     },
     {
@@ -128,6 +129,7 @@ export const NAV: Record<Role, NavSection[]> = {
       label: 'Workspace',
       items: [
         { to: '/app', label: 'Dashboard', icon: LayoutDashboard, end: true },
+        { to: '/app/projects', label: 'Projects', icon: FolderKanban },
         { to: '/app/requests', label: 'My requests', icon: ClipboardList },
       ],
     },
@@ -177,7 +179,8 @@ const SEGMENT_LABELS: Record<string, string> = {
   edit: 'Edit',
 }
 
-export function segmentLabel(seg: string, role: Role) {
+export function segmentLabel(seg: string, role: Role, prev?: string) {
+  if (seg === 'new' && prev === 'projects') return 'New project'
   if ((seg === 'requests' || seg === 'suggestions') && role === 'user') return 'My requests'
   if (seg === 'environments' && role === 'qa') return 'Environments'
   return SEGMENT_LABELS[seg]

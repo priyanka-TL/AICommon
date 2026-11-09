@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { Boxes, ExternalLink, FolderPlus, Rocket, Settings2, Square, Trash2, Undo2 } from 'lucide-react'
+import { ExternalLink, FolderKanban, FolderPlus, History, Plus, Rocket, Settings2, Square, Trash2 } from 'lucide-react'
 import type { Deployment, Environment } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
 import { useEnvDeployments, useScope } from '@/store/selectors'
 import { canManageEnvProjects, canOperateDeployment, deploymentUrl, envCapacity, isStatic, limitsUsed, missingDependencies, runtimeLabel } from '@/lib/deploy'
+import { capabilityConflicts, missingServices } from '@/lib/capabilities'
 import { formatInt } from '@/lib/format'
 import { Button } from '@/components/ui/button'
 import { DataTable, StopRowClick, type Column } from '@/components/shared/DataTable'
@@ -14,17 +15,21 @@ import { QuotaBar } from '@/components/shared/QuotaBar'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { AddProjectDialog } from './AddProjectDialog'
-import { DeploymentSheet } from './DeploymentSheet'
+import { DeploymentSheet, type DeploymentTab } from './DeploymentSheet'
 
 export function ProjectsTab({ env, openId, onOpen }: { env: Environment; openId: string | null; onOpen: (id: string | null) => void }) {
   const scope = useScope()!
   const deployments = useEnvDeployments(env.id)
   const projects = useAppStore((s) => s.projects)
-  const deploy = useAppStore((s) => s.deploy)
+  const catalog = useAppStore((s) => s.catalog)
   const stop = useAppStore((s) => s.stopDeployment)
-  const rollback = useAppStore((s) => s.rollbackDeployment)
   const remove = useAppStore((s) => s.removeDeployment)
-  const [adding, setAdding] = useState(false)
+  const [adding, setAdding] = useState<null | 'existing' | 'create'>(null)
+  const [sheetTab, setSheetTab] = useState<DeploymentTab | undefined>(undefined)
+  const open = (id: string, tab?: DeploymentTab) => {
+    setSheetTab(tab)
+    onOpen(id)
+  }
   const [removing, setRemoving] = useState<Deployment | null>(null)
 
   const canManage = canManageEnvProjects(scope.user, env)
@@ -56,6 +61,8 @@ export function ProjectsTab({ env, openId, onOpen }: { env: Environment; openId:
         <div className="flex flex-wrap items-center gap-1.5">
           <StatusBadge status={d.status === 'stopped' ? 'stopped' : d.status} />
           {missingDependencies(env, d.config).length > 0 && <Tag>Needs model</Tag>}
+          {project(d) && capabilityConflicts(project(d)!, env, catalog, d.config.capabilityChoice).length > 0 && <Tag>Version conflict</Tag>}
+          {project(d) && missingServices(project(d)!, env, catalog, d.config.serviceAccess).length > 0 && <Tag>Missing service</Tag>}
         </div>
       ),
     },
@@ -94,25 +101,18 @@ export function ProjectsTab({ env, openId, onOpen }: { env: Environment; openId:
           <RowActions
             label={name(d)}
             actions={[
-              { label: 'Configure', icon: Settings2, onSelect: () => onOpen(d.id) },
-              can && env.status === 'active' && d.status !== 'deploying' && {
+              { label: 'Configure', icon: Settings2, onSelect: () => open(d.id, 'config') },
+              can && d.status !== 'deploying' && {
+                // Never deploys directly: opens the review with the checklist and generated steps.
                 label: d.status === 'not_deployed' ? 'Deploy' : 'Redeploy',
                 icon: Rocket,
-                onSelect: () => {
-                  const r = deploy(d.id)
-                  if (!r.ok) return toast.error(r.error)
-                  onOpen(d.id)
-                },
+                onSelect: () => open(d.id, 'review'),
               },
               can && (d.status === 'running' || d.status === 'deploying') && { label: 'Stop', icon: Square, onSelect: () => act(stop(d.id), `${name(d)} stopped.`) },
               can && env.status === 'active' && d.status !== 'deploying' && good.length > (d.status === 'running' ? 1 : 0) && {
-                label: 'Rollback to previous version',
-                icon: Undo2,
-                onSelect: () => {
-                  const r = rollback(d.id)
-                  if (!r.ok) return toast.error(r.error)
-                  onOpen(d.id)
-                },
+                label: 'History and rollback',
+                icon: History,
+                onSelect: () => open(d.id, 'history'),
               },
               canManage && { label: 'Remove from environment', icon: Trash2, destructive: true, separatorBefore: true, onSelect: () => setRemoving(d) },
             ]}
@@ -134,8 +134,8 @@ export function ProjectsTab({ env, openId, onOpen }: { env: Environment; openId:
                 : `${deployments.length} project${deployments.length === 1 ? '' : 's'} · ${deployments.filter((d) => d.status === 'running').length} running. Each has its own service, port and Nginx route.`}
             </p>
           </div>
-          {canAdd && (
-            <Button variant="secondary" onClick={() => setAdding(true)}>
+          {canAdd && deployments.length > 0 && (
+            <Button variant="secondary" onClick={() => setAdding('existing')}>
               <FolderPlus /> Add project
             </Button>
           )}
@@ -156,7 +156,7 @@ export function ProjectsTab({ env, openId, onOpen }: { env: Environment; openId:
         columns={columns}
         rowKey={(d) => d.id}
         rowLabel={(d) => `Open ${name(d)}`}
-        onRowClick={(d) => onOpen(d.id)}
+        onRowClick={(d) => open(d.id)}
         mobileCard={(d) => (
           <div className="flex flex-col gap-2">
             <div className="flex items-start justify-between gap-2">
@@ -177,15 +177,27 @@ export function ProjectsTab({ env, openId, onOpen }: { env: Environment; openId:
         )}
         empty={
           <EmptyState
-            icon={Boxes}
-            title="No projects on this environment"
-            description="Add a project to configure how it is built, started and routed."
+            icon={FolderKanban}
+            title="No projects yet"
+            description={canAdd ? 'Add an existing project or create a new one, then configure how it is built, started and routed.' : 'The environment owner or an admin can add projects to it.'}
+            action={
+              canAdd ? (
+                <div className="flex flex-wrap justify-center gap-2">
+                  <Button onClick={() => setAdding('existing')}>
+                    <FolderPlus /> Add project
+                  </Button>
+                  <Button variant="secondary" onClick={() => setAdding('create')}>
+                    <Plus /> Create project
+                  </Button>
+                </div>
+              ) : undefined
+            }
           />
         }
       />
 
-      {canAdd && <AddProjectDialog env={env} deployments={deployments} open={adding} onOpenChange={setAdding} />}
-      <DeploymentSheet depId={openId} env={env} onOpenChange={(o) => !o && onOpen(null)} />
+      {canAdd && <AddProjectDialog env={env} deployments={deployments} open={!!adding} initialMode={adding ?? 'existing'} onOpenChange={(o) => !o && setAdding(null)} onAdded={(depId) => open(depId, 'config')} />}
+      <DeploymentSheet depId={openId} env={env} initialTab={sheetTab} onOpenChange={(o) => !o && onOpen(null)} />
       <ConfirmDialog
         open={!!removing}
         onOpenChange={(o) => !o && setRemoving(null)}

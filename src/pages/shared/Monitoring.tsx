@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Activity, Download, Info } from 'lucide-react'
 import type { Environment } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
-import { useScope, useScopedEnvironments, useScopedProjects, useVisibleTenants } from '@/store/selectors'
+import { useHostedProjectIds, useScope, useScopedEnvironments, useScopedProjects, useVisibleTenants } from '@/store/selectors'
 import { currentPoint, downloadText, LIVE_INTERVAL_MS, RANGES, seriesFor, type Range } from '@/lib/metrics'
 import { formatCompact, formatInt } from '@/lib/format'
 import { tenantAllocated } from '@/lib/quota'
@@ -66,6 +66,7 @@ export default function Monitoring() {
   const scope = useScope()!
   const environments = useScopedEnvironments()
   const projects = useScopedProjects()
+  const hosted = useHostedProjectIds()
   const tenants = useVisibleTenants()
   const allEnvs = useAppStore((s) => s.environments)
   const catalog = useAppStore((s) => s.catalog)
@@ -81,7 +82,7 @@ export default function Monitoring() {
     return () => clearInterval(t)
   }, [])
 
-  const filtered = environments.filter((e) => MONITORABLE.includes(e.status) && (projectId === 'all' || e.projectId === projectId) && (ownerId === 'all' || e.ownerId === ownerId))
+  const filtered = environments.filter((e) => MONITORABLE.includes(e.status) && (projectId === 'all' || !!hosted.get(e.id)?.includes(projectId)) && (ownerId === 'all' || e.ownerId === ownerId))
   const envId = params.get('env') ?? 'all'
   const selected = filtered.find((e) => e.id === envId)
   const owners = users.filter((u) => environments.some((e) => e.ownerId === u.id))

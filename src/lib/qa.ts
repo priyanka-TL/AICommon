@@ -2,6 +2,7 @@ import { hashString, seededRandom, type SeedState } from '@/data/seed'
 import type {
   CatalogItem,
   DatasetRow,
+  Deployment,
   Environment,
   Language,
   ModelSummary,
@@ -49,10 +50,11 @@ export const currentVersion = (c: TestConfig) => c.versions[c.versions.length - 
 /* ---------- models for a project ---------- */
 
 /** Language models enabled for the tenant and attached to the project, directly or through its environments. */
-export function projectModels(project: Project, tenant: Tenant | undefined, envs: Environment[], catalog: CatalogItem[]): CatalogItem[] {
+export function projectModels(project: Project, tenant: Tenant | undefined, envs: Environment[], catalog: CatalogItem[], deployments: Pick<Deployment, 'envId' | 'projectId'>[]): CatalogItem[] {
   if (!tenant) return []
   const ids = new Set(project.capabilityIds)
-  for (const e of envs) if (e.projectId === project.id && e.status !== 'terminated') for (const l of e.spec.llms) ids.add(l.id)
+  const onEnvs = new Set(deployments.filter((d) => d.projectId === project.id).map((d) => d.envId))
+  for (const e of envs) if (onEnvs.has(e.id) && e.status !== 'terminated') for (const l of e.spec.llms) ids.add(l.id)
   return catalog.filter((c) => c.category === 'llm' && ids.has(c.id) && isEnabledFor(c, tenant)).sort((a, b) => a.name.localeCompare(b.name))
 }
 

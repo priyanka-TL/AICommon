@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowRight, Plus, ServerOff } from 'lucide-react'
+import { ArrowRight, FolderKanban, Plus, ServerOff } from 'lucide-react'
 import type { EnvStatus } from '@/data/types'
 import { useAppStore, useCurrentTenant, useCurrentUser } from '@/store/useAppStore'
-import { useScopedEnvironments, useScopedRequests } from '@/store/selectors'
+import { useHostedProjectIds, useScopedEnvironments, useScopedProjects, useScopedRequests } from '@/store/selectors'
+import { summariseProject } from '@/lib/projects'
 import { useSimulatedLoading } from '@/hooks/useSimulatedLoading'
 import { relativeTime } from '@/lib/format'
 import { STATUS_LABELS } from '@/lib/labels'
@@ -33,6 +34,13 @@ export default function UserDashboard() {
   const requests = useAppStore((s) => s.requests)
   const users = useAppStore((s) => s.users)
   const projects = useAppStore((s) => s.projects)
+  const hosted = useHostedProjectIds()
+  const myProjects = useScopedProjects(false)
+  const deployments = useAppStore((s) => s.deployments)
+  const projectStats = useMemo(() => {
+    const deployed = myProjects.filter((p) => summariseProject(p, deployments, allEnvs).deployed).length
+    return { total: myProjects.length, deployed, notDeployed: myProjects.length - deployed }
+  }, [myProjects, deployments, allEnvs])
   const catalog = useAppStore((s) => s.catalog)
   const notifications = useAppStore((s) => s.notifications)
   const markAll = useAppStore((s) => s.markNotificationsRead)
@@ -60,6 +68,31 @@ export default function UserDashboard() {
           </Button>
         }
       />
+
+      <Link to="/app/projects" className="card card-interactive mb-6 flex flex-col gap-4 p-5 sm:flex-row sm:items-center" data-testid="projects-tile" aria-label={`Projects: ${projectStats.total}, ${projectStats.deployed} deployed, ${projectStats.notDeployed} not deployed`}>
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-indigo-50 text-indigo-text">
+          <FolderKanban className="size-5" aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="eyebrow">Projects</p>
+          <p className="text-caption text-text-secondary">Your projects, their capabilities and where they run.</p>
+        </div>
+        <dl className="flex gap-8">
+          {(
+            [
+              ['Projects', projectStats.total],
+              ['Deployed', projectStats.deployed],
+              ['Not deployed', projectStats.notDeployed],
+            ] as const
+          ).map(([label, n]) => (
+            <div key={label}>
+              <dt className="text-caption text-text-secondary">{label}</dt>
+              <dd className="tabular font-heading text-kpi text-text-primary">{loading ? '–' : n}</dd>
+            </div>
+          ))}
+        </dl>
+        <ArrowRight className="hidden size-5 shrink-0 text-text-muted sm:block" aria-hidden />
+      </Link>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <section className="card p-6 lg:col-span-2">
@@ -205,7 +238,7 @@ export default function UserDashboard() {
                         role="user"
                         catalog={catalog}
                         owner={users.find((u) => u.id === env.ownerId)}
-                        project={projects.find((p) => p.id === env.projectId)}
+                        projects={projects.filter((p) => hosted.get(env.id)?.includes(p.id))}
                         hasPendingChange={requests.some((r) => r.envId === env.id && r.kind === 'change' && ['submitted', 'under_review', 'resubmitted', 'escalated'].includes(r.status))}
                       />
                     ))}

@@ -34,6 +34,7 @@ export default function TenantDetail() {
   const allUsers = useAppStore((s) => s.users)
   const allEnvs = useAppStore((s) => s.environments)
   const allProjects = useAppStore((s) => s.projects)
+  const allDeployments = useAppStore((s) => s.deployments)
   const allUsage = useAppStore((s) => s.usage)
   const allAudit = useAppStore((s) => s.audit)
   const updateUser = useAppStore((s) => s.updateUser)
@@ -91,7 +92,7 @@ export default function TenantDetail() {
       cell: (e) => (
         <div className="min-w-0">
           <p className="truncate font-semibold text-text-primary">{e.spec.name}</p>
-          <p className="truncate text-caption text-text-muted">{projects.find((p) => p.id === e.projectId)?.name}</p>
+          <p className="truncate text-caption text-text-muted">{[...new Set(allDeployments.filter((d) => d.envId === e.id).map((d) => d.projectId))].map((pid) => projects.find((p) => p.id === pid)?.name).filter(Boolean).join(', ') || 'No projects yet'}</p>
         </div>
       ),
     },

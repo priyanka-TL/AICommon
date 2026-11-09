@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { CheckCircle2, Circle, Download, Loader2, MinusCircle, Play, Plus, Rocket, Save, Square, Trash2, Undo2, Upload, XCircle } from 'lucide-react'
-import type { Deployment, DeploymentConfig, DeployStepStatus, Environment, Runtime } from '@/data/types'
+import { CheckCircle2, ChevronRight, Circle, KeyRound, Loader2, MinusCircle, Play, Plus, Rocket, Save, Square, Trash2, Undo2, Upload, Wrench, XCircle } from 'lucide-react'
+import type { Deployment, DeploymentConfig, DeployStepStatus, Environment, Project, Runtime } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
 import { useScope } from '@/store/selectors'
 import {
-  allVars,
   canOperateDeployment,
   deploymentUrl,
-  deployScript,
   envCapacity,
   guideSteps,
+  isKeyRef,
   isStatic,
+  keyRefs,
+  maskValue,
   limitsUsed,
   missingDependencies,
   platformVars,
@@ -21,8 +22,11 @@ import {
   STEP_LABELS,
   switchRuntime,
   validateConfig,
+  type CheckKey,
   type GenContext,
 } from '@/lib/deploy'
+import { effectiveCapabilities, missingServices, SERVICE_ACCESS_LABELS, SOURCE_LABELS } from '@/lib/capabilities'
+import { ReviewDeployment, type ReviewMode } from './ReviewDeployment'
 import { formatTime, relativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -36,18 +40,21 @@ import { StatusBadge, Tag } from '@/components/shared/StatusBadge'
 import { CodeBlock } from '@/components/shared/CodeBlock'
 import { CopyButton } from '@/components/shared/CopyButton'
 
-type Tab = 'config' | 'guide' | 'runs'
+type Tab = 'config' | 'review' | 'runs' | 'history'
 
-export function DeploymentSheet({ depId, env, onOpenChange }: { depId: string | null; env: Environment; onOpenChange: (open: boolean) => void }) {
+/** `initialTab`: open straight on the review (Deploy pressed elsewhere) or another tab. */
+export function DeploymentSheet({ depId, env, onOpenChange, initialTab }: { depId: string | null; env: Environment; onOpenChange: (open: boolean) => void; initialTab?: Tab }) {
   const dep = useAppStore((s) => s.deployments.find((d) => d.id === depId))
   return (
     <Sheet open={!!depId && !!dep} onOpenChange={onOpenChange}>
-      <SheetContent className="sm:w-[min(820px,100vw)]">{dep && <SheetBody key={dep.id} dep={dep} env={env} />}</SheetContent>
+      <SheetContent className="sm:w-[min(860px,100vw)]">{dep && <SheetBody key={`${dep.id}-${initialTab ?? ''}`} dep={dep} env={env} initialTab={initialTab} />}</SheetContent>
     </Sheet>
   )
 }
 
-function SheetBody({ dep, env }: { dep: Deployment; env: Environment }) {
+export type DeploymentTab = Tab
+
+function SheetBody({ dep, env, initialTab }: { dep: Deployment; env: Environment; initialTab?: Tab }) {
   const scope = useScope()!
   const catalog = useAppStore((s) => s.catalog)
   const projects = useAppStore((s) => s.projects)
@@ -57,6 +64,7 @@ function SheetBody({ dep, env }: { dep: Deployment; env: Environment }) {
   const deploy = useAppStore((s) => s.deploy)
   const stop = useAppStore((s) => s.stopDeployment)
   const rollback = useAppStore((s) => s.rollbackDeployment)
+  const setChoices = useAppStore((s) => s.setDeploymentChoices)
   const attachDependencies = useAppStore((s) => s.attachDependencies)
 
   const project = projects.find((p) => p.id === dep.projectId)
@@ -65,7 +73,8 @@ function SheetBody({ dep, env }: { dep: Deployment; env: Environment }) {
   const canOperate = canOperateDeployment(scope.user, env, project)
 
   const [draft, setDraft] = useState<DeploymentConfig>(dep.config)
-  const [tab, setTab] = useState<Tab>(dep.status === 'failed' || dep.status === 'deploying' ? 'runs' : 'config')
+  const [tab, setTab] = useState<Tab>(initialTab ?? (dep.status === 'failed' || dep.status === 'deploying' ? 'runs' : 'config'))
+  const [reviewMode, setReviewMode] = useState<ReviewMode>({ kind: 'deploy' })
   // When the stored config changes (save, rollback), start the form from it again.
   useEffect(() => setDraft(dep.config), [dep.config])
 
@@ -74,13 +83,24 @@ function SheetBody({ dep, env }: { dep: Deployment; env: Environment }) {
   const valid = Object.keys(errors).length === 0
   const set = (patch: Partial<DeploymentConfig>) => setDraft((d) => ({ ...d, ...patch }))
 
-  const ctx: GenContext = { dep: { ...dep, config: draft }, env, projectName: project?.name ?? dep.serviceName, catalog }
+  const ctx: GenContext = { dep: { ...dep, config: draft }, env, projectName: project?.name ?? dep.serviceName, catalog, project }
   const missing = missingDependencies(env, dep.config)
   const itemName = (id: string) => catalog.find((c) => c.id === id)?.name ?? id
   const goodVersions = dep.history.filter((h) => h.status === 'running' || h.status === 'superseded')
-  const canRollback = goodVersions.length > (dep.status === 'running' ? 1 : 0)
+  const currentVersion = dep.status === 'running' ? goodVersions[goodVersions.length - 1] : undefined
+  const previous = [...goodVersions].reverse().find((h) => h !== currentVersion)
   const envActive = env.status === 'active'
-  const deployBlocked = !canOperate ? 'You can’t deploy this project.' : !envActive ? 'Start the environment to deploy.' : missing.length ? `Attach ${missing.map(itemName).join(', ')} first.` : !valid ? 'Fix the configuration first.' : null
+  const reviewBlocked = !canOperate ? 'You can’t deploy this project.' : !valid ? 'Fix the configuration first.' : null
+  const reviewConfig =
+    reviewMode.kind === 'rollback'
+      ? { ...(dep.history.find((h) => h.version === reviewMode.version)?.config ?? dep.config), capabilityChoice: draft.capabilityChoice, serviceAccess: draft.serviceAccess }
+      : draft
+
+  /** Every deploy, redeploy and rollback starts here: the review screen, never a run. */
+  const openReview = (mode: ReviewMode = { kind: 'deploy' }) => {
+    setReviewMode(mode)
+    setTab('review')
+  }
 
   const save = () => {
     const res = updateConfig(dep.id, draft)
@@ -91,10 +111,23 @@ function SheetBody({ dep, env }: { dep: Deployment; env: Environment }) {
     toast.success('Deployment settings saved.')
     return true
   }
-  const runDeploy = () => {
-    if (dirty && !save()) return
-    const res = deploy(dep.id)
-    if (!res.ok) return toast.error(res.error)
+  const confirm = (overrides: CheckKey[]) => {
+    if (reviewMode.kind === 'rollback') {
+      const choicesChanged = JSON.stringify([draft.capabilityChoice, draft.serviceAccess]) !== JSON.stringify([dep.config.capabilityChoice, dep.config.serviceAccess])
+      if (choicesChanged) {
+        const r = setChoices(dep.id, { capabilityChoice: draft.capabilityChoice, serviceAccess: draft.serviceAccess })
+        if (!r.ok) return toast.error(r.error)
+      }
+      const res = rollback(dep.id, { version: reviewMode.version, overrides })
+      if (!res.ok) return toast.error(res.error)
+      toast.success(`Rolling back to v${reviewMode.version}.`)
+    } else {
+      if (dirty && !save()) return
+      const res = deploy(dep.id, { overrides })
+      if (!res.ok) return toast.error(res.error)
+      toast.success(`Deploying ${project?.name ?? dep.serviceName}.`)
+    }
+    setReviewMode({ kind: 'deploy' })
     setTab('runs')
   }
   const attach = (ids: string[]) => {
@@ -125,8 +158,8 @@ function SheetBody({ dep, env }: { dep: Deployment; env: Environment }) {
         </div>
         {canOperate && (
           <div className="mt-3 flex flex-wrap gap-2">
-            {deployBlocked ? (
-              <Tooltip content={deployBlocked}>
+            {reviewBlocked ? (
+              <Tooltip content={reviewBlocked}>
                 <span>
                   <Button disabled>
                     <Rocket /> {primaryLabel}
@@ -134,8 +167,8 @@ function SheetBody({ dep, env }: { dep: Deployment; env: Environment }) {
                 </span>
               </Tooltip>
             ) : (
-              <Button onClick={runDeploy} disabled={dep.status === 'deploying'}>
-                {dep.status === 'deploying' ? <Loader2 className="animate-spin" /> : <Rocket />} {dep.status === 'deploying' ? 'Deploying…' : dirty ? `Save and ${primaryLabel.toLowerCase()}` : primaryLabel}
+              <Button onClick={() => openReview()} disabled={dep.status === 'deploying' || (tab === 'review' && reviewMode.kind === 'deploy')}>
+                {dep.status === 'deploying' ? <Loader2 className="animate-spin" /> : <Rocket />} {dep.status === 'deploying' ? 'Deploying…' : primaryLabel}
               </Button>
             )}
             {(dep.status === 'running' || dep.status === 'deploying') && (
@@ -150,18 +183,9 @@ function SheetBody({ dep, env }: { dep: Deployment; env: Environment }) {
                 <Square /> Stop
               </Button>
             )}
-            {canRollback && envActive && dep.status !== 'deploying' && (
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  const r = rollback(dep.id)
-                  if (r.ok) {
-                    toast.success('Rolling back to the previous version.')
-                    setTab('runs')
-                  } else toast.error(r.error)
-                }}
-              >
-                <Undo2 /> Rollback
+            {previous && envActive && dep.status !== 'deploying' && (
+              <Button variant="secondary" onClick={() => openReview({ kind: 'rollback', version: previous.version })}>
+                <Undo2 /> Rollback to v{previous.version}
               </Button>
             )}
           </div>
@@ -187,7 +211,16 @@ function SheetBody({ dep, env }: { dep: Deployment; env: Environment }) {
             <div className="min-w-0 flex-1">
               <p className="font-semibold">Failed at step: {dep.lastRun.failedStep ? STEP_LABELS[dep.lastRun.failedStep] : 'unknown'}</p>
               <p className="mt-0.5">{dep.lastRun.error}</p>
-              {canOperate && <p className="mt-1 text-caption">Fix the configuration if needed, then use Redeploy above.</p>}
+              {canOperate && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button variant="secondary" size="compact" onClick={() => setTab('config')}>
+                    <Wrench /> Fix configuration
+                  </Button>
+                  <Button variant="secondary" size="compact" onClick={() => openReview()} disabled={!!reviewBlocked}>
+                    <Rocket /> Redeploy
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -195,8 +228,9 @@ function SheetBody({ dep, env }: { dep: Deployment; env: Environment }) {
         <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
           <TabsList>
             <TabsTrigger value="config">Configuration</TabsTrigger>
-            <TabsTrigger value="guide">Guide</TabsTrigger>
+            <TabsTrigger value="review">Review &amp; steps</TabsTrigger>
             <TabsTrigger value="runs">Runs</TabsTrigger>
+            <TabsTrigger value="history">History</TabsTrigger>
           </TabsList>
 
           <TabsContent value="config" className="pt-5">
@@ -209,6 +243,7 @@ function SheetBody({ dep, env }: { dep: Deployment; env: Environment }) {
               siblings={siblings}
               ctx={ctx}
               enabledItems={tenant?.enabledItemIds ?? []}
+              connectedKeys={tenant?.connectedKeys ?? []}
               onAttach={(id) => attach([id])}
             />
             {canOperate && (
@@ -220,16 +255,42 @@ function SheetBody({ dep, env }: { dep: Deployment; env: Environment }) {
                 <Button variant="secondary" disabled={!dirty || !valid || dep.status === 'deploying'} onClick={save}>
                   <Save /> Save configuration
                 </Button>
+                <Button disabled={!!reviewBlocked || dep.status === 'deploying'} onClick={() => openReview()}>
+                  Review deployment <ChevronRight />
+                </Button>
               </div>
             )}
           </TabsContent>
 
-          <TabsContent value="guide" className="pt-5">
-            <Guide ctx={ctx} dirty={dirty} />
+          <TabsContent value="review" className="pt-5">
+            <ReviewDeployment
+              dep={dep}
+              env={env}
+              project={project}
+              config={reviewConfig}
+              mode={reviewMode}
+              dirty={dirty && reviewMode.kind === 'deploy'}
+              canOperate={canOperate && !reviewBlocked}
+              onChoices={(patch) =>
+                set({
+                  capabilityChoice: { ...draft.capabilityChoice, ...(patch.capabilityChoice ?? {}) },
+                  serviceAccess: { ...draft.serviceAccess, ...(patch.serviceAccess ?? {}) },
+                })
+              }
+              onEdit={() => {
+                setReviewMode({ kind: 'deploy' })
+                setTab('config')
+              }}
+              onConfirm={confirm}
+            />
           </TabsContent>
 
           <TabsContent value="runs" className="pt-5">
-            <Runs dep={dep} />
+            <Runs dep={dep} env={env} project={project} />
+          </TabsContent>
+
+          <TabsContent value="history" className="pt-5">
+            <History dep={dep} canRollback={canOperate && envActive && dep.status !== 'deploying'} onRollback={(version) => openReview({ kind: 'rollback', version })} />
           </TabsContent>
         </Tabs>
       </div>
@@ -248,6 +309,7 @@ function ConfigForm({
   siblings,
   ctx,
   enabledItems,
+  connectedKeys,
   onAttach,
 }: {
   draft: DeploymentConfig
@@ -258,6 +320,7 @@ function ConfigForm({
   siblings: Deployment[]
   ctx: GenContext
   enabledItems: string[]
+  connectedKeys: string[]
   onAttach: (id: string) => void
 }) {
   const catalog = useAppStore((s) => s.catalog)
@@ -268,6 +331,9 @@ function ConfigForm({
   const missing = new Set(missingDependencies(env, draft))
   const addable = catalog.filter((c) => enabledItems.includes(c.id) && !draft.dependencies.includes(c.id) && c.status !== 'deprecated')
   const statik = isStatic(draft)
+  const caps = ctx.project ? effectiveCapabilities(ctx.project, env, catalog, draft.capabilityChoice) : []
+  const missingSvc = new Set(ctx.project ? missingServices(ctx.project, env, catalog, draft.serviceAccess).map((m) => m.id) : [])
+  const usedKeys = new Set(draft.env.flatMap((v) => keyRefs(v.value)))
 
   return (
     <fieldset disabled={readOnly} className="flex flex-col gap-6">
@@ -371,6 +437,17 @@ function ConfigForm({
               <Input id="dep-start" value={draft.startCmd} onChange={(e) => set({ startCmd: e.target.value })} aria-invalid={!!errors.startCmd} className="font-mono text-caption" />
             </Field>
           )}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Pre-deploy command" htmlFor="dep-pre" helper="Optional. Runs after the build, before the service starts (for example migrations).">
+              <Input id="dep-pre" value={draft.preDeployCmd} onChange={(e) => set({ preDeployCmd: e.target.value })} placeholder="python -m app.migrate" className="font-mono text-caption" />
+            </Field>
+            <Field label="Post-deploy command" htmlFor="dep-post" helper="Optional. Runs after the health check passes.">
+              <Input id="dep-post" value={draft.postDeployCmd} onChange={(e) => set({ postDeployCmd: e.target.value })} placeholder="curl -X POST http://127.0.0.1:3000/warm" className="font-mono text-caption" />
+            </Field>
+          </div>
+          {caps.length > 0 && (draft.runtime === 'node' || draft.runtime === 'python') && (
+            <p className="text-caption text-text-secondary">Libraries from this project’s capabilities are added to the install step automatically. See them in Review &amp; steps.</p>
+          )}
         </div>
       </Section>
 
@@ -420,33 +497,61 @@ function ConfigForm({
                 aria-label={`Variable ${i + 1} name`}
                 className="w-2/5 font-mono text-caption"
               />
-              <Input
-                value={v.value}
-                onChange={(e) => set({ env: draft.env.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)) })}
-                placeholder="value"
-                aria-label={`Variable ${i + 1} value`}
-                className="flex-1 font-mono text-caption"
-              />
+              {isKeyRef(v.value) ? (
+                <div className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-control border border-border-strong bg-bg-subtle px-3" aria-label={`Variable ${i + 1} value: key ${keyRefs(v.value)[0]}, masked`}>
+                  <KeyRound className="size-4 shrink-0 text-text-muted" aria-hidden />
+                  <span className="truncate font-mono text-caption text-text-primary">{keyRefs(v.value)[0]}</span>
+                  <span className="font-mono text-caption text-text-muted">••••••••</span>
+                  {connectedKeys.includes(keyRefs(v.value)[0]!) ? <Tag>Connected</Tag> : <StatusBadge status="suspended" label="Not connected" />}
+                </div>
+              ) : (
+                <Input
+                  value={v.value}
+                  onChange={(e) => set({ env: draft.env.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)) })}
+                  placeholder="value, or ${KEY_NAME} to use an organisation key"
+                  aria-label={`Variable ${i + 1} value`}
+                  className="flex-1 font-mono text-caption"
+                />
+              )}
               <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${v.key || 'variable'}`} onClick={() => set({ env: draft.env.filter((_, j) => j !== i) })}>
                 <Trash2 />
               </Button>
             </div>
           ))}
           {errors.env && <p className="text-caption text-red-text">{errors.env}</p>}
-          <Button type="button" variant="ghost" size="sm" className="w-fit" onClick={() => set({ env: [...draft.env, { key: '', value: '' }] })}>
-            <Plus /> Add variable
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="ghost" size="sm" className="w-fit" onClick={() => set({ env: [...draft.env, { key: '', value: '' }] })}>
+              <Plus /> Add variable
+            </Button>
+            {!readOnly && connectedKeys.some((k) => !usedKeys.has(k)) && (
+              <Select value="" onValueChange={(k) => set({ env: [...draft.env, { key: k, value: `\${${k}}` }] })}>
+                <SelectTrigger className="h-8 w-auto gap-2 text-caption" aria-label="Use an organisation key">
+                  <KeyRound className="size-3.5" aria-hidden />
+                  <SelectValue placeholder="Use a key" />
+                </SelectTrigger>
+                <SelectContent>
+                  {connectedKeys
+                    .filter((k) => !usedKeys.has(k))
+                    .map((k) => (
+                      <SelectItem key={k} value={k}>
+                        {k}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+          <p className="text-caption text-text-muted">Keys are referenced by name and never shown. They are written to .env on the server when you deploy.</p>
           {platformVars(ctx).length > 0 && (
             <div className="rounded-control bg-bg-subtle px-3 py-2">
-              <p className="mb-1 text-caption font-semibold text-text-secondary">Added by the platform</p>
+              <p className="mb-1 text-caption font-semibold text-text-secondary">Added automatically (platform and capability connections)</p>
               <ul className="font-mono text-[12px] leading-5 text-text-primary">
                 {platformVars(ctx).map((v) => (
                   <li key={v.key} className="truncate">
-                    {v.key}={v.value}
+                    {v.key}={maskValue(v.value)}
                   </li>
                 ))}
               </ul>
-              <p className="mt-1 text-caption text-text-muted">Keep AIC_API_KEY and other secrets in /srv/{ctx.dep.serviceName}/.env on the server.</p>
             </div>
           )}
         </div>
@@ -475,6 +580,28 @@ function ConfigForm({
         <p className={cn('text-caption', errors.limits ? 'text-red-text' : 'text-text-secondary')}>
           {errors.limits ?? `Up to ${left.vcpu} vCPU and ${left.ramGb} GB RAM are free for this project (environment total ${cap.vcpu} vCPU, ${cap.ramGb} GB).`}
         </p>
+      </Section>
+
+      <Section title="Capabilities">
+        <p className="-mt-1 text-caption text-text-secondary">What this deployment uses: the project’s own capabilities plus the shared ones on this environment.</p>
+        {caps.length === 0 ? (
+          <p className="text-sm text-text-secondary">None. Add capabilities to the project or to the environment.</p>
+        ) : (
+          <ul className="flex flex-col divide-y divide-border rounded-control border border-border">
+            {caps.map((c) => (
+              <li key={c.item.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+                <span className="min-w-0 flex-1 truncate text-sm text-text-primary">
+                  {c.item.name} <span className="text-text-secondary">{c.version}</span>
+                </span>
+                <Tag>{SOURCE_LABELS[c.source]}</Tag>
+                {c.conflict && <StatusBadge status="changes_requested" label={`Conflict: ${c.conflict.project} vs ${c.conflict.environment}`} />}
+                {missingSvc.has(c.item.id) && <StatusBadge status="suspended" label="Missing on this environment" />}
+                {draft.serviceAccess[c.item.id] && draft.serviceAccess[c.item.id] !== 'environment' && <Tag>{SERVICE_ACCESS_LABELS[draft.serviceAccess[c.item.id]!]}</Tag>}
+              </li>
+            ))}
+          </ul>
+        )}
+        {caps.some((c) => c.conflict) || missingSvc.size ? <p className="text-caption text-text-secondary">Resolve conflicts and missing services on the Review &amp; steps tab before deploying.</p> : null}
       </Section>
 
       <Section title="Model dependencies">
@@ -533,46 +660,6 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-/* ---------- guide ---------- */
-
-function Guide({ ctx, dirty }: { ctx: GenContext; dirty: boolean }) {
-  const steps = guideSteps(ctx)
-  const download = () => {
-    const blob = new Blob([deployScript(ctx)], { type: 'text/x-shellscript' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'deploy.sh'
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
-    toast.success('deploy.sh downloaded.')
-  }
-  return (
-    <div className="flex flex-col gap-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-caption text-text-secondary">
-          {dirty ? 'Showing your unsaved changes. ' : ''}Every command below follows the configuration and updates as you change it. {allVars(ctx).length} variables are set.
-        </p>
-        <Button variant="secondary" size="compact" onClick={download}>
-          <Download /> Download as script
-        </Button>
-      </div>
-      <ol className="flex flex-col gap-6">
-        {steps.map((s) => (
-          <li key={s.key} className="flex gap-3">
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-indigo-50 text-caption font-semibold text-indigo-text">{s.key}</span>
-            <div className="min-w-0 flex-1">
-              <p className="font-semibold text-text-primary">{s.title}</p>
-              <p className="mb-2 text-caption text-text-secondary">{s.body}</p>
-              <CodeBlock code={s.code} label={s.codeLabel} />
-            </div>
-          </li>
-        ))}
-      </ol>
-    </div>
-  )
-}
-
 /* ---------- runs and history ---------- */
 
 const STEP_ICON: Record<DeployStepStatus, { icon: typeof Circle; className: string; label: string }> = {
@@ -583,18 +670,22 @@ const STEP_ICON: Record<DeployStepStatus, { icon: typeof Circle; className: stri
   skipped: { icon: MinusCircle, className: 'text-text-muted', label: 'Skipped' },
 }
 
-function Runs({ dep }: { dep: Deployment }) {
+function Runs({ dep, env, project }: { dep: Deployment; env: Environment; project: Project | undefined }) {
   const users = useAppStore((s) => s.users)
+  const catalog = useAppStore((s) => s.catalog)
   const run = dep.lastRun
   const box = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (box.current) box.current.scrollTop = box.current.scrollHeight
   }, [run?.log.length])
+  const runConfig = (run && dep.history.find((h) => h.version === run.version)?.config) ?? dep.config
+  const steps = guideSteps({ dep: { ...dep, config: runConfig }, env, projectName: project?.name ?? dep.serviceName, catalog, project })
+  const statusOf = (key: string) => run?.steps.find((s) => s.key === key)?.status ?? 'pending'
 
   return (
     <div className="flex flex-col gap-6">
       {!run ? (
-        <p className="text-sm text-text-secondary">Not deployed yet. Check the configuration, then deploy.</p>
+        <p className="text-sm text-text-secondary">Not deployed yet. Review the steps, then confirm to deploy.</p>
       ) : (
         <>
           <div>
@@ -602,12 +693,14 @@ function Runs({ dep }: { dep: Deployment }) {
               Latest run · v{run.version} · {relativeTime(run.startedAt)} by {users.find((u) => u.id === run.actorId)?.name ?? 'System'}
             </p>
             <ol className="grid gap-1.5 sm:grid-cols-2">
-              {run.steps.map((s) => {
+              {run.steps.map((s, i) => {
                 const st = STEP_ICON[s.status]
                 return (
-                  <li key={s.key} className={cn('flex items-center gap-2 rounded-control px-2.5 py-1.5 text-caption', s.status === 'failed' ? 'bg-status-rejected-bg text-status-rejected-fg' : 'bg-bg-subtle text-text-primary')}>
+                  <li key={s.key} data-step={s.key} data-status={s.status} className={cn('flex items-center gap-2 rounded-control px-2.5 py-1.5 text-caption', s.status === 'failed' ? 'bg-status-rejected-bg text-status-rejected-fg' : 'bg-bg-subtle text-text-primary')}>
                     <st.icon className={cn('size-4 shrink-0', st.className)} aria-label={st.label} />
-                    <span className="truncate">{STEP_LABELS[s.key]}</span>
+                    <span className="truncate">
+                      {i + 1}. {STEP_LABELS[s.key]}
+                    </span>
                   </li>
                 )
               })}
@@ -628,44 +721,81 @@ function Runs({ dep }: { dep: Deployment }) {
             ))}
             {dep.status === 'deploying' && <div className="mt-1 text-text-muted">…</div>}
           </div>
+          <div>
+            <h3 className="mb-1 font-heading text-h3 text-text-primary">Steps for this deployment</h3>
+            <p className="mb-3 text-caption text-text-secondary">The exact steps v{run.version} ran, kept here for reference.</p>
+            <ol className="flex flex-col gap-2">
+              {steps.map((s) => {
+                const st = STEP_ICON[statusOf(s.step)]
+                return (
+                  <li key={s.key}>
+                    <details className="group rounded-control border border-border">
+                      <summary className="flex cursor-pointer list-none items-center gap-3 px-3 py-2 [&::-webkit-details-marker]:hidden">
+                        <st.icon className={cn('size-4 shrink-0', st.className)} aria-label={st.label} />
+                        <span className="min-w-0 flex-1 truncate text-sm text-text-primary">
+                          {s.key}. {s.title}
+                        </span>
+                        <ChevronRight className="size-4 shrink-0 text-text-muted transition-transform group-open:rotate-90" aria-hidden />
+                      </summary>
+                      <div className="px-3 pb-3">
+                        <CodeBlock code={s.code} label={s.codeLabel} />
+                      </div>
+                    </details>
+                  </li>
+                )
+              })}
+            </ol>
+          </div>
         </>
       )}
-
-      <div>
-        <h3 className="mb-3 font-heading text-h3 text-text-primary">Version history</h3>
-        {dep.history.length === 0 ? (
-          <p className="text-sm text-text-secondary">No versions yet.</p>
-        ) : (
-          <ul className="divide-y divide-border rounded-control border border-border">
-            {[...dep.history].reverse().map((h) => (
-              <li key={h.version} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5 text-sm">
-                <span className="w-10 font-semibold text-text-primary">v{h.version}</span>
-                <code className="font-mono text-caption text-text-secondary">{h.commit}</code>
-                <span className="min-w-0 flex-1 truncate text-caption text-text-secondary">
-                  {runtimeLabel(h.config.runtime, h.config.runtimeVersion)}
-                  {h.config.startCmd ? ` · ${h.config.startCmd}` : ''}
-                  {h.note ? ` · ${h.note}` : ''}
-                </span>
-                <span className="text-caption text-text-muted">
-                  {users.find((u) => u.id === h.byId)?.name ?? 'System'} · {relativeTime(h.at)}
-                </span>
-                {h.status === 'running' ? (
-                  <StatusBadge status="running" label="Current" />
-                ) : h.status === 'failed' ? (
-                  <StatusBadge status="failed" />
-                ) : h.status === 'rolled_back' ? (
-                  <StatusBadge status="stopped" label="Rolled back" />
-                ) : (
-                  <Tag>Previous</Tag>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
       <p className="flex items-center gap-1.5 text-caption text-text-muted">
         <Play className="size-3.5" aria-hidden /> Runs are simulated: no server is contacted.
       </p>
+    </div>
+  )
+}
+
+function History({ dep, canRollback, onRollback }: { dep: Deployment; canRollback: boolean; onRollback: (version: number) => void }) {
+  const users = useAppStore((s) => s.users)
+  const current = dep.status === 'running' ? [...dep.history].reverse().find((h) => h.status === 'running') : undefined
+  return (
+    <div>
+      <h3 className="mb-1 font-heading text-h3 text-text-primary">Deployment history</h3>
+      <p className="mb-3 text-caption text-text-secondary">Who deployed, when, which configuration version and the result. Rolling back opens the review first.</p>
+      {dep.history.length === 0 ? (
+        <p className="text-sm text-text-secondary">No versions yet.</p>
+      ) : (
+        <ul className="divide-y divide-border rounded-control border border-border">
+          {[...dep.history].reverse().map((h) => (
+            <li key={h.version} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5 text-sm">
+              <span className="w-10 font-semibold text-text-primary">v{h.version}</span>
+              <code className="font-mono text-caption text-text-secondary">{h.commit}</code>
+              <span className="min-w-0 flex-1 truncate text-caption text-text-secondary">
+                {runtimeLabel(h.config.runtime, h.config.runtimeVersion)}
+                {h.config.startCmd ? ` · ${h.config.startCmd}` : ''}
+                {h.note ? ` · ${h.note}` : ''}
+              </span>
+              <span className="text-caption text-text-muted">
+                {users.find((u) => u.id === h.byId)?.name ?? 'System'} · {relativeTime(h.at)}
+              </span>
+              {h.status === 'running' ? (
+                <StatusBadge status="running" label="Current" />
+              ) : h.status === 'failed' ? (
+                <StatusBadge status="failed" />
+              ) : h.status === 'rolled_back' ? (
+                <StatusBadge status="stopped" label="Rolled back" />
+              ) : (
+                <Tag>Previous</Tag>
+              )}
+              {canRollback && h !== current && h.status !== 'failed' && (
+                <Button variant="ghost" size="sm" onClick={() => onRollback(h.version)}>
+                  <Undo2 /> Rollback to this version
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }

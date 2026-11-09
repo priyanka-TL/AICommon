@@ -1,12 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowUpCircle, FolderPlus } from 'lucide-react'
+import { AlertTriangle, ArrowUpCircle, FolderPlus, Plus } from 'lucide-react'
 import type { Deployment, Environment } from '@/data/types'
-import { useAppStore } from '@/store/useAppStore'
+import { useAppStore, type ProjectInput } from '@/store/useAppStore'
 import { useScope } from '@/store/selectors'
 import { attachedItemIds, capacityShortfall, defaultDependencies, envCapacity, limitsUsed, shortfallText } from '@/lib/deploy'
 import { requestPath } from '@/lib/paths'
+import { canViewProject } from '@/lib/roles'
+import { cn } from '@/lib/utils'
+import { emptyProjectInput, ProjectForm } from '@/components/projects/ProjectForm'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/controls'
 import { Input } from '@/components/ui/input'
@@ -20,9 +23,39 @@ interface Pick {
   attach: boolean
 }
 
-export function AddProjectDialog({ env, deployments, open, onOpenChange }: { env: Environment; deployments: Deployment[]; open: boolean; onOpenChange: (o: boolean) => void }) {
+export function AddProjectDialog({
+  env,
+  deployments,
+  open,
+  onOpenChange,
+  initialMode = 'existing',
+  onAdded,
+}: {
+  env: Environment
+  deployments: Deployment[]
+  open: boolean
+  onOpenChange: (o: boolean) => void
+  initialMode?: 'existing' | 'create'
+  /** Called with the new deployment's id when one project was added. */
+  onAdded?: (depId: string) => void
+}) {
   const scope = useScope()!
   const projects = useAppStore((s) => s.projects)
+  const users = useAppStore((s) => s.users)
+  const createProject = useAppStore((s) => s.createProject)
+  const [mode, setMode] = useState<'existing' | 'create'>(initialMode)
+  const [draft, setDraft] = useState<ProjectInput>(emptyProjectInput)
+  const [limits, setLimits] = useState({ vcpu: 1, ramGb: 2 })
+  const [formError, setFormError] = useState<string | null>(null)
+  useEffect(() => {
+    if (open) {
+      setMode(initialMode)
+      setDraft(emptyProjectInput())
+      setLimits({ vcpu: 1, ramGb: 2 })
+      setFormError(null)
+    }
+  }, [open, initialMode])
+  const canCreate = scope.role === 'user' || scope.role === 'tenant_admin'
   const catalog = useAppStore((s) => s.catalog)
   const addProjectsToEnv = useAppStore((s) => s.addProjectsToEnv)
   const attachDependencies = useAppStore((s) => s.attachDependencies)
@@ -30,8 +63,8 @@ export function AddProjectDialog({ env, deployments, open, onOpenChange }: { env
   const [picked, setPicked] = useState<Record<string, Pick>>({})
 
   const available = useMemo(
-    () => projects.filter((p) => p.tenantId === env.tenantId && p.status === 'active' && !deployments.some((d) => d.projectId === p.id)),
-    [projects, env.tenantId, deployments],
+    () => projects.filter((p) => p.tenantId === env.tenantId && p.status === 'active' && !deployments.some((d) => d.projectId === p.id) && canViewProject(scope.user, p)),
+    [projects, env.tenantId, deployments, scope.user],
   )
   const attached = new Set(attachedItemIds(env))
   const missingFor = (projectId: string) => {
@@ -41,7 +74,7 @@ export function AddProjectDialog({ env, deployments, open, onOpenChange }: { env
   const itemName = (id: string) => catalog.find((c) => c.id === id)?.name ?? id
 
   const chosen = Object.entries(picked)
-  const extra = chosen.reduce((s, [, v]) => ({ vcpu: s.vcpu + (v.vcpu || 0), ramGb: s.ramGb + (v.ramGb || 0) }), { vcpu: 0, ramGb: 0 })
+  const extra = mode === 'create' ? limits : chosen.reduce((s, [, v]) => ({ vcpu: s.vcpu + (v.vcpu || 0), ramGb: s.ramGb + (v.ramGb || 0) }), { vcpu: 0, ramGb: 0 })
   const cap = envCapacity(env)
   const used = limitsUsed(deployments)
   const short = capacityShortfall(env, deployments, extra)
@@ -69,6 +102,7 @@ export function AddProjectDialog({ env, deployments, open, onOpenChange }: { env
     )
     if (!res.ok) return toast.error(res.error)
     toast.success(`${chosen.length === 1 ? 'Project' : `${chosen.length} projects`} added. Configure ${chosen.length === 1 ? 'it' : 'them'} and deploy when ready.`)
+    if (chosen.length === 1 && res.id) onAdded?.(res.id)
     if (toAttach.length) {
       const att = attachDependencies(env.id, toAttach)
       if (att.mode === 'error') toast.error(`${toAttach.map(itemName).join(', ')} wasn’t attached: ${att.error}`)
@@ -78,8 +112,22 @@ export function AddProjectDialog({ env, deployments, open, onOpenChange }: { env
     reset(false)
   }
 
+  const createAndAdd = () => {
+    const created = createProject(draft)
+    if (!created.ok) return setFormError(created.error)
+    const res = addProjectsToEnv(env.id, [{ projectId: created.id!, limits }])
+    if (!res.ok) {
+      toast.error(`${draft.name.trim()} was created, but not added: ${res.error}`)
+      return reset(false)
+    }
+    toast.success(`Created ${draft.name.trim()} and added it to “${env.spec.name}”. Configure it and deploy when ready.`)
+    if (res.id) onAdded?.(res.id)
+    reset(false)
+  }
+
   const upgrade = () => {
-    const res = requestEnvUpgrade(env.id, extra, `Room for more projects: ${chosen.map(([id]) => projects.find((p) => p.id === id)?.name).join(', ')} need ${shortfallText(short!)} more than “${env.spec.name}” has.`)
+    const names = mode === 'create' ? draft.name.trim() || 'A new project' : chosen.map(([id]) => projects.find((p) => p.id === id)?.name).join(', ')
+    const res = requestEnvUpgrade(env.id, extra, `Room for more projects: ${names} need ${shortfallText(short!)} more than “${env.spec.name}” has.`)
     if (res.mode === 'error') return toast.error(res.error)
     if (res.mode === 'applied') return toast.success('The environment was upgraded. You can add the projects now.')
     toast.success(
@@ -96,10 +144,68 @@ export function AddProjectDialog({ env, deployments, open, onOpenChange }: { env
   return (
     <Dialog open={open} onOpenChange={reset}>
       <DialogContent size="lg">
-        <DialogHeader title="Add projects to this environment" description="Each project gets its own service, port and route. Set how much CPU and RAM it may use; the total must fit the environment." />
+        <DialogHeader title="Add a project to this environment" description="Each project gets its own service, port and route. Set how much CPU and RAM it may use; the total must fit the environment." />
         <DialogBody className="flex flex-col gap-5">
-          {available.length === 0 ? (
-            <EmptyState icon={FolderPlus} title="Every project is already here" description="All active projects in your organisation are on this environment. Your Tenant Admin can create a new project." className="py-6" />
+          {canCreate && (
+            <div className="flex w-fit rounded-control border border-border p-0.5" role="tablist" aria-label="Add an existing project or create one">
+              {(
+                [
+                  ['existing', 'Pick existing'],
+                  ['create', 'Create new'],
+                ] as const
+              ).map(([v, label]) => (
+                <button
+                  key={v}
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === v}
+                  onClick={() => setMode(v)}
+                  className={cn('rounded-[8px] px-3 py-1 text-caption font-semibold', mode === v ? 'bg-indigo-50 text-indigo-text' : 'text-text-secondary hover:text-text-primary')}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          {mode === 'create' ? (
+            <div className="flex flex-col gap-4">
+              <ProjectForm
+                value={draft}
+                onChange={(v) => {
+                  setDraft(v)
+                  setFormError(null)
+                }}
+                error={formError}
+                people={users.filter((u) => u.tenantId === env.tenantId && u.status === 'active' && u.role === 'user')}
+                ownerId={scope.user.id}
+                compact
+                idPrefix="add-pj"
+              />
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="flex flex-col gap-1 text-caption font-semibold text-text-secondary">
+                  vCPU on this environment
+                  <Input type="number" min={0.5} step={0.5} value={limits.vcpu} onChange={(e) => setLimits({ ...limits, vcpu: Number(e.target.value) })} className="w-28" />
+                </label>
+                <label className="flex flex-col gap-1 text-caption font-semibold text-text-secondary">
+                  RAM (GB)
+                  <Input type="number" min={0.5} step={0.5} value={limits.ramGb} onChange={(e) => setLimits({ ...limits, ramGb: Number(e.target.value) })} className="w-28" />
+                </label>
+              </div>
+            </div>
+          ) : available.length === 0 ? (
+            <EmptyState
+              icon={FolderPlus}
+              title="No other projects to add"
+              description="Every project you can see is already on this environment."
+              action={
+                canCreate ? (
+                  <Button variant="secondary" onClick={() => setMode('create')}>
+                    <Plus /> Create project
+                  </Button>
+                ) : undefined
+              }
+              className="py-6"
+            />
           ) : (
             <ul className="flex flex-col divide-y divide-border rounded-card border border-border">
               {available.map((p) => {
@@ -158,15 +264,21 @@ export function AddProjectDialog({ env, deployments, open, onOpenChange }: { env
               </Button>
             </div>
           )}
-          {invalid && <p className="text-caption text-red-text">Give every chosen project some CPU and RAM.</p>}
+          {mode === 'existing' && invalid && <p className="text-caption text-red-text">Give every chosen project some CPU and RAM.</p>}
         </DialogBody>
         <DialogFooter>
           <DialogClose asChild>
             <Button variant="secondary">Cancel</Button>
           </DialogClose>
-          <Button onClick={add} disabled={!chosen.length || !!short || invalid}>
-            <FolderPlus /> {chosen.length > 1 ? `Add ${chosen.length} projects` : 'Add project'}
-          </Button>
+          {mode === 'create' ? (
+            <Button onClick={createAndAdd} disabled={!!short || !(limits.vcpu > 0 && limits.ramGb > 0) || draft.name.trim().length < 3}>
+              <Plus /> Create and add
+            </Button>
+          ) : (
+            <Button onClick={add} disabled={!chosen.length || !!short || invalid}>
+              <FolderPlus /> {chosen.length > 1 ? `Add ${chosen.length} projects` : 'Add project'}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

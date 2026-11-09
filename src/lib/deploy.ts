@@ -8,9 +8,11 @@ import type {
   ProcessManager,
   Project,
   Runtime,
+  Tenant,
   User,
 } from '@/data/types'
 import { allocationOf } from './quota'
+import { capabilityConnectionVars, capabilityPackages, effectiveCapabilities, missingServices, type EffectiveCapability } from './capabilities'
 import { slugify } from './utils'
 
 /* ---------- labels and presets ---------- */
@@ -45,14 +47,18 @@ export const STEP_LABELS: Record<DeployStepKey, string> = {
   connect: 'Connect to the environment',
   runtime: 'Install the runtime',
   clone: 'Fetch the source',
+  env: 'Set environment variables',
   install: 'Install dependencies',
   build: 'Build',
+  pre: 'Run pre-deploy commands',
   service: 'Create the service',
-  start: 'Start the service',
+  start: 'Enable and start the service',
   nginx: 'Configure the Nginx route',
-  health: 'Check health',
+  health: 'Health check',
+  post: 'Run post-deploy commands',
+  logs: 'View logs',
 }
-export const STEP_ORDER: DeployStepKey[] = ['connect', 'runtime', 'clone', 'install', 'build', 'service', 'start', 'nginx', 'health']
+export const STEP_ORDER: DeployStepKey[] = ['connect', 'runtime', 'clone', 'env', 'install', 'build', 'pre', 'service', 'start', 'nginx', 'health', 'post', 'logs']
 
 type Preset = Pick<DeploymentConfig, 'runtimeVersion' | 'installCmd' | 'buildCmd' | 'startCmd' | 'processManager' | 'healthPath'>
 
@@ -106,18 +112,26 @@ export function nextFreePort(siblings: Pick<Deployment, 'config'>[], start = 300
 
 export function defaultConfig(project: Project, siblings: Deployment[], catalog: CatalogItem[]): DeploymentConfig {
   const slug = serviceNameFor(project)
-  const port = nextFreePort(siblings)
+  const runtime = project.defaultRuntime ?? 'node'
+  const preset = RUNTIME_PRESETS[runtime]
+  const port = isStatic({ runtime }) ? 0 : nextFreePort(siblings, runtime === 'python' ? 8000 : 3000)
   return {
-    runtime: 'node',
-    ...RUNTIME_PRESETS.node,
-    source: { kind: 'git', repoUrl: `https://github.com/example-org/${slug}.git`, branch: 'main' },
+    runtime,
+    ...preset,
+    runtimeVersion: project.defaultRuntimeVersion || preset.runtimeVersion,
+    startCmd: runtime === 'python' ? preset.startCmd.replace('8000', String(port)) : preset.startCmd,
+    source: { kind: 'git', repoUrl: project.repoUrl || `https://github.com/example-org/${slug}.git`, branch: project.defaultBranch || 'main' },
     port,
     basePath: `/${slug}`,
     domain: '',
-    env: [{ key: 'NODE_ENV', value: 'production' }],
+    env: runtime === 'node' ? [{ key: 'NODE_ENV', value: 'production' }] : [],
     healthStatus: 200,
     limits: { vcpu: 1, ramGb: 2 },
     dependencies: defaultDependencies(project, catalog),
+    preDeployCmd: '',
+    postDeployCmd: '',
+    serviceAccess: {},
+    capabilityChoice: {},
   }
 }
 
@@ -157,9 +171,9 @@ export function shortfallText(s: Capacity) {
 
 /* ---------- dependencies ---------- */
 
-/** Catalog items attached to an environment (models, speech, capabilities). */
+/** Catalog items attached to an environment (models, speech, environment-level capabilities). */
 export function attachedItemIds(env: Environment) {
-  return [...env.spec.llms.map((l) => l.id), ...env.spec.asr, ...env.spec.capabilities]
+  return [...env.spec.llms.map((l) => l.id), ...env.spec.asr, ...env.capabilities.map((c) => c.itemId)]
 }
 
 export function missingDependencies(env: Environment, cfg: Pick<DeploymentConfig, 'dependencies'>) {
@@ -239,7 +253,21 @@ export interface GenContext {
   env: Environment
   projectName: string
   catalog: CatalogItem[]
+  /** The project's own capabilities; with them, library packages and service connection variables are added automatically. */
+  project?: Pick<Project, 'capabilityIds' | 'capabilityVersions'>
 }
+
+/** Effective capabilities for a generated deployment (project + environment). */
+export function genCapabilities(ctx: GenContext): EffectiveCapability[] {
+  if (!ctx.project) return []
+  return effectiveCapabilities(ctx.project, ctx.env, ctx.catalog, ctx.dep.config.capabilityChoice)
+}
+
+/** `${NAME}` references to organisation keys in a value. */
+export const keyRefs = (value: string) => [...value.matchAll(/\$\{([A-Z_][A-Z0-9_]*)\}/g)].map((m) => m[1]!)
+export const isKeyRef = (value: string) => /^\$\{[A-Z_][A-Z0-9_]*\}$/.test(value.trim())
+/** Shown in place of a key's value everywhere it appears. */
+export const maskValue = (value: string) => (keyRefs(value).length ? value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, '••••••••') : value)
 
 const dir = (svc: string) => `/srv/${svc}`
 const versionLabel = (v: string) => (v.includes('.') ? v : `${v}`)
@@ -256,6 +284,7 @@ export function platformVars(ctx: GenContext): { key: string; value: string }[] 
       if (item) vars.push({ key: `AIC_${item.category === 'asr' ? 'ASR' : item.category === 'llm' ? 'MODEL' : 'CAP'}_${slugify(item.name).replace(/-/g, '_').toUpperCase()}`, value: item.version })
     }
   }
+  for (const v of capabilityConnectionVars(genCapabilities(ctx), envHost(ctx.env), c.serviceAccess)) if (!vars.some((x) => x.key === v.key)) vars.push(v)
   return vars
 }
 
@@ -264,6 +293,11 @@ export function allVars(ctx: GenContext) {
   const ownKeys = new Set(own.map((v) => v.key))
   return [...platformVars(ctx).filter((v) => !ownKeys.has(v.key)), ...own]
 }
+
+/** Variables written into the service definition; key references go to .env instead so they never appear in unit files. */
+const inlineVars = (ctx: GenContext) => allVars(ctx).filter((v) => !keyRefs(v.value).length)
+/** Variables that reference organisation keys, written to .env. */
+export const secretVars = (ctx: GenContext) => allVars(ctx).filter((v) => keyRefs(v.value).length)
 
 const PY_BINS = new Set(['python', 'python3', 'uvicorn', 'gunicorn', 'hypercorn', 'flask', 'fastapi', 'celery', 'pip'])
 
@@ -285,7 +319,7 @@ const quoteEnv = (v: string) => (/[\s"\\]/.test(v) ? `"${v.replace(/(["\\])/g, '
 export function systemdUnit(ctx: GenContext) {
   const c = ctx.dep.config
   const svc = ctx.dep.serviceName
-  const vars = allVars(ctx)
+  const vars = inlineVars(ctx)
   return [
     '[Unit]',
     `Description=${ctx.projectName} on ${ctx.env.spec.name}`,
@@ -328,7 +362,7 @@ export function pm2Ecosystem(ctx: GenContext) {
   } else if (c.runtime === 'python' && PY_BINS.has(first)) {
     script = `${dir(svc)}/.venv/bin/${first}`
   }
-  const vars = allVars(ctx)
+  const vars = inlineVars(ctx)
   return [
     'module.exports = {',
     '  apps: [',
@@ -353,7 +387,7 @@ export function pm2Ecosystem(ctx: GenContext) {
 export function composeFile(ctx: GenContext) {
   const c = ctx.dep.config
   const svc = ctx.dep.serviceName
-  const vars = allVars(ctx)
+  const vars = inlineVars(ctx)
   const startsWithDocker = /^docker\s/.test(c.startCmd.trim())
   const image = c.runtime === 'node' ? `node:${c.runtimeVersion}-slim` : c.runtime === 'python' ? `python:${c.runtimeVersion}-slim` : `${svc}:latest`
   const health = `curl -fsS -o /dev/null http://localhost:${c.port}${c.healthPath} || exit 1`
@@ -433,7 +467,9 @@ export function nginxBlock(ctx: GenContext) {
 /* ---------- deployment guide ---------- */
 
 export interface GuideStep {
+  /** 1-based position, shown in the guide and deploy.sh. */
   key: string
+  step: DeployStepKey
   title: string
   body: string
   code: string
@@ -457,7 +493,7 @@ export function guideSteps(ctx: GenContext): GuideStep[] {
   const host = envHost(ctx.env)
   const d = dir(svc)
   const steps: GuideStep[] = []
-  const add = (s: Omit<GuideStep, 'key' | 'script'> & { script?: string }) => steps.push({ key: String(steps.length + 1), script: s.script ?? s.code, ...s })
+  const add = (s: Omit<GuideStep, 'key' | 'step' | 'script'> & { script?: string }) => steps.push({ key: String(steps.length + 1), step: STEP_ORDER[steps.length]!, script: s.script ?? s.code, ...s })
 
   add({
     title: 'Connect to the environment',
@@ -507,10 +543,24 @@ export function guideSteps(ctx: GenContext): GuideStep[] {
         },
   )
 
-  const install = c.installCmd.trim()
+  const all = allVars(ctx)
+  const secrets = secretVars(ctx)
+  const envLines = all.map((v) => `${v.key}=${v.value}`)
+  add({
+    title: 'Set environment variables',
+    body: all.length
+      ? `Writes ${d}/.env (readable by the deploy user only). ${secrets.length ? `Keys (${secrets.map((v) => v.key).join(', ')}) are filled in from your organisation’s connected keys; values stay masked.` : ''} Capability connection variables are added automatically.`
+      : 'This project sets no environment variables.',
+    code: all.length ? [`cat > ${d}/.env <<EOF`, ...all.map((v) => `${v.key}=${maskValue(v.value)}`), 'EOF', `chmod 600 ${d}/.env`].join('\n') : '# no environment variables',
+    codeLabel: `${d}/.env`,
+    script: all.length ? [`cat > ${d}/.env <<EOF`, ...envLines, 'EOF', `chmod 600 ${d}/.env`].join('\n') : '',
+  })
+
+  const packages = capabilityPackages(genCapabilities(ctx), c.runtime)
+  const install = [c.installCmd.trim(), packages.length ? (c.runtime === 'python' ? `pip install ${packages.join(' ')}` : `npm install --no-save ${packages.join(' ')}`) : ''].filter(Boolean).join('\n')
   add({
     title: 'Install dependencies',
-    body: install ? `Runs in ${d}.` : 'Nothing to install for this project.',
+    body: install ? `Runs in ${d}.${packages.length ? ` Libraries from this project’s capabilities are added: ${packages.join(', ')}.` : ''}` : 'Nothing to install for this project.',
     code:
       c.runtime === 'python'
         ? [`python${versionLabel(c.runtimeVersion)} -m venv .venv`, 'source .venv/bin/activate', install || '# no install command'].join('\n')
@@ -526,18 +576,27 @@ export function guideSteps(ctx: GenContext): GuideStep[] {
     codeLabel: 'Shell · environment',
   })
 
+  const pre = c.preDeployCmd.trim()
+  add({
+    title: 'Run pre-deploy commands',
+    body: pre ? 'Runs before the service starts, for example database migrations.' : 'No pre-deploy commands.',
+    code: pre || '# no pre-deploy commands',
+    codeLabel: 'Shell · environment',
+    script: pre,
+  })
+
   const file = serviceFile(ctx)
   add(
     file
       ? {
-          title: `Create the service file`,
+          title: `Create the service`,
           body: `Save this ${file.label} as ${file.path}. It starts the project with: ${c.startCmd.trim() || 'the image’s default command'}.`,
           code: file.content,
           codeLabel: file.path,
           script: `${file.path.startsWith('/etc') ? 'sudo ' : ''}tee ${file.path} > /dev/null <<'EOF'\n${file.content}\nEOF`,
         }
       : {
-          title: 'Create the service file',
+          title: 'Create the service',
           body: 'Static sites need no service: Nginx serves the built files directly.',
           code: '# not needed for a static site',
           codeLabel: 'Note',
@@ -569,7 +628,7 @@ export function guideSteps(ctx: GenContext): GuideStep[] {
 
   const base = trimSlash(c.basePath)
   add({
-    title: 'Verify the health check',
+    title: 'Health check',
     body: `Expect HTTP ${c.healthStatus}.`,
     code: [
       ...(isStatic(c) ? [] : [`curl -s -o /dev/null -w "%{http_code}\\n" http://127.0.0.1:${c.port}${c.healthPath}`]),
@@ -581,6 +640,15 @@ export function guideSteps(ctx: GenContext): GuideStep[] {
       `test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: ${c.domain.trim() || host}' http://127.0.0.1${base}${c.healthPath})" = "${c.healthStatus}"`,
       `echo "${ctx.projectName} is healthy"`,
     ].join('\n'),
+  })
+
+  const post = c.postDeployCmd.trim()
+  add({
+    title: 'Run post-deploy commands',
+    body: post ? 'Runs once the health check passes, for example warming a cache.' : 'No post-deploy commands.',
+    code: post || '# no post-deploy commands',
+    codeLabel: 'Shell · environment',
+    script: post,
   })
 
   add({
@@ -649,14 +717,21 @@ export function simulateSteps(ctx: GenContext & { breakBuild?: boolean; commit: 
         ? [`$ git fetch origin ${c.source.branch}`, `$ git checkout ${c.source.branch}`, `HEAD is now at ${ctx.commit} Merge pull request from ${c.source.branch}`]
         : [`$ tar -xzf /tmp/${c.source.fileName} -C /srv/${svc}`, `Unpacked ${c.source.fileName}`],
   })
+  const vars = allVars(ctx)
+  out.push(
+    vars.length
+      ? { key: 'env', lines: [`Wrote /srv/${svc}/.env (${vars.length} variable${vars.length === 1 ? '' : 's'})`, ...vars.map((v) => `  ${v.key}=${keyRefs(v.value).length ? '••••••••' : v.value}`)] }
+      : { key: 'env', skipped: true, lines: ['No environment variables; skipped.'] },
+  )
+  const packages = capabilityPackages(genCapabilities(ctx), c.runtime)
   out.push(
     c.installCmd.trim()
       ? {
           key: 'install',
           lines:
             c.runtime === 'python'
-              ? [`$ ${c.installCmd}`, 'Collecting fastapi==0.115.4', 'Collecting uvicorn[standard]==0.32.0', 'Successfully installed 38 packages']
-              : [`$ ${c.installCmd}`, 'added 412 packages, and audited 413 packages in 9s', 'found 0 vulnerabilities'],
+              ? [`$ ${c.installCmd}`, 'Collecting fastapi==0.115.4', 'Collecting uvicorn[standard]==0.32.0', 'Successfully installed 38 packages', ...(packages.length ? [`$ pip install ${packages.join(' ')}`, `Successfully installed ${packages.join(' ')}`] : [])]
+              : [`$ ${c.installCmd}`, 'added 412 packages, and audited 413 packages in 9s', 'found 0 vulnerabilities', ...(packages.length ? [`$ npm install --no-save ${packages.join(' ')}`, `added ${packages.length * 7} packages in 3s`] : [])],
         }
       : { key: 'install', skipped: true, lines: ['No install command; skipped.'] },
   )
@@ -686,6 +761,7 @@ export function simulateSteps(ctx: GenContext & { breakBuild?: boolean; commit: 
             ? [`$ ${c.buildCmd}`, '[+] Building 41.2s (12/12) FINISHED', `=> naming to docker.io/library/${svc}:latest`]
             : [`$ ${c.buildCmd}`, '> build', isStatic(c) ? '✓ 214 modules transformed. dist/ written in 6.1s' : 'Compiled 86 files to dist/ in 4.3s'],
     })
+  out.push(c.preDeployCmd.trim() ? { key: 'pre', lines: [`$ ${c.preDeployCmd.trim()}`, 'Done.'] } : { key: 'pre', skipped: true, lines: ['No pre-deploy commands; skipped.'] })
   const file = serviceFile(ctx)
   if (!file) {
     out.push({ key: 'service', skipped: true, lines: ['Static site: no service needed.'] })
@@ -704,10 +780,108 @@ export function simulateSteps(ctx: GenContext & { breakBuild?: boolean; commit: 
   }
   out.push({ key: 'nginx', lines: [`Wrote /etc/nginx/sites-available/${svc}.conf`, '$ sudo nginx -t', 'nginx: configuration file /etc/nginx/nginx.conf test is successful', '$ sudo systemctl reload nginx'] })
   out.push({ key: 'health', lines: [`$ curl ${deploymentUrl(c, ctx.env).replace(/\/$/, '')}${c.healthPath}`, `HTTP ${c.healthStatus} in 38 ms`] })
+  out.push(c.postDeployCmd.trim() ? { key: 'post', lines: [`$ ${c.postDeployCmd.trim()}`, 'Done.'] } : { key: 'post', skipped: true, lines: ['No post-deploy commands; skipped.'] })
+  out.push({
+    key: 'logs',
+    lines: [
+      isStatic(c) ? `$ sudo tail -n 3 /var/log/nginx/${svc}.access.log` : c.processManager === 'pm2' ? `$ pm2 logs ${svc} --lines 3 --nostream` : c.processManager === 'compose' ? `$ docker compose logs --tail 3 ${svc}` : `$ journalctl -u ${svc} -n 3 --no-pager`,
+      isStatic(c) ? '127.0.0.1 - - "GET / HTTP/1.1" 200 1543' : `Listening on 127.0.0.1:${c.port}`,
+    ],
+  })
   return out
 }
 
 export const fakeCommit = () => Math.random().toString(16).slice(2, 9)
+
+/* ---------- pre-deploy checklist ---------- */
+
+export type CheckKey = 'env_active' | 'port_free' | 'resources' | 'keys' | 'capabilities'
+
+export interface PreDeployCheck {
+  key: CheckKey
+  label: string
+  ok: boolean
+  /** Errors block deploying; warnings can be overridden. */
+  severity: 'error' | 'warning'
+  detail: string
+}
+
+export interface CheckContext extends GenContext {
+  siblings: Deployment[]
+  tenant: Pick<Tenant, 'connectedKeys'> | undefined
+  projectNameOf: (projectId: string) => string
+}
+
+/** Key names referenced by the configuration that the organisation hasn't connected. */
+export function missingKeys(cfg: Pick<DeploymentConfig, 'env'>, tenant: Pick<Tenant, 'connectedKeys'> | undefined) {
+  const have = new Set(tenant?.connectedKeys ?? [])
+  return [...new Set(cfg.env.flatMap((v) => keyRefs(v.value)))].filter((k) => !have.has(k))
+}
+
+export function preDeployChecks(ctx: CheckContext): PreDeployCheck[] {
+  const c = ctx.dep.config
+  const env = ctx.env
+  const errors = validateConfig(c, { env, siblings: ctx.siblings, projectName: ctx.projectNameOf })
+  const cap = envCapacity(env)
+  const short = capacityShortfall(env, ctx.siblings, c.limits)
+  const keys = missingKeys(c, ctx.tenant)
+  const caps = genCapabilities(ctx)
+  const conflicts = caps.filter((x) => x.conflict)
+  const missing = ctx.project ? missingServices(ctx.project, env, ctx.catalog, c.serviceAccess) : []
+  const models = missingDependencies(env, c).map((id) => ctx.catalog.find((x) => x.id === id)?.name ?? id)
+  const capProblems = [
+    ...conflicts.map((x) => `${x.item.name}: project uses ${x.conflict!.project}, environment has ${x.conflict!.environment}`),
+    ...missing.map((m) => `${m.name} is missing on this environment`),
+    ...models.map((m) => `${m} isn’t attached to this environment`),
+  ]
+  return [
+    {
+      key: 'env_active',
+      label: 'Environment is Active',
+      ok: env.status === 'active',
+      severity: 'error',
+      detail: env.status === 'active' ? `“${env.spec.name}” is running.` : `“${env.spec.name}” is ${env.status.replace('_', ' ')}. Start it before deploying.`,
+    },
+    {
+      key: 'port_free',
+      label: 'Port is free',
+      ok: !errors.port,
+      severity: 'error',
+      detail: isStatic(c) ? 'Static site: no port needed.' : (errors.port ?? `Port ${c.port} isn’t used by any other project on this environment.`),
+    },
+    {
+      key: 'resources',
+      label: 'Resources are sufficient',
+      ok: !short,
+      severity: 'error',
+      detail: short
+        ? `Needs ${shortfallText(short)} more than this environment has (${cap.vcpu} vCPU, ${cap.ramGb} GB RAM shared by all its projects). Lower the limits or request an upgrade.`
+        : `${c.limits.vcpu} vCPU and ${c.limits.ramGb} GB RAM fit within ${cap.vcpu} vCPU and ${cap.ramGb} GB RAM.`,
+    },
+    {
+      key: 'keys',
+      label: 'Required keys are connected',
+      ok: !keys.length,
+      severity: 'warning',
+      detail: keys.length
+        ? `${keys.join(', ')} ${keys.length === 1 ? 'isn’t' : 'aren’t'} connected for your organisation. The service may fail when it uses ${keys.length === 1 ? 'it' : 'them'}.`
+        : (() => {
+            const used = [...new Set(c.env.flatMap((v) => keyRefs(v.value)))]
+            return used.length ? `${used.join(', ')} ${used.length === 1 ? 'is' : 'are'} connected.` : 'This configuration references no keys.'
+          })(),
+    },
+    {
+      key: 'capabilities',
+      label: 'Capabilities have no conflicts or missing services',
+      ok: !capProblems.length,
+      severity: 'error',
+      detail: capProblems.length ? capProblems.join('. ') + '.' : caps.length ? `${caps.length} capabilit${caps.length === 1 ? 'y' : 'ies'} resolved.` : 'No capabilities to check.',
+    },
+  ]
+}
+
+/** True when every check passes, or every failing check is a warning the user overrode. */
+export const checksPass = (checks: PreDeployCheck[], overrides: CheckKey[] = []) => checks.every((c) => c.ok || (c.severity === 'warning' && overrides.includes(c.key)))
 
 /* ---------- permissions ---------- */
 
@@ -718,8 +892,13 @@ export function canManageEnvProjects(user: Pick<User, 'id' | 'role' | 'tenantId'
   return user.role === 'tenant_admin' || user.id === env.ownerId
 }
 
-/** Configure and deploy one project: anyone who can manage the environment, plus members of that project. */
-export function canOperateDeployment(user: Pick<User, 'id' | 'role' | 'tenantId'>, env: Pick<Environment, 'ownerId' | 'tenantId'>, project: Pick<Project, 'memberIds'> | undefined) {
+/** Configure and deploy one project: anyone who can manage the environment, plus the project's owner and editors. */
+export function canOperateDeployment(
+  user: Pick<User, 'id' | 'role' | 'tenantId'>,
+  env: Pick<Environment, 'ownerId' | 'tenantId'>,
+  project: Pick<Project, 'memberIds' | 'memberAccess' | 'ownerId'> | undefined,
+) {
   if (canManageEnvProjects(user, env)) return true
-  return user.role === 'user' && user.tenantId === env.tenantId && !!project?.memberIds.includes(user.id)
+  if (user.role !== 'user' || user.tenantId !== env.tenantId || !project) return false
+  return project.ownerId === user.id || (project.memberIds.includes(user.id) && project.memberAccess[user.id] === 'editor')
 }

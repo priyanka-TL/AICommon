@@ -13,7 +13,7 @@ export function diffSpecs(from: EnvSpec, to: EnvSpec, catalog: CatalogItem[], pr
   }
 
   push('Name', from.name, to.name)
-  push('Project', projectName(from.projectId), projectName(to.projectId))
+  push('Projects', from.projectIds.map(projectName).join(', ') || 'None', to.projectIds.map(projectName).join(', ') || 'None')
   push('Purpose', purposeLabel(from.purpose), purposeLabel(to.purpose))
   push('Duration', `${from.durationWeeks} weeks`, `${to.durationWeeks} weeks`)
   push('Provider', providerName(from.providerId), providerName(to.providerId))

@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { Award, BrainCircuit, CheckCircle2, FileBarChart, FolderKanban, Scale, SlidersHorizontal } from 'lucide-react'
 import { useAppStore, useSessionStore } from '@/store/useAppStore'
-import { useScopedEnvironments } from '@/store/selectors'
+import { useHostedProjectIds, useScopedEnvironments } from '@/store/selectors'
 import { relativeTime } from '@/lib/format'
 import { computeLabel } from '@/lib/labels'
 import { envPath, reportPath } from '@/lib/paths'
@@ -19,6 +19,7 @@ const WEEK = 7 * 86_400_000
 export default function QaDashboard() {
   const { user, tenant, projects, configs, catalog } = useQaData()
   const environments = useScopedEnvironments()
+  const hosted = useHostedProjectIds()
   const qaRuns = useAppStore((s) => s.qaRuns)
   const tenantWide = useSessionStore((s) => s.qaTenantWide)
   const projectIds = useMemo(() => new Set(projects.map((p) => p.id)), [projects])
@@ -60,7 +61,7 @@ export default function QaDashboard() {
           ) : (
             <ul className="flex flex-col gap-4">
               {projects.map((p) => {
-                const envs = environments.filter((e) => e.projectId === p.id)
+                const envs = environments.filter((e) => hosted.get(e.id)?.includes(p.id))
                 return (
                   <li key={p.id} className="card p-5">
                     <div className="flex flex-wrap items-start justify-between gap-3">

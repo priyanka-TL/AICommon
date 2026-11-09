@@ -74,7 +74,7 @@ export default function RequestDetail() {
   const used = tenantAllocated(environments, tenant.id)
   const open = !['approved', 'rejected', 'cancelled', 'draft'].includes(request.status)
   const requested = request.kind === 'change' && request.previousSpec ? diffSpecs(request.previousSpec, request.spec, catalog, projects, infraProviders) : []
-  const project = projects.find((p) => p.id === request.spec.projectId)
+  const requestProjects = projects.filter((p) => request.spec.projectIds.includes(p.id))
   const lastAsk = [...request.history].reverse().find((h) => h.status === 'changes_requested')
 
   return (
@@ -88,7 +88,7 @@ export default function RequestDetail() {
             {open && quota.over && <StatusBadge status="over-quota" />}
             {open && budget?.over && <StatusBadge status="over-quota" label="Over budget cap" />}
             <Tag>{purposeLabel(request.spec.purpose)}</Tag>
-            {project && <Tag>{project.name}</Tag>}
+            {requestProjects.length ? requestProjects.map((p) => <Tag key={p.id}>{p.name}</Tag>) : <Tag>No projects yet</Tag>}
           </span>
         }
         actions={<RequestActions request={request} />}

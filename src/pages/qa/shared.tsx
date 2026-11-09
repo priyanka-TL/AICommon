@@ -15,6 +15,7 @@ export function useQaData() {
   const projects = useScopedProjects(false)
   const tenant = useAppStore((s) => s.tenants.find((t) => t.id === user.tenantId))
   const environments = useAppStore((s) => s.environments)
+  const deployments = useAppStore((s) => s.deployments)
   const catalog = useAppStore((s) => s.catalog)
   const providers = useAppStore((s) => s.providers)
   const allConfigs = useAppStore((s) => s.testConfigs)
@@ -25,9 +26,9 @@ export function useQaData() {
   const modelsFor = useCallback(
     (projectId: string): CatalogItem[] => {
       const p = projects.find((x) => x.id === projectId)
-      return p ? projectModels(p, tenant, environments, catalog) : []
+      return p ? projectModels(p, tenant, environments, catalog, deployments) : []
     },
-    [projects, tenant, environments, catalog],
+    [projects, tenant, environments, catalog, deployments],
   )
   return { user, tenant, projects, environments, catalog, providers, configs, datasets, modelsFor }
 }

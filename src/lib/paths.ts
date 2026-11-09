@@ -27,3 +27,6 @@ export const reportPath = (role: Role, id: string) => (role === 'qa' ? `/qa/repo
 /** Role-neutral link to share inside a tenant; it redirects to the viewer's own report path. */
 export const sharedReportPath = (id: string) => `/reports/${id}`
 export const providerRequestPath = (role: Role, id: string) => (role === 'qa' ? '/qa' : `${BASE[role]}/provider-requests/${id}`)
+export const projectsPath = (role: Role) => (role === 'qa' ? '/qa' : `${BASE[role]}/projects`)
+export const projectPath = (role: Role, id: string, tab?: string) => (role === 'qa' ? '/qa' : `${BASE[role]}/projects/${id}${tab ? `?tab=${tab}` : ''}`)
+export const newProjectPath = (role: Role) => `${projectsPath(role)}/new`

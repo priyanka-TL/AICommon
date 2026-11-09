@@ -16,7 +16,7 @@ import { Switch } from '@/components/ui/controls'
 import { cn } from '@/lib/utils'
 
 const GROUPS: Record<'models' | 'capabilities', CatalogCategory[]> = {
-  models: ['llm', 'asr'],
+  models: ['llm', 'asr', 'embedding'],
   capabilities: ['agent-framework', 'vector-db', 'evaluation', 'low-code'],
 }
 

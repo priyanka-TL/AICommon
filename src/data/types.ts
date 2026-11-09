@@ -4,7 +4,7 @@ export type ActorRole = Role | 'system'
 export type TenantStatus = 'active' | 'suspended'
 export type OrgType = 'NGO' | 'Social enterprise' | 'Foundation' | 'Government partner' | 'System'
 
-export type CatalogCategory = 'llm' | 'asr' | 'agent-framework' | 'vector-db' | 'evaluation' | 'low-code'
+export type CatalogCategory = 'llm' | 'asr' | 'embedding' | 'agent-framework' | 'vector-db' | 'evaluation' | 'low-code'
 
 export interface Quota {
   vcpu: number
@@ -28,6 +28,8 @@ export interface Tenant {
   enabledItemIds: string[]
   /** Infrastructure providers the Super Admin approved for this tenant, with regions and a monthly budget cap. */
   approvedProviders: ProviderApproval[]
+  /** Key names connected for this organisation (a stand-in until key management lands). Env vars reference them as ${NAME}. */
+  connectedKeys: string[]
   status: TenantStatus
   isSystem: boolean
   createdAt: string
@@ -51,17 +53,31 @@ export interface QaAssignment {
   tenantWideAllowed: boolean
 }
 
+export type ProjectType = 'api' | 'web' | 'agent' | 'pipeline' | 'other'
+export type ProjectAccess = 'viewer' | 'editor'
+
 export interface Project {
   id: string
   tenantId: string
   name: string
   description: string
+  type: ProjectType
+  repoUrl: string
+  defaultBranch: string
+  defaultRuntime: Runtime
+  defaultRuntimeVersion: string
   ownerId: string
   memberIds: string[]
+  /** Access per member; members not listed are viewers. */
+  memberAccess: Record<string, ProjectAccess>
   status: 'active' | 'archived'
   limits: Quota
   capabilityIds: string[]
+  /** Version this project pins for each capability; falls back to the catalog's current version. */
+  capabilityVersions: Record<string, string>
   createdAt: string
+  updatedAt: string
+  updatedById: string
   /** Model a QA Engineer recommended after a comparison. */
   recommendation?: Recommendation
   /** How each model is reached from this project. */
@@ -101,7 +117,8 @@ export interface InstanceSnapshot {
 export interface EnvSpec {
   name: string
   description: string
-  projectId: string
+  /** Projects to host on the environment; may be empty (projects can be added later). */
+  projectIds: string[]
   purpose: Purpose
   durationWeeks: number
   /** Infrastructure provider, region and instance type (from the provider's rate card). */
@@ -126,8 +143,6 @@ export interface EnvSpec {
   dataClassification: DataClassification
   containsPii: boolean
   justification: string
-  /** Projects hosted alongside `projectId`, chosen in the wizard. Each gets a deployment when the environment is created. */
-  extraProjectIds?: string[]
 }
 
 export type RequestStatus =
@@ -186,10 +201,17 @@ export interface EnvRequest {
   simulateFailure: boolean
 }
 
+/** A shared service or library installed on an environment, available to every project on it. */
+export interface EnvCapability {
+  itemId: string
+  version: string
+  addedById: string
+  at: string
+}
+
 export interface Environment {
   id: string
   tenantId: string
-  projectId: string
   ownerId: string
   requestId: string
   status: EnvStatus
@@ -208,6 +230,8 @@ export interface Environment {
   /** Keeps a seeded environment in Provisioning so the state stays visible. */
   hold: boolean
   loadProfile: 'normal' | 'hot'
+  /** Environment-level capabilities (shared services such as a vector database). Projects are linked through deployments. */
+  capabilities: EnvCapability[]
 }
 
 export type CatalogStatus = 'active' | 'beta' | 'deprecated'
@@ -576,7 +600,9 @@ export interface ProviderRequest {
 export type Runtime = 'node' | 'python' | 'docker' | 'static'
 export type ProcessManager = 'systemd' | 'pm2' | 'compose'
 export type DeploymentStatus = 'not_deployed' | 'deploying' | 'running' | 'failed' | 'stopped'
-export type DeployStepKey = 'connect' | 'runtime' | 'clone' | 'install' | 'build' | 'service' | 'start' | 'nginx' | 'health'
+export type DeployStepKey = 'connect' | 'runtime' | 'clone' | 'env' | 'install' | 'build' | 'pre' | 'service' | 'start' | 'nginx' | 'health' | 'post' | 'logs'
+/** How a project reaches a service-type capability the environment doesn't host. */
+export type ServiceAccess = 'environment' | 'platform' | 'external'
 export type DeployStepStatus = 'pending' | 'running' | 'ok' | 'failed' | 'skipped'
 
 export type DeploymentSource = { kind: 'git'; repoUrl: string; branch: string } | { kind: 'upload'; fileName: string }
@@ -604,6 +630,12 @@ export interface DeploymentConfig {
   limits: { vcpu: number; ramGb: number }
   /** Catalog item ids (models, speech, vector DBs, frameworks) this project needs on the environment. */
   dependencies: string[]
+  preDeployCmd: string
+  postDeployCmd: string
+  /** Service capabilities the environment lacks, reached through the platform or an external service instead. */
+  serviceAccess: Record<string, ServiceAccess>
+  /** Version chosen when the project and the environment pin different versions of the same capability. */
+  capabilityChoice: Record<string, string>
 }
 
 export interface DeployLogLine {

@@ -60,8 +60,9 @@ export function SpecSummary({ spec, catalog, projects = [], onEdit, className }:
     <div className={cn('flex flex-col', className)}>
       <Section title="Purpose" step={0} onEdit={onEdit}>
         <dl>
-          <Row label="Project">{projects.find((p) => p.id === spec.projectId)?.name ?? 'Not set'}</Row>
-          {!!spec.extraProjectIds?.length && <Row label="Also hosts">{spec.extraProjectIds.map((id) => projects.find((p) => p.id === id)?.name ?? id).join(', ')}</Row>}
+          <Row label={spec.projectIds.length > 1 ? 'Projects' : 'Project'}>
+            {spec.projectIds.length ? spec.projectIds.map((id) => projects.find((p) => p.id === id)?.name ?? id).join(', ') : 'No projects yet (you can add them later)'}
+          </Row>
           <Row label="Purpose">{purposeLabel(spec.purpose)}</Row>
           <Row label="Duration">{spec.durationWeeks} weeks</Row>
           {spec.description && <Row label="Description">{spec.description}</Row>}

@@ -15,7 +15,9 @@ import InfraProviders from '@/pages/super-admin/InfraProviders'
 import InfraProviderDetail from '@/pages/super-admin/InfraProviderDetail'
 import Capacity from '@/pages/super-admin/Capacity'
 import TenantAdminDashboard from '@/pages/tenant-admin/Dashboard'
-import { ProjectDetail, Projects } from '@/pages/tenant-admin/Projects'
+import Projects from '@/pages/shared/Projects'
+import ProjectDetail from '@/pages/shared/ProjectDetail'
+import NewProject from '@/pages/shared/NewProject'
 import CatalogToggles from '@/pages/tenant-admin/CatalogToggles'
 import Quotas from '@/pages/tenant-admin/Quotas'
 import Settings from '@/pages/tenant-admin/Settings'
@@ -75,6 +77,8 @@ export default function App() {
             <Route path="/super-admin/users" element={<UsersPage />} />
             <Route path="/super-admin/requests" element={<RequestsQueue />} />
             <Route path="/super-admin/requests/:id" element={<RequestDetail />} />
+            <Route path="/super-admin/projects" element={<Projects />} />
+            <Route path="/super-admin/projects/:id" element={<ProjectDetail />} />
             <Route path="/super-admin/infrastructure" element={<Infrastructure />} />
             <Route path="/super-admin/infrastructure/:id" element={<EnvironmentDetail />} />
             <Route path="/super-admin/infrastructure/:id/edit" element={<NewEnvironment />} />
@@ -98,6 +102,7 @@ export default function App() {
             <Route path="/tenant-admin" element={<TenantAdminDashboard />} />
             <Route path="/tenant-admin/users" element={<UsersPage />} />
             <Route path="/tenant-admin/projects" element={<Projects />} />
+            <Route path="/tenant-admin/projects/new" element={<NewProject />} />
             <Route path="/tenant-admin/projects/:id" element={<ProjectDetail />} />
             <Route path="/tenant-admin/infrastructure" element={<Infrastructure />} />
             <Route path="/tenant-admin/infrastructure/new" element={<NewEnvironment />} />
@@ -123,6 +128,9 @@ export default function App() {
         <Route element={<RequireRole role="user" />}>
           <Route element={<AppShell />}>
             <Route path="/app" element={<UserDashboard />} />
+            <Route path="/app/projects" element={<Projects />} />
+            <Route path="/app/projects/new" element={<NewProject />} />
+            <Route path="/app/projects/:id" element={<ProjectDetail />} />
             <Route path="/app/environments/new" element={<NewEnvironment />} />
             <Route path="/app/environments/:id/edit" element={<NewEnvironment />} />
             <Route path="/app/environments/:id" element={<EnvironmentDetail />} />
