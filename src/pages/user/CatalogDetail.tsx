@@ -11,6 +11,8 @@ import { CATEGORY_SINGULAR } from '@/lib/labels'
 import { relativeTime } from '@/lib/format'
 import { reportPath } from '@/lib/paths'
 import { qualityScore } from '@/lib/qa'
+import { ACCESS_MODE_LABELS, accessModesFor } from '@/lib/providers'
+import type { AccessMode } from '@/data/types'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CatalogStatusBadge, StatusBadge, Tag } from '@/components/shared/StatusBadge'
 import { CodeBlock } from '@/components/shared/CodeBlock'
@@ -37,9 +39,12 @@ export default function CatalogDetail() {
   const readOnly = role === 'qa'
   const users = useAppStore((s) => s.users)
   const qaRuns = useAppStore((s) => s.qaRuns)
+  const infraProviders = useAppStore((s) => s.infraProviders)
+  const [access, setAccess] = useState<AccessMode>('direct')
 
   if (!item) return <NotFound message="This item isn’t available to your tenant. It may have been removed or not published to you yet." />
 
+  const accessModes = accessModesFor(item, infraProviders, tenant.id)
   const allowed = item.enabled
   const usedIn = environments.filter(
     (e) =>
@@ -87,6 +92,7 @@ export default function CatalogDetail() {
               disabled={!!blockedReason || projects.length === 0}
               onClick={() => {
                 setProjectId(projects.find((p) => !p.capabilityIds.includes(item.id))?.id ?? projects[0]?.id ?? '')
+                setAccess('direct')
                 setProjectOpen(true)
               }}
             >
@@ -265,6 +271,22 @@ export default function CatalogDetail() {
                 </SelectContent>
               </Select>
             </Field>
+            {item.category === 'llm' && (
+              <Field label="Access through" helper="How this project reaches the model. Cloud model services come from the infrastructure providers your organisation can use." className="mt-4">
+                <Select value={access} onValueChange={(v) => setAccess(v as AccessMode)}>
+                  <SelectTrigger aria-label="Access through">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {accessModes.map((m) => (
+                      <SelectItem key={m} value={m}>
+                        {ACCESS_MODE_LABELS[m]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            )}
           </DialogBody>
           <DialogFooter>
             <DialogClose asChild>
@@ -273,7 +295,7 @@ export default function CatalogDetail() {
             <Button
               disabled={!projectId}
               onClick={() => {
-                const res = addProjectCapability(projectId, item.id)
+                const res = addProjectCapability(projectId, item.id, item.category === 'llm' ? access : undefined)
                 if (!res.ok) {
                   toast.error(res.error)
                   return

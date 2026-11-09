@@ -6,10 +6,12 @@ import { CalendarPlus, CheckCircle2, Eye, EyeOff, FlaskConical, GitBranch, Pause
 import type { Environment } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
 import { canSeeEnvironment, useMemberProjectIds, useScope } from '@/store/selectors'
-import { estimateCost } from '@/lib/cost'
+import { costBreakdown, dailySpend, spendToDate } from '@/lib/cost'
+import { useCostContext } from '@/store/selectors'
+import { CostBreakdown } from '@/components/shared/CostBreakdown'
 import { formatCompact, formatDate, formatInt, formatShortDate, formatTime, relativeTime } from '@/lib/format'
 import { autoShutdownLabel, CATEGORY_SINGULAR, COMPUTE_TIERS, dataClassLabel, purposeLabel, roleLabel } from '@/lib/labels'
-import { envUsageSeries, initialLogs, makeLogLine, type LogLine } from '@/lib/mock'
+import { initialLogs, makeLogLine, type LogLine } from '@/lib/mock'
 import { axisProps, CHART_COLORS, CHART_GRID } from '@/lib/chart'
 import { allocationOf } from '@/lib/quota'
 import { editEnvPath, itemPath, requestPath } from '@/lib/paths'
@@ -222,7 +224,12 @@ export default function EnvironmentDetail() {
   const [snippetKind, setSnippetKind] = useState<'chat' | 'asr'>('chat')
   const [extendOpen, setExtendOpen] = useState(false)
   const [extendWeeks, setExtendWeeks] = useState('4')
-  const usage = useMemo(() => (env ? envUsageSeries(env) : []), [env])
+  const costCtx = useCostContext(env?.tenantId)
+  const usage = useMemo(
+    () => (env ? dailySpend(env, 30, costCtx).map((d, i) => ({ ...d, requests: Math.round(d.credits * (3.2 + ((i * 37) % 10) / 10)) })) : []),
+    [env, costCtx],
+  )
+  const spent = useMemo(() => (env ? spendToDate(env, costCtx).total : 0), [env, costCtx])
 
   if (!env || !canSeeEnvironment(scope, env, memberOf)) {
     return <NotFound message="This environment doesn’t exist or is outside what you can see." />
@@ -231,7 +238,7 @@ export default function EnvironmentDetail() {
   const item = (cid: string) => catalog.find((c) => c.id === cid)
   const owner = users.find((u) => u.id === env.ownerId)
   const project = projects.find((p) => p.id === env.projectId)
-  const est = estimateCost(env.spec, catalog)
+  const est = costBreakdown(env.spec, costCtx)
   const alloc = allocationOf(env.spec)
   const tier = COMPUTE_TIERS.find((t) => t.value === env.spec.compute)!
   const live = env.status === 'active' || env.status === 'stopped' || env.status === 'suspended'
@@ -394,8 +401,8 @@ export default function EnvironmentDetail() {
         <TabsContent value="overview">
           {monitoringBlocked && <p className="mb-4 text-caption text-text-muted">Monitoring: {monitoringBlocked}</p>}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <KpiCard label="Credits used" value={formatInt(env.creditsUsed)} trend={{ direction: 'flat', text: 'Since it started' }} />
-            <KpiCard label="Estimated per month" value={formatInt(est.credits)} trend={{ direction: 'flat', text: `${formatInt(est.gpuHours)} GPU-hours` }} />
+            <KpiCard label="Credits used" value={formatInt(spent)} trend={{ direction: 'flat', text: 'Since it started' }} />
+            <KpiCard label="Estimated per month" value={formatInt(est.total)} trend={{ direction: 'flat', text: `${formatInt(est.gpuHours)} GPU-hours` }} />
             <KpiCard label="Requests, last 7 days" value={formatCompact(requests7)} trend={{ direction: 'flat', text: env.status === 'active' ? 'Serving traffic' : 'No traffic right now' }} />
             <KpiCard label="Expires" value={env.expiresAt ? formatShortDate(env.expiresAt) : '—'} trend={{ direction: 'flat', text: env.expiresAt ? formatDate(env.expiresAt) : 'No end date' }} />
           </div>
@@ -477,7 +484,7 @@ export default function EnvironmentDetail() {
               </section>
 
               <ChartCard title="Usage" description="Credits and requests per day, last 30 days" height={240}>
-                {env.creditsUsed === 0 ? (
+                {spent === 0 ? (
                   <div className="flex h-full items-center justify-center text-sm text-text-secondary">No usage yet. It shows up once the environment serves requests.</div>
                 ) : (
                   <ResponsiveContainer width="100%" height="100%">
@@ -542,7 +549,9 @@ export default function EnvironmentDetail() {
                   {(
                     [
                       ['Owner', `${owner?.name ?? ''}${owner ? ` · ${roleLabel(owner.role)}` : ''}`],
-                      ['Compute', `${tier.label}${alloc.gpus > 1 ? ` × ${alloc.gpus}` : ''}`],
+                      ['Provider', est.provider ? `${est.provider.name} · ${est.region?.name ?? ''}` : '—'],
+                      ['Instance', `${env.spec.instance.name}${env.spec.instanceCount > 1 ? ` × ${env.spec.instanceCount}` : ''} · ${tier.label}`],
+                      ['Rate card', `v${env.rateCardVersion} at provisioning${est.rateCard && est.rateCard.version !== env.rateCardVersion ? ` · v${est.rateCard.version} now` : ''}`],
                       ['Allocation', `${alloc.vcpu} vCPU · ${alloc.ramGb} GB RAM · ${formatInt(alloc.storageGb)} GB`],
                       ['Auto-shutdown', autoShutdownLabel(env.spec.autoShutdownHours)],
                       ['Personal identifiers', env.spec.containsPii ? 'Yes' : 'No'],
@@ -554,6 +563,11 @@ export default function EnvironmentDetail() {
                     </div>
                   ))}
                 </dl>
+              </section>
+
+              <section className="card p-6">
+                <h2 className="mb-4 font-heading text-h3 text-text-primary">Estimated cost</h2>
+                <CostBreakdown est={est} />
               </section>
             </div>
           </div>

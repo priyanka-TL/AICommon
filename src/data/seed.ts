@@ -2,11 +2,15 @@ import type {
   ActorRole,
   AuditEntry,
   CatalogItem,
+  ComputeTier,
   Dataset,
   EnvRequest,
   EnvSpec,
   EnvStatus,
   Environment,
+  GpuType,
+  InfraProvider,
+  InstanceType,
   LifecycleEvent,
   Language,
   LifecycleStatus,
@@ -17,6 +21,8 @@ import type {
   QaRun,
   Quota,
   QuotaRequest,
+  RateCard,
+  Region,
   Role,
   Suggestion,
   Tenant,
@@ -28,7 +34,7 @@ import type {
 } from './types'
 
 /** Bump to discard everyone's saved state and load this seed. */
-export const SEED_VERSION = 'v3'
+export const SEED_VERSION = 'v4'
 
 export const DEFAULT_TENANT_ID = 't-default'
 export const SUPER_ADMIN_ID = 'u-super'
@@ -316,6 +322,216 @@ export const seedCatalog: CatalogItem[] = [
   },
 ]
 
+/* ---------- infrastructure providers ---------- */
+
+/** YYYY-MM-DD, `days` ago. */
+const dayAgo = (days: number) => new Date(Date.now() - days * DAY).toISOString().slice(0, 10)
+
+const inst = (id: string, name: string, vcpu: number, ramGb: number, gpuType: GpuType | 'none', gpuCount: number, hourlyRate: number): InstanceType => ({ id, name, vcpu, ramGb, gpuType, gpuCount, hourlyRate })
+
+const card = (
+  version: number,
+  days: number,
+  source: string,
+  instanceTypes: InstanceType[],
+  rates: { storage: number; egress: number; fee: number; ngo: number; gst?: number },
+): RateCard => ({
+  version,
+  effectiveFrom: dayAgo(days),
+  source,
+  publishedAt: at(days + 3),
+  publishedById: SUPER_ADMIN_ID,
+  instanceTypes,
+  storageRate: rates.storage,
+  egressRate: rates.egress,
+  platformFeePct: rates.fee,
+  ngoDiscountPct: rates.ngo,
+  gstPct: rates.gst ?? 18,
+})
+
+const region = (id: string, name: string, indiaResident: boolean, gpuTypes: GpuType[]): Region => ({ id, name, indiaResident, gpuTypes })
+
+const azureV1 = [
+  inst('azr-d8s', 'D8s v5', 8, 32, 'none', 0, 32),
+  inst('azr-nc8-t4', 'NC8as T4 v3', 8, 56, 'T4', 1, 64),
+  inst('azr-nv18-a10', 'NV18ads A10 v5', 18, 220, 'A10', 1, 132),
+  inst('azr-nc24-a100', 'NC24ads A100 v4', 24, 220, 'A100', 1, 315),
+]
+const azureV2 = azureV1.map((i) => ({ ...i, hourlyRate: Math.round(i.hourlyRate * 1.06) }))
+
+export const seedInfraProviders: InfraProvider[] = [
+  {
+    id: 'ip-aws',
+    name: 'Amazon Web Services',
+    code: 'AWS',
+    type: 'public_cloud',
+    status: 'active',
+    regions: [region('aws-mum', 'Mumbai', true, ['T4', 'L4', 'A10', 'A100']), region('aws-hyd', 'Hyderabad', true, ['T4', 'A10']), region('aws-sin', 'Singapore', false, ['T4', 'L4', 'A10', 'A100'])],
+    rateCards: [
+      card(
+        1,
+        200,
+        'Published price list, Apr 2026 (ap-south-1, on-demand)',
+        [
+          inst('aws-c6i-2xl', 'c6i.2xlarge', 8, 16, 'none', 0, 32),
+          inst('aws-g4dn-2xl', 'g4dn.2xlarge', 8, 32, 'T4', 1, 70),
+          inst('aws-g6-2xl', 'g6.2xlarge', 8, 32, 'L4', 1, 96),
+          inst('aws-g5-4xl', 'g5.4xlarge', 16, 64, 'A10', 1, 152),
+          inst('aws-p4d-1g', 'p4d A100 80 GB (1 GPU)', 12, 144, 'A100', 1, 360),
+        ],
+        { storage: 7, egress: 7.5, fee: 10, ngo: 10 },
+      ),
+    ],
+    aiServices: ['bedrock'],
+    maxGpus: 24,
+    allowedTenants: 'all',
+    createdAt: at(210),
+  },
+  {
+    id: 'ip-azure',
+    name: 'Microsoft Azure',
+    code: 'AZR',
+    type: 'public_cloud',
+    status: 'active',
+    regions: [region('azr-cin', 'Central India (Pune)', true, ['T4', 'A10', 'A100']), region('azr-sin', 'South India (Chennai)', true, ['T4', 'A10']), region('azr-sea', 'Southeast Asia (Singapore)', false, ['T4', 'A10', 'A100'])],
+    rateCards: [
+      card(1, 200, 'Published price list, Apr 2026 (Central India, pay-as-you-go)', azureV1, { storage: 6.5, egress: 7, fee: 10, ngo: 15 }),
+      card(2, 40, 'Published price list, Oct 2026 (Central India, pay-as-you-go)', azureV2, { storage: 6.5, egress: 7, fee: 10, ngo: 15 }),
+    ],
+    aiServices: ['azure_openai'],
+    maxGpus: 20,
+    allowedTenants: 'all',
+    createdAt: at(210),
+  },
+  {
+    id: 'ip-gcp',
+    name: 'Google Cloud',
+    code: 'GCP',
+    type: 'public_cloud',
+    status: 'active',
+    regions: [region('gcp-mum', 'Mumbai', true, ['T4', 'L4', 'A100']), region('gcp-del', 'Delhi', true, ['T4', 'L4']), region('gcp-sin', 'Singapore', false, ['T4', 'L4', 'A100'])],
+    rateCards: [
+      card(
+        1,
+        200,
+        'Published price list, Apr 2026 (asia-south1, on-demand)',
+        [
+          inst('gcp-n2-8', 'n2-standard-8', 8, 32, 'none', 0, 33),
+          inst('gcp-n1-t4', 'n1-standard-8 + T4', 8, 30, 'T4', 1, 62),
+          inst('gcp-g2-8', 'g2-standard-8', 8, 32, 'L4', 1, 90),
+          inst('gcp-a2-1g', 'a2-highgpu-1g', 12, 85, 'A100', 1, 322),
+        ],
+        { storage: 7, egress: 9.5, fee: 10, ngo: 10 },
+      ),
+    ],
+    aiServices: ['vertex'],
+    maxGpus: 16,
+    allowedTenants: 'all',
+    createdAt: at(210),
+  },
+  {
+    id: 'ip-e2e',
+    name: 'E2E Networks',
+    code: 'E2E',
+    type: 'indian_cloud',
+    status: 'active',
+    regions: [region('e2e-del', 'Delhi NCR', true, ['T4', 'L4', 'A100']), region('e2e-mum', 'Mumbai', true, ['T4', 'A10', 'A100'])],
+    rateCards: [
+      card(
+        1,
+        200,
+        'Published price list, Apr 2026 (hourly billing)',
+        [
+          inst('e2e-c3-8', 'C3 8 vCPU', 8, 32, 'none', 0, 12),
+          inst('e2e-t4', 'GPU T4 1×', 8, 30, 'T4', 1, 28),
+          inst('e2e-l4', 'GPU L4 1×', 16, 64, 'L4', 1, 52),
+          inst('e2e-a10', 'GPU A10 1×', 16, 64, 'A10', 1, 66),
+          inst('e2e-a100', 'GPU A100 80 GB 1×', 16, 115, 'A100', 1, 220),
+        ],
+        { storage: 4, egress: 2, fee: 7, ngo: 5 },
+      ),
+    ],
+    aiServices: [],
+    maxGpus: 16,
+    allowedTenants: 'all',
+    createdAt: at(210),
+  },
+  {
+    id: 'ip-yotta',
+    name: 'Yotta',
+    code: 'YTA',
+    type: 'indian_cloud',
+    status: 'active',
+    regions: [region('yta-nmb', 'Navi Mumbai', true, ['L4', 'A100']), region('yta-hyd', 'Hyderabad', true, ['A10', 'A100'])],
+    rateCards: [
+      card(
+        1,
+        200,
+        'Signed rate agreement, Apr 2026',
+        [
+          inst('yta-cpu-8', 'Shakti CPU 8 vCPU', 8, 32, 'none', 0, 11),
+          inst('yta-l4', 'Shakti L4 1×', 8, 48, 'L4', 1, 48),
+          inst('yta-a10', 'Shakti A10 1×', 16, 64, 'A10', 1, 60),
+          inst('yta-a100', 'Shakti A100 80 GB 1×', 16, 120, 'A100', 1, 190),
+        ],
+        { storage: 3.5, egress: 1.5, fee: 5, ngo: 5 },
+      ),
+    ],
+    aiServices: [],
+    maxGpus: 12,
+    allowedTenants: 'all',
+    createdAt: at(210),
+  },
+  {
+    id: 'ip-onprem',
+    name: 'Shared On-premise GPU Pool',
+    code: 'ONP',
+    type: 'on_premise',
+    status: 'active',
+    regions: [region('onp-blr', 'Bengaluru', true, ['T4', 'A100'])],
+    rateCards: [
+      card(
+        1,
+        200,
+        'Internal cost allocation, Apr 2026',
+        [inst('onp-cpu', 'CPU node 8 vCPU', 8, 32, 'none', 0, 0), inst('onp-t4', 'T4 node', 8, 32, 'T4', 1, 0), inst('onp-a100', 'A100 node', 32, 128, 'A100', 1, 0)],
+        { storage: 2, egress: 0, fee: 5, ngo: 0 },
+      ),
+    ],
+    aiServices: [],
+    maxGpus: 6,
+    allowedTenants: 'all',
+    createdAt: at(210),
+  },
+]
+
+export const GPU_TIER: Record<GpuType | 'none', ComputeTier> = { none: 'cpu', T4: 't4', L4: 'l4', A10: 'a10', A100: 'a100' }
+
+/** Fills the infrastructure fields of a spec from a provider's latest rate card. */
+export function placeSpec<T extends EnvSpec>(spec: T, providerId: string, regionId: string, instanceTypeId: string, instanceCount = 1): T {
+  const provider = seedInfraProviders.find((p) => p.id === providerId)!
+  const it = provider.rateCards[provider.rateCards.length - 1]!.instanceTypes.find((i) => i.id === instanceTypeId)!
+  return {
+    ...spec,
+    providerId,
+    regionId,
+    instanceTypeId,
+    instanceCount,
+    instance: { name: it.name, vcpu: it.vcpu, ramGb: it.ramGb, gpuType: it.gpuType, gpuCount: it.gpuCount },
+    compute: GPU_TIER[it.gpuType],
+    gpuCount: it.gpuCount * instanceCount,
+  }
+}
+
+/** Default placement for a tier, in an India-resident region. */
+const DEFAULT_PLACEMENT: Record<ComputeTier, [string, string, string]> = {
+  cpu: ['ip-e2e', 'e2e-del', 'e2e-c3-8'],
+  t4: ['ip-aws', 'aws-mum', 'aws-g4dn-2xl'],
+  l4: ['ip-gcp', 'gcp-mum', 'gcp-g2-8'],
+  a10: ['ip-azure', 'azr-cin', 'azr-nv18-a10'],
+  a100: ['ip-yotta', 'yta-nmb', 'yta-a100'],
+}
+
 /* ---------- environments and requests ---------- */
 
 const baseSpec: EnvSpec = {
@@ -324,6 +540,12 @@ const baseSpec: EnvSpec = {
   projectId: '',
   purpose: 'development',
   durationWeeks: 8,
+  providerId: '',
+  regionId: '',
+  instanceTypeId: '',
+  instance: { name: '', vcpu: 0, ramGb: 0, gpuType: 'none', gpuCount: 0 },
+  instanceCount: 1,
+  egressGbPerMonth: 50,
   compute: 't4',
   gpuCount: 1,
   storageGb: 100,
@@ -338,7 +560,12 @@ const baseSpec: EnvSpec = {
   justification: '',
 }
 
-const spec = (s: Partial<EnvSpec>): EnvSpec => ({ ...baseSpec, ...s })
+/** Older seed specs give a tier and GPU count; place them on a provider that offers it. */
+const spec = (s: Partial<EnvSpec>): EnvSpec => {
+  const merged = { ...baseSpec, ...s }
+  const [p, r, i] = DEFAULT_PLACEMENT[merged.compute]
+  return placeSpec(merged, p, r, i, merged.compute === 'cpu' ? 1 : Math.max(1, merged.gpuCount))
+}
 
 const TA: Record<string, string> = { [SL]: 'u-sl-ta', [M4C]: 'u-m4c-ta' }
 const CODE: Record<string, string> = { [SL]: 'SLK-101', [M4C]: 'M4C-102' }
@@ -437,6 +664,33 @@ function approvalHistory(e: EnvSeed) {
   return { req, env, submitted, approvedAt }
 }
 
+/** Where each seeded environment runs. Personal and children's data stay in India-resident regions. */
+const PLACEMENT: Record<string, [string, string, string]> = {
+  'env-sl-tutor': ['ip-azure', 'azr-cin', 'azr-nv18-a10'],
+  'env-sl-lessonplan': ['ip-aws', 'aws-mum', 'aws-g4dn-2xl'],
+  'env-sl-asr-ft': ['ip-onprem', 'onp-blr', 'onp-a100'],
+  'env-sl-whatsapp': ['ip-e2e', 'e2e-mum', 'e2e-a10'],
+  'env-sl-asr-eval': ['ip-yotta', 'yta-nmb', 'yta-a100'],
+  'env-m4c-coach': ['ip-azure', 'azr-sin', 'azr-nv18-a10'],
+  'env-m4c-docparse': ['ip-gcp', 'gcp-mum', 'gcp-n2-8'],
+  'env-m4c-feedback': ['ip-gcp', 'gcp-del', 'gcp-n1-t4'],
+  'env-m4c-visits': ['ip-aws', 'aws-hyd', 'aws-g4dn-2xl'],
+  'env-m4c-ocr': ['ip-e2e', 'e2e-mum', 'e2e-a10'],
+  'env-m4c-pilot-v0': ['ip-aws', 'aws-sin', 'aws-c6i-2xl'],
+}
+for (const e of envSeeds) {
+  const place = PLACEMENT[e.id]
+  if (place) e.spec = placeSpec(e.spec, place[0], place[1], place[2], e.spec.compute === 'cpu' ? 1 : e.spec.instanceCount)
+}
+
+/** Version of the provider's rate card in force on a date. */
+export function rateCardVersionAt(providerId: string, iso: string, providers: InfraProvider[] = seedInfraProviders) {
+  const p = providers.find((x) => x.id === providerId)
+  const day = iso.slice(0, 10)
+  const cards = (p?.rateCards ?? []).filter((c) => c.effectiveFrom <= day)
+  return (cards[cards.length - 1] ?? p?.rateCards[0])?.version ?? 1
+}
+
 const built = envSeeds.map((e) => {
   const owner = seedUsers.find((x) => x.id === e.ownerId)!
   const h = approvalHistory(e)
@@ -459,6 +713,7 @@ const built = envSeeds.map((e) => {
     provisionDueAt: null,
     hold: !!e.hold,
     loadProfile: e.hot ? 'hot' : 'normal',
+    rateCardVersion: rateCardVersionAt(e.spec.providerId, h.approvedAt),
   }
   const request: EnvRequest = {
     id: requestId,
@@ -618,6 +873,7 @@ export const seedProviders: Provider[] = [
   { id: 'p-bhashini', name: 'Bhashini', kind: 'asr', maskedKey: 'bh-••••••••••4410', enabled: true, health: 'healthy', latencyMs: 690, region: 'India', serves: ['asr-bhashini'] },
   { id: 'p-gstt', name: 'Google Speech-to-Text', kind: 'asr', maskedKey: 'AIza••••••••••Lm8s', enabled: true, health: 'healthy', latencyMs: 610, region: 'asia-south1 (Mumbai)', serves: ['asr-google'] },
   { id: 'p-azure', name: 'Azure AI Speech', kind: 'asr', maskedKey: 'az-••••••••••c0f3', enabled: false, health: 'down', latencyMs: 0, region: 'Central India', serves: ['asr-azure'] },
+  { id: 'p-openrouter', name: 'OpenRouter', kind: 'llm', maskedKey: 'sk-or-••••••••e81b', enabled: true, health: 'healthy', latencyMs: 900, region: 'Global gateway', serves: ['llm-gpt', 'llm-claude', 'llm-gemini', 'llm-llama', 'llm-mistral', 'llm-gemma', 'llm-qwen'] },
 ]
 
 /* ---------- usage (30 days) ---------- */
@@ -1113,6 +1369,7 @@ export interface SeedState {
   suggestions: Suggestion[]
   quotaRequests: QuotaRequest[]
   testRuns: TestRun[]
+  infraProviders: InfraProvider[]
   datasets: Dataset[]
   testConfigs: TestConfig[]
   qaRuns: QaRun[]
@@ -1135,6 +1392,7 @@ export function createSeed(): SeedState {
     suggestions: seedSuggestions,
     quotaRequests: seedQuotaRequests,
     testRuns: seedTestRuns,
+    infraProviders: seedInfraProviders,
     datasets: seedDatasets,
     testConfigs: seedTestConfigs,
     qaRuns: [] as QaRun[],

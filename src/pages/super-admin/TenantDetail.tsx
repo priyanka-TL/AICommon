@@ -11,6 +11,7 @@ import { tenantAllocated } from '@/lib/quota'
 import { envPath } from '@/lib/paths'
 import { axisProps, CHART_COLORS, CHART_GRID } from '@/lib/chart'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { TenantProviders } from '@/components/shared/TenantProviders'
 import { KpiCard } from '@/components/shared/KpiCard'
 import { DataTable, type Column } from '@/components/shared/DataTable'
 import { EmptyState } from '@/components/shared/EmptyState'
@@ -141,6 +142,8 @@ export default function TenantDetail() {
         <KpiCard label="Projects" value={String(projects.filter((p) => p.status === 'active').length)} trend={{ direction: 'flat', text: `${projects.length} in total` }} />
         <KpiCard label="Active environments" value={String(envs.filter((e) => e.status === 'active').length)} trend={{ direction: 'flat', text: `${envs.filter((e) => e.status !== 'terminated').length} not terminated` }} />
       </div>
+
+      <TenantProviders tenantId={tenant.id} className="mt-6" />
 
       <section className="card mt-6 p-6">
         <h2 className="mb-4 font-heading text-h3 text-text-primary">Quota and allocation</h2>

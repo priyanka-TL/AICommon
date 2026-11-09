@@ -62,7 +62,11 @@ export interface Project {
   createdAt: string
   /** Model a QA Engineer recommended after a comparison. */
   recommendation?: Recommendation
+  /** How each model is reached from this project. */
+  modelAccess?: Record<string, AccessMode>
 }
+
+export type AccessMode = 'direct' | 'openrouter' | 'bedrock' | 'azure_openai' | 'vertex'
 
 export interface Recommendation {
   modelId: string
@@ -73,7 +77,7 @@ export interface Recommendation {
 }
 
 export type Purpose = 'development' | 'functional-testing' | 'load-testing' | 'evaluation' | 'pilot'
-export type ComputeTier = 'cpu' | 't4' | 'a10' | 'a100'
+export type ComputeTier = 'cpu' | 't4' | 'l4' | 'a10' | 'a100'
 export type DataClassification = 'public' | 'internal' | 'personal' | 'children'
 export type Language = 'Hindi' | 'Kannada' | 'Tamil' | 'Telugu' | 'Marathi' | 'Bengali' | 'English'
 
@@ -83,14 +87,31 @@ export interface LlmSelection {
   tokenBudget: number
 }
 
+/** Snapshot of the instance type chosen, so quota maths needs no lookup. */
+export interface InstanceSnapshot {
+  name: string
+  vcpu: number
+  ramGb: number
+  gpuType: GpuType | 'none'
+  gpuCount: number
+}
+
 export interface EnvSpec {
   name: string
   description: string
   projectId: string
   purpose: Purpose
   durationWeeks: number
+  /** Infrastructure provider, region and instance type (from the provider's rate card). */
+  providerId: string
+  regionId: string
+  instanceTypeId: string
+  instance: InstanceSnapshot
+  instanceCount: number
+  egressGbPerMonth: number
+  /** Derived from the instance: GPU family, kept for labels, load tests and monitoring. */
   compute: ComputeTier
-  /** Number of GPU nodes for GPU tiers; ignored for CPU. */
+  /** Derived: total GPUs (instance GPUs × instance count). */
   gpuCount: number
   storageGb: number
   /** Idle hours before auto-shutdown; 0 means off */
@@ -178,6 +199,8 @@ export interface Environment {
   failureReason: string | null
   /** When provisioning completes (ISO). Null for held or finished environments. */
   provisionDueAt: string | null
+  /** Rate card version in force when it was provisioned. */
+  rateCardVersion: number
   /** Keeps a seeded environment in Provisioning so the state stays visible. */
   hold: boolean
   loadProfile: 'normal' | 'hot'
@@ -301,6 +324,7 @@ export type AuditEntity =
   | 'settings'
   | 'capacity'
   | 'qa'
+  | 'infra_provider'
 
 export interface AuditEntry {
   id: string
@@ -429,4 +453,60 @@ export interface QaRun {
   models: ModelSummary[]
   /** Load runs keep their headline numbers here. */
   load?: { vus: number; rps: number; p95: number; errorPct: number }
+}
+
+/* ---------- infrastructure providers ---------- */
+
+export type GpuType = 'T4' | 'L4' | 'A10' | 'A100'
+export type InfraProviderType = 'public_cloud' | 'indian_cloud' | 'on_premise'
+export type AiService = 'bedrock' | 'azure_openai' | 'vertex'
+
+export interface Region {
+  id: string
+  name: string
+  indiaResident: boolean
+  gpuTypes: GpuType[]
+}
+
+export interface InstanceType {
+  id: string
+  name: string
+  vcpu: number
+  ramGb: number
+  gpuType: GpuType | 'none'
+  gpuCount: number
+  /** ₹ per hour */
+  hourlyRate: number
+}
+
+export interface RateCard {
+  version: number
+  /** YYYY-MM-DD */
+  effectiveFrom: string
+  source: string
+  publishedAt: string
+  publishedById: string
+  instanceTypes: InstanceType[]
+  /** ₹ per GB-month */
+  storageRate: number
+  /** ₹ per GB */
+  egressRate: number
+  platformFeePct: number
+  ngoDiscountPct: number
+  gstPct: number
+}
+
+export interface InfraProvider {
+  id: string
+  name: string
+  code: string
+  type: InfraProviderType
+  logoUrl?: string
+  status: 'active' | 'disabled'
+  regions: Region[]
+  rateCards: RateCard[]
+  aiServices: AiService[]
+  maxGpus: number
+  allowedTenants: 'all' | string[]
+  createdAt: string
 }

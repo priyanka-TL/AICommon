@@ -8,6 +8,7 @@ import { formatCompact, formatShortDate, plural } from '@/lib/format'
 import { tenantAllocated } from '@/lib/quota'
 import { axisProps, CHART_COLORS, CHART_GRID } from '@/lib/chart'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { SpendThisMonth } from '@/components/shared/SpendThisMonth'
 import { KpiCard } from '@/components/shared/KpiCard'
 import { ChartCard, ChartTooltip } from '@/components/shared/ChartCard'
 import { ActivityFeed } from '@/components/shared/ActivityFeed'
@@ -55,6 +56,8 @@ export default function TenantAdminDashboard() {
         <KpiCard loading={loading} label="Active environments" icon={Server} value={String(environments.filter((e) => e.status === 'active').length)} trend={{ direction: 'flat', text: `${environments.length} not terminated` }} />
         <KpiCard loading={loading} label="Pending approvals" icon={Inbox} value={String(toReview.length)} trend={{ direction: 'flat', text: `${withSuper.length} with the Super Admin` }} />
       </div>
+
+      <SpendThisMonth tenantId={tenant.id} className="mt-6" />
 
       <section className="card mt-6 p-6">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3">

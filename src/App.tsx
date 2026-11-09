@@ -11,6 +11,8 @@ import Tenants from '@/pages/super-admin/Tenants'
 import TenantDetail from '@/pages/super-admin/TenantDetail'
 import Registry from '@/pages/super-admin/Catalog'
 import Providers from '@/pages/super-admin/Providers'
+import InfraProviders from '@/pages/super-admin/InfraProviders'
+import InfraProviderDetail from '@/pages/super-admin/InfraProviderDetail'
 import Capacity from '@/pages/super-admin/Capacity'
 import TenantAdminDashboard from '@/pages/tenant-admin/Dashboard'
 import { ProjectDetail, Projects } from '@/pages/tenant-admin/Projects'
@@ -76,6 +78,8 @@ export default function App() {
             <Route path="/super-admin/registry" element={<Registry />} />
             <Route path="/super-admin/suggestions" element={<SuggestionsRedirect base="/super-admin" />} />
             <Route path="/super-admin/providers" element={<Providers />} />
+            <Route path="/super-admin/infra-providers" element={<InfraProviders />} />
+            <Route path="/super-admin/infra-providers/:id" element={<InfraProviderDetail />} />
             <Route path="/super-admin/capacity" element={<Capacity />} />
             <Route path="/super-admin/monitoring" element={<Monitoring />} />
             <Route path="/super-admin/audit" element={<AuditLog />} />

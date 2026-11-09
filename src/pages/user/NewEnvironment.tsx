@@ -2,16 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, FolderKanban, Info, MessageSquareWarning, Save, Send, ShieldAlert } from 'lucide-react'
-import type { CatalogCategory, CatalogItem, EnvSpec, Language, Project, Role, Tenant } from '@/data/types'
+import type { CatalogCategory, CatalogItem, EnvSpec, InfraProvider, Language, Project, Role, Tenant } from '@/data/types'
 import { useAppStore, useCurrentTenant, useCurrentUser } from '@/store/useAppStore'
 import { useTenantCatalog } from '@/store/selectors'
-import { activeHoursPerMonth, estimateCost, HOURLY_RATE } from '@/lib/cost'
+import { activeHoursPerMonth, costBreakdown, rateCardAt } from '@/lib/cost'
+import { ensurePlacement, instancesFor, isSensitive, PROVIDER_TYPE_LABELS, providersFor, regionsFor, residencyProblem, applyPlacement } from '@/lib/providers'
+import { useCostContext } from '@/store/selectors'
 import { allocationOf, checkQuota, quotaMessage, subQuota, tenantAllocated } from '@/lib/quota'
 import { addsInfrastructure } from '@/lib/spec'
 import { envPath, requestPath, requestsPath } from '@/lib/paths'
 import { EmptyState } from '@/components/shared/EmptyState'
-import { formatInt } from '@/lib/format'
-import { AUTO_SHUTDOWN_OPTIONS, CATEGORY_LABELS, COMPUTE_TIERS, DATA_CLASSES, LANGUAGES, PURPOSES } from '@/lib/labels'
+import { formatDate, formatInt } from '@/lib/format'
+import { AUTO_SHUTDOWN_OPTIONS, CATEGORY_LABELS, DATA_CLASSES, LANGUAGES, PURPOSES } from '@/lib/labels'
 import { diffSpecs } from '@/lib/spec'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -27,7 +29,7 @@ import NotFound from '@/pages/NotFound'
 
 const STEPS = [
   { title: 'Purpose', hint: 'What it is for' },
-  { title: 'Compute', hint: 'CPU or GPU, storage' },
+  { title: 'Compute', hint: 'Provider, region, instance' },
   { title: 'Language models', hint: 'Models and budgets' },
   { title: 'Speech recognition', hint: 'Providers and languages' },
   { title: 'Capabilities', hint: 'Frameworks and tools' },
@@ -43,6 +45,12 @@ export const DEFAULT_SPEC: EnvSpec = {
   projectId: '',
   purpose: 'development',
   durationWeeks: 8,
+  providerId: '',
+  regionId: '',
+  instanceTypeId: '',
+  instance: { name: '', vcpu: 0, ramGb: 0, gpuType: 'none', gpuCount: 0 },
+  instanceCount: 1,
+  egressGbPerMonth: 50,
   compute: 't4',
   gpuCount: 1,
   storageGb: 100,
@@ -57,12 +65,16 @@ export const DEFAULT_SPEC: EnvSpec = {
   justification: '',
 }
 
-type Errors = Partial<Record<'name' | 'projectId' | 'languages' | 'justification' | 'changes', string>>
+type Errors = Partial<Record<'name' | 'projectId' | 'regionId' | 'dataClassification' | 'languages' | 'justification' | 'changes', string>>
 
-function validate(spec: EnvSpec, step: number): Errors {
+function validate(spec: EnvSpec, step: number, providers: InfraProvider[]): Errors {
   const e: Errors = {}
   if (step === 0 && !spec.projectId) e.projectId = 'Choose the project this environment is for.'
   if (step === 0 && spec.name.trim().length < 3) e.name = 'Give the environment a name of at least 3 characters.'
+  if (step === 1 && !spec.instanceTypeId) e.regionId = 'Choose a provider, region and instance type.'
+  const residency = residencyProblem(spec, providers)
+  if (step === 1 && residency) e.regionId = residency
+  if (step === 5 && residency) e.dataClassification = residency
   if (step === 3 && spec.asr.length > 0 && spec.languages.length === 0) e.languages = 'Choose at least one language for speech recognition.'
   if (step === 6 && spec.justification.trim().length < 10) e.justification = 'Tell your reviewers in a sentence or two why your organisation needs this.'
   return e
@@ -147,46 +159,96 @@ function StepPurpose({ spec, set, errors, projects }: StepProps) {
   )
 }
 
-function StepCompute({ spec, set }: StepProps) {
+function StepCompute({ spec, set, providers, tenant, errors, editing }: StepProps) {
   const hours = activeHoursPerMonth(spec.autoShutdownHours)
+  const allowed = providersFor(providers, tenant.id)
+  const provider = providers.find((p) => p.id === spec.providerId)
+  const sensitive = isSensitive(spec)
+  const regions = regionsFor(provider, sensitive)
+  const region = provider?.regions.find((r) => r.id === spec.regionId)
+  const instances = instancesFor(provider, region)
+  const card = rateCardAt(provider)
+  const choose = (providerId: string, regionId?: string, instanceId?: string, count = spec.instanceCount) => {
+    const p = providers.find((x) => x.id === providerId)
+    const rs = regionsFor(p, sensitive)
+    const r = rs.find((x) => x.id === regionId) ?? rs.find((x) => x.id === spec.regionId) ?? rs[0]
+    const opts = instancesFor(p, r)
+    const it = opts.find((x) => x.id === instanceId) ?? opts.find((x) => x.gpuType === spec.instance.gpuType) ?? opts[0]
+    if (!p || !r || !it) return
+    set(applyPlacement(spec, p.id, r.id, it, count))
+  }
+
   return (
     <div className="flex flex-col gap-6">
+      <Field label="Infrastructure provider" helper={editing ? 'The provider and region can’t change on a running environment. Request a new one to move it.' : `Providers available to ${tenant.name}.`}>
+        <Select value={spec.providerId} onValueChange={(v) => choose(v)} disabled={editing}>
+          <SelectTrigger aria-label="Infrastructure provider" className="sm:max-w-md">
+            <SelectValue placeholder="Choose a provider" />
+          </SelectTrigger>
+          <SelectContent>
+            {allowed.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.name} · {PROVIDER_TYPE_LABELS[p.type]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+
       <div>
-        <p className="mb-3 text-sm font-semibold text-text-primary">Compute tier</p>
-        <RadioGroup value={spec.compute} onValueChange={(v) => set({ compute: v as EnvSpec['compute'] })} className="sm:grid-cols-2" aria-label="Compute tier">
-          {COMPUTE_TIERS.map((t) => (
+        <p className="mb-3 text-sm font-semibold text-text-primary">Region</p>
+        {sensitive && (
+          <p className="mb-3 flex gap-2 rounded-control bg-status-change-bg px-3 py-2 text-caption text-status-change-fg">
+            <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
+            {spec.dataClassification === 'children' ? 'Children’s' : 'Personal'} data must stay in India, so only India-resident regions are shown.
+          </p>
+        )}
+        <RadioGroup value={spec.regionId} onValueChange={(v) => choose(spec.providerId, v)} className="sm:grid-cols-3" aria-label="Region" disabled={editing}>
+          {regions.map((r) => (
+            <RadioCard key={r.id} value={r.id} title={r.name} description={r.indiaResident ? 'Data stays in India' : 'Outside India'} extra={<span className="mt-1 text-caption text-text-muted">GPUs: {r.gpuTypes.join(', ') || 'none'}</span>} />
+          ))}
+        </RadioGroup>
+        {errors.regionId && (
+          <p className="mt-2 flex items-start gap-1.5 text-caption text-red-text" role="alert">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden /> {errors.regionId}
+          </p>
+        )}
+      </div>
+
+      <div>
+        <p className="mb-3 text-sm font-semibold text-text-primary">Instance type</p>
+        <RadioGroup value={spec.instanceTypeId} onValueChange={(v) => choose(spec.providerId, spec.regionId, v)} className="sm:grid-cols-2" aria-label="Instance type">
+          {instances.map((i) => (
             <RadioCard
-              key={t.value}
-              value={t.value}
-              title={t.label}
-              description={t.detail}
-              extra={
-                <span className="tabular mt-2 text-caption font-semibold text-text-primary">
-                  {HOURLY_RATE[t.value]} credits per active hour
-                  {t.value === 'a100' && <span className="font-normal text-text-secondary"> · for large models and heavy ASR</span>}
-                </span>
-              }
+              key={i.id}
+              value={i.id}
+              title={i.name}
+              description={`${i.vcpu} vCPU · ${i.ramGb} GB RAM${i.gpuType === 'none' ? ' · no GPU' : ` · ${i.gpuCount}× NVIDIA ${i.gpuType}`}`}
+              extra={<span className="tabular mt-2 text-caption font-semibold text-text-primary">{formatInt(i.hourlyRate)} credits per active hour (₹{formatInt(i.hourlyRate)})</span>}
             />
           ))}
         </RadioGroup>
+        {card && (
+          <p className="mt-2 text-caption text-text-muted">
+            Rates from {provider?.name}’s rate card v{card.version}, effective from {formatDate(card.effectiveFrom)}.
+          </p>
+        )}
       </div>
 
-      {COMPUTE_TIERS.find((t) => t.value === spec.compute)!.gpu && (
-        <Field label="Number of GPUs" htmlFor="gpu-count" helper="Each GPU comes with its own vCPU and RAM, as listed above.">
-          <Select value={String(spec.gpuCount)} onValueChange={(v) => set({ gpuCount: Number(v) })}>
-            <SelectTrigger id="gpu-count" className="sm:max-w-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {[1, 2, 3, 4].map((n) => (
-                <SelectItem key={n} value={String(n)}>
-                  {n} GPU{n > 1 ? 's' : ''}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
-      )}
+      <Field label="Number of instances" htmlFor="instance-count" helper="Each instance comes with the vCPU, RAM and GPUs listed above.">
+        <Select value={String(spec.instanceCount)} onValueChange={(v) => choose(spec.providerId, spec.regionId, spec.instanceTypeId, Number(v))}>
+          <SelectTrigger id="instance-count" className="sm:max-w-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {[1, 2, 3, 4].map((n) => (
+              <SelectItem key={n} value={String(n)}>
+                {n} instance{n > 1 ? 's' : ''}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
 
       <div className="flex flex-col gap-2">
         <div className="flex items-baseline justify-between">
@@ -196,7 +258,18 @@ function StepCompute({ spec, set }: StepProps) {
           <span className="tabular text-sm font-semibold text-text-primary">{spec.storageGb} GB</span>
         </div>
         <Slider id="storage" min={20} max={1000} step={10} value={[spec.storageGb]} onValueChange={([v]) => set({ storageGb: v! })} aria-label="Storage in GB" />
-        <p className="text-caption text-text-muted">For datasets, audio, embeddings and logs. 0.6 credits per GB each month.</p>
+        <p className="text-caption text-text-muted">For datasets, audio, embeddings and logs. {card ? `${card.storageRate} credits per GB each month.` : ''}</p>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <div className="flex items-baseline justify-between">
+          <label htmlFor="egress" className="text-sm font-semibold text-text-primary">
+            Network egress
+          </label>
+          <span className="tabular text-sm font-semibold text-text-primary">{spec.egressGbPerMonth} GB a month</span>
+        </div>
+        <Slider id="egress" min={0} max={2000} step={10} value={[spec.egressGbPerMonth]} onValueChange={([v]) => set({ egressGbPerMonth: v! })} aria-label="Network egress in GB per month" />
+        <p className="text-caption text-text-muted">Data sent out of the cloud, such as answers to apps and downloads. {card ? `${card.egressRate} credits per GB.` : ''}</p>
       </div>
 
       <Field label="Auto-shutdown" htmlFor="shutdown" helper={`We estimate about ${hours} active hours a month with this setting. Shutting down when idle saves credits.`}>
@@ -371,7 +444,7 @@ function StepCapabilities({ spec, set, selectable, tenant }: StepProps) {
   )
 }
 
-function StepData({ spec, set }: StepProps) {
+function StepData({ spec, set, errors }: StepProps) {
   const sensitive = spec.dataClassification === 'personal' || spec.dataClassification === 'children'
   return (
     <div className="flex flex-col gap-6">
@@ -390,6 +463,11 @@ function StepData({ spec, set }: StepProps) {
             <RadioCard key={d.value} value={d.value} title={d.label} description={d.description} />
           ))}
         </RadioGroup>
+        {errors.dataClassification && (
+          <p className="mt-2 flex items-start gap-1.5 text-caption text-red-text" role="alert">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden /> {errors.dataClassification}
+          </p>
+        )}
       </div>
 
       <div>
@@ -412,8 +490,8 @@ function StepData({ spec, set }: StepProps) {
           <div>
             <p className="font-semibold">{spec.dataClassification === 'children' ? 'Children’s data gets an extra review' : 'Personal data gets an extra review'}</p>
             <p className="mt-1">
-              Keep only what you need, and have consent in place. Hosted APIs may process data outside India; open models stay on platform servers in
-              Bengaluru. Your admin may ask for a data-processing agreement.
+              Keep only what you need, and have consent in place. The environment must run in an India-resident region. Hosted model APIs may still
+              process data outside India. Your admin may ask for a data-processing agreement.
             </p>
           </div>
         </div>
@@ -478,6 +556,8 @@ interface StepProps {
   tenant: Tenant
   role: Role
   errors: Errors
+  providers: InfraProvider[]
+  editing: boolean
 }
 
 /* ---------- page ---------- */
@@ -508,8 +588,14 @@ export default function NewEnvironment() {
     [allProjects, tenant.id, user],
   )
   const [draftId, setDraftId] = useState<string | undefined>(mode === 'draft' ? existing?.id : undefined)
+  const infraProviders = useAppStore((s) => s.infraProviders)
+  const costCtx = useCostContext(tenant.id)
   const [spec, setSpec] = useState<EnvSpec>(() =>
-    editingEnv ? structuredClone(editingEnv.spec) : existing && mode !== 'new' ? structuredClone(existing.spec) : { ...DEFAULT_SPEC, projectId: projects[0]?.id ?? '' },
+    editingEnv
+      ? structuredClone(editingEnv.spec)
+      : existing && mode !== 'new'
+        ? ensurePlacement(structuredClone(existing.spec), infraProviders, tenant.id)
+        : ensurePlacement({ ...DEFAULT_SPEC, projectId: projects[0]?.id ?? '' }, infraProviders, tenant.id),
   )
   const [step, setStep] = useState(0)
   const [maxStep, setMaxStep] = useState(mode === 'new' ? 0 : STEPS.length - 1)
@@ -526,7 +612,7 @@ export default function NewEnvironment() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [step])
 
-  const est = useMemo(() => estimateCost(spec, catalog), [spec, catalog])
+  const est = useMemo(() => costBreakdown(spec, costCtx), [spec, costCtx])
   const used = useMemo(() => tenantAllocated(environments, tenant.id), [environments, tenant.id])
 
   if (editing && (!editingEnv || editingEnv.tenantId !== tenant.id || (user.role === 'user' && editingEnv.ownerId !== user.id))) {
@@ -577,7 +663,7 @@ export default function NewEnvironment() {
   const goTo = (target: number) => {
     if (target > step) {
       for (let s = step; s < target; s++) {
-        const e = validate(spec, s)
+        const e = validate(spec, s, infraProviders)
         if (Object.keys(e).length) {
           setErrors(e)
           setStep(s)
@@ -592,7 +678,7 @@ export default function NewEnvironment() {
 
   const submit = () => {
     for (let s = 0; s < STEPS.length; s++) {
-      const e = validate(spec, s)
+      const e = validate(spec, s, infraProviders)
       if (Object.keys(e).length) {
         setErrors(e)
         setStep(s)
@@ -645,7 +731,7 @@ export default function NewEnvironment() {
     toast.success('Draft saved.', { description: 'Continue it any time from My requests.' })
   }
 
-  const props: StepProps = { spec, set, catalog, selectable, projects, tenant, role: user.role, errors }
+  const props: StepProps = { spec, set, catalog, selectable, projects, tenant, role: user.role, errors, providers: infraProviders, editing }
   const last = step === STEPS.length - 1
 
   return (
@@ -775,7 +861,7 @@ export default function NewEnvironment() {
                 <Link to={envPath(user.role, editId!)}>Cancel</Link>
               </Button>
             )}
-            <span className="tabular ml-auto hidden text-caption text-text-secondary xl:inline 2xl:hidden">{formatInt(est.credits)} credits / month</span>
+            <span className="tabular ml-auto hidden text-caption text-text-secondary xl:inline 2xl:hidden">{formatInt(est.total)} credits / month</span>
             {last ? (
               <Button onClick={submit} className="ml-auto sm:ml-0">
                 <Send /> {editing ? (needsApproval ? 'Send for approval' : 'Save changes') : mode === 'resubmit' ? 'Resubmit request' : 'Submit request'}

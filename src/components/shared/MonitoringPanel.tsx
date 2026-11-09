@@ -9,6 +9,9 @@ import { cn } from '@/lib/utils'
 import { ChartCard, ChartTooltip } from './ChartCard'
 import { StatusBadge, Tag } from './StatusBadge'
 import { Button } from '@/components/ui/button'
+import { costBreakdown } from '@/lib/cost'
+import { useCostContext } from '@/store/selectors'
+import { CostBreakdown } from './CostBreakdown'
 
 export function RangePicker({ value, onChange, disabled }: { value: Range; onChange: (r: Range) => void; disabled?: boolean }) {
   return (
@@ -48,7 +51,7 @@ function Tile({ label, value, sub, pct, trend }: { label: string; value: string;
   )
 }
 
-export function useMonitoringSeries(env: Environment, catalog: CatalogItem[], range: Range) {
+export function useMonitoringSeries(env: Environment, catalog: CatalogItem[], range: Range, monthlyCost = 0) {
   const live = env.status === 'active'
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -56,14 +59,16 @@ export function useMonitoringSeries(env: Environment, catalog: CatalogItem[], ra
     const t = setInterval(() => setNow(Date.now()), LIVE_INTERVAL_MS)
     return () => clearInterval(t)
   }, [live])
-  return useMemo(() => seriesFor(env, catalog, range, now), [env, catalog, range, now])
+  return useMemo(() => seriesFor(env, catalog, range, now, monthlyCost), [env, catalog, range, now, monthlyCost])
 }
 
 export function MonitoringPanel({ env, catalog }: { env: Environment; catalog: CatalogItem[] }) {
   const live = env.status === 'active'
   const [range, setRange] = useState<Range>(live ? '1h' : '7d')
   const effective: Range = live ? range : '7d'
-  const series = useMonitoringSeries(env, catalog, effective)
+  const ctx = useCostContext(env.tenantId)
+  const est = useMemo(() => costBreakdown(env.spec, ctx), [env.spec, ctx])
+  const series = useMonitoringSeries(env, catalog, effective, est.total)
   const cur = series[series.length - 1]!
   const prev = series[Math.max(0, series.length - 7)]!
   const hasGpu = cur.gpuMemAlloc > 0
@@ -221,7 +226,7 @@ export function MonitoringPanel({ env, catalog }: { env: Environment; catalog: C
           </ResponsiveContainer>
         </ChartCard>
 
-        <ChartCard title="Estimated cost" description="Credits per step. Simulated data" height={220}>
+        <ChartCard title="Estimated cost" description={`Credits per step, from ${est.provider?.name ?? 'the provider'}’s rate card`} height={220}>
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={rows} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
               <CartesianGrid stroke={CHART_GRID} vertical={false} />
@@ -232,6 +237,11 @@ export function MonitoringPanel({ env, catalog }: { env: Environment; catalog: C
             </AreaChart>
           </ResponsiveContainer>
         </ChartCard>
+
+        <section className="card p-6">
+          <h2 className="mb-4 font-heading text-h3 text-text-primary">Monthly estimate</h2>
+          <CostBreakdown est={est} />
+        </section>
       </div>
     </div>
   )

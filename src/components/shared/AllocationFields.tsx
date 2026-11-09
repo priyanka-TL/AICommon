@@ -1,6 +1,8 @@
 import { Trash2 } from 'lucide-react'
 import type { CatalogItem, EnvSpec } from '@/data/types'
-import { AUTO_SHUTDOWN_OPTIONS, COMPUTE_TIERS } from '@/lib/labels'
+import { AUTO_SHUTDOWN_OPTIONS } from '@/lib/labels'
+import { applyPlacement, instancesFor } from '@/lib/providers'
+import { useAppStore } from '@/store/useAppStore'
 import { Button } from '@/components/ui/button'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -12,27 +14,30 @@ const DURATIONS = [2, 4, 6, 8, 12, 16]
 export function AllocationFields({ spec, onChange, catalog }: { spec: EnvSpec; onChange: (s: EnvSpec) => void; catalog: CatalogItem[] }) {
   const set = <K extends keyof EnvSpec>(k: K, v: EnvSpec[K]) => onChange({ ...spec, [k]: v })
   const name = (id: string) => catalog.find((c) => c.id === id)?.name ?? id
-  const gpu = COMPUTE_TIERS.find((t) => t.value === spec.compute)!.gpu
+  const providers = useAppStore((st) => st.infraProviders)
+  const provider = providers.find((p) => p.id === spec.providerId)
+  const region = provider?.regions.find((r) => r.id === spec.regionId)
+  const instances = instancesFor(provider, region)
   return (
     <div className="flex flex-col gap-4">
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Compute tier" htmlFor="al-compute">
-          <Select value={spec.compute} onValueChange={(v) => set('compute', v as EnvSpec['compute'])}>
-            <SelectTrigger id="al-compute">
+        <Field label="Instance type" htmlFor="al-instance" helper={provider ? `${provider.name} · ${region?.name ?? ''}` : undefined}>
+          <Select value={spec.instanceTypeId} onValueChange={(v) => { const it = instances.find((i) => i.id === v); if (it) onChange(applyPlacement(spec, spec.providerId, spec.regionId, it)) }}>
+            <SelectTrigger id="al-instance">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {COMPUTE_TIERS.map((t) => (
-                <SelectItem key={t.value} value={t.value}>
-                  {t.label}
+              {instances.map((i) => (
+                <SelectItem key={i.id} value={i.id}>
+                  {i.name} · {i.gpuType === 'none' ? 'CPU' : `${i.gpuCount}× ${i.gpuType}`}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </Field>
-        <Field label="GPU count" htmlFor="al-gpus">
-          <Select value={String(spec.gpuCount)} onValueChange={(v) => set('gpuCount', Number(v))} disabled={!gpu}>
-            <SelectTrigger id="al-gpus">
+        <Field label="Instances" htmlFor="al-count">
+          <Select value={String(spec.instanceCount)} onValueChange={(v) => { const it = instances.find((i) => i.id === spec.instanceTypeId); if (it) onChange(applyPlacement(spec, spec.providerId, spec.regionId, it, Number(v))) }}>
+            <SelectTrigger id="al-count">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

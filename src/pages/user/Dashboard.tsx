@@ -11,6 +11,7 @@ import { tenantAllocated } from '@/lib/quota'
 import { continueRequestPath, requestPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { SpendThisMonth } from '@/components/shared/SpendThisMonth'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { EnvironmentCard } from '@/components/shared/EnvironmentCard'
 import { ResourceQuota } from '@/components/shared/ResourceQuota'
@@ -26,6 +27,7 @@ export default function UserDashboard() {
   const user = useCurrentUser()!
   const tenant = useCurrentTenant()!
   const envs = useScopedEnvironments()
+  const envIds = useMemo(() => envs.map((e) => e.id), [envs])
   const myRequests = useScopedRequests()
   const allEnvs = useAppStore((s) => s.environments)
   const requests = useAppStore((s) => s.requests)
@@ -104,6 +106,8 @@ export default function UserDashboard() {
           )}
         </section>
       </div>
+
+      <SpendThisMonth tenantId={tenant.id} envIds={envIds} title="Your environments’ spend this month" className="mt-6" />
 
       {inProgress.length > 0 && (
         <section className="card mt-6 p-6">

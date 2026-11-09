@@ -31,6 +31,7 @@ const ENTITY_LABELS: Record<AuditEntity, string> = {
   settings: 'Settings',
   capacity: 'Capacity',
   qa: 'QA testing',
+  infra_provider: 'Infrastructure providers',
 }
 
 export default function AuditLog() {

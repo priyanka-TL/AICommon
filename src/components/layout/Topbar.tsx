@@ -35,6 +35,7 @@ function Breadcrumb() {
   const catalog = useAppStore((s) => s.catalog)
   const requests = useAppStore((s) => s.requests)
   const projects = useAppStore((s) => s.projects)
+  const infraProviders = useAppStore((s) => s.infraProviders)
   if (!user) return null
 
   const segs = pathname.split('/').filter(Boolean)
@@ -46,6 +47,7 @@ function Breadcrumb() {
         environments.find((e) => e.id === seg)?.spec.name ??
         requests.find((r) => r.id === seg)?.spec.name ??
         projects.find((p) => p.id === seg)?.name ??
+        infraProviders.find((p) => p.id === seg)?.name ??
         tenants.find((t) => t.id === seg)?.name ??
         catalog.find((c) => c.id === seg)?.name ??
         seg

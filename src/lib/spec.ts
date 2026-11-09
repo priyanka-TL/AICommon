@@ -1,8 +1,10 @@
-import type { CatalogItem, EnvSpec, Project, SpecChange } from '@/data/types'
+import type { CatalogItem, EnvSpec, InfraProvider, Project, SpecChange } from '@/data/types'
 import { autoShutdownLabel, computeLabel, dataClassLabel, purposeLabel } from './labels'
 import { allocationOf, RESOURCES } from './quota'
 
-export function diffSpecs(from: EnvSpec, to: EnvSpec, catalog: CatalogItem[], projects: Project[] = []): SpecChange[] {
+export function diffSpecs(from: EnvSpec, to: EnvSpec, catalog: CatalogItem[], projects: Project[] = [], providers: InfraProvider[] = []): SpecChange[] {
+  const providerName = (id: string) => providers.find((p) => p.id === id)?.name ?? id
+  const regionName = (pid: string, rid: string) => providers.find((p) => p.id === pid)?.regions.find((r) => r.id === rid)?.name ?? rid
   const name = (id: string) => catalog.find((c) => c.id === id)?.name ?? id
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? id
   const changes: SpecChange[] = []
@@ -14,8 +16,11 @@ export function diffSpecs(from: EnvSpec, to: EnvSpec, catalog: CatalogItem[], pr
   push('Project', projectName(from.projectId), projectName(to.projectId))
   push('Purpose', purposeLabel(from.purpose), purposeLabel(to.purpose))
   push('Duration', `${from.durationWeeks} weeks`, `${to.durationWeeks} weeks`)
-  push('Compute', computeLabel(from.compute), computeLabel(to.compute))
-  if (from.compute !== 'cpu' || to.compute !== 'cpu') push('GPU count', String(from.gpuCount), String(to.gpuCount))
+  push('Provider', providerName(from.providerId), providerName(to.providerId))
+  push('Region', regionName(from.providerId, from.regionId), regionName(to.providerId, to.regionId))
+  push('Instance type', `${from.instance.name} (${computeLabel(from.compute)})`, `${to.instance.name} (${computeLabel(to.compute)})`)
+  push('Instances', String(from.instanceCount), String(to.instanceCount))
+  push('Network egress', `${from.egressGbPerMonth} GB a month`, `${to.egressGbPerMonth} GB a month`)
   push('Storage', `${from.storageGb} GB`, `${to.storageGb} GB`)
   push('Auto-shutdown', autoShutdownLabel(from.autoShutdownHours), autoShutdownLabel(to.autoShutdownHours))
 
@@ -36,7 +41,7 @@ export function diffSpecs(from: EnvSpec, to: EnvSpec, catalog: CatalogItem[], pr
   return changes
 }
 
-const TIER_RANK = { cpu: 0, t4: 1, a10: 2, a100: 3 } as const
+const TIER_RANK = { cpu: 0, t4: 1, l4: 2, a10: 3, a100: 4 } as const
 
 /** True when an edit needs more infrastructure than the environment already has. */
 export function addsInfrastructure(from: EnvSpec, to: EnvSpec) {

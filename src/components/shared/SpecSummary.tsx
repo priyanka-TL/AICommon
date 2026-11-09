@@ -3,6 +3,7 @@ import type { CatalogItem, EnvSpec, Project } from '@/data/types'
 import { allocationOf } from '@/lib/quota'
 import { autoShutdownLabel, COMPUTE_TIERS, dataClassLabel, purposeLabel } from '@/lib/labels'
 import { cn } from '@/lib/utils'
+import { useAppStore } from '@/store/useAppStore'
 import { Tag } from './StatusBadge'
 
 interface SpecSummaryProps {
@@ -51,6 +52,8 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 export function SpecSummary({ spec, catalog, projects = [], onEdit, className }: SpecSummaryProps) {
   const name = (id: string) => catalog.find((c) => c.id === id)?.name ?? id
   const tier = COMPUTE_TIERS.find((t) => t.value === spec.compute)!
+  const provider = useAppStore((s) => s.infraProviders.find((p) => p.id === spec.providerId))
+  const region = provider?.regions.find((r) => r.id === spec.regionId)
   const caps = spec.capabilities
 
   return (
@@ -66,10 +69,15 @@ export function SpecSummary({ spec, catalog, projects = [], onEdit, className }:
 
       <Section title="Compute" step={1} onEdit={onEdit}>
         <dl>
-          <Row label="Tier">
-            {tier.label} <span className="text-text-muted">· {tier.detail}</span>
+          <Row label="Provider">
+            {provider?.name ?? 'Not set'}
+            {region && <span className="text-text-muted"> · {region.name}{region.indiaResident ? ' · data stays in India' : ' · outside India'}</span>}
           </Row>
-          {tier.gpu && <Row label="GPU count">{spec.gpuCount}</Row>}
+          <Row label="Instance">
+            {spec.instance.name || 'Not set'} <span className="text-text-muted">· {tier.label}</span>
+          </Row>
+          <Row label="Instances">{spec.instanceCount}</Row>
+          <Row label="Network egress">{spec.egressGbPerMonth} GB a month</Row>
           <Row label="Allocation">
             {(() => {
               const a = allocationOf(spec)

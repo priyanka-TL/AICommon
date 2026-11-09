@@ -1,7 +1,8 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
-import { createSeed, endpointFor, SAMPLE_PASSWORD, SEED_VERSION, type SeedState } from '@/data/seed'
+import { createSeed, endpointFor, rateCardVersionAt, SAMPLE_PASSWORD, SEED_VERSION, type SeedState } from '@/data/seed'
 import type {
+  AccessMode,
   ActorRole,
   AuditEntity,
   CatalogCategory,
@@ -12,12 +13,14 @@ import type {
   EnvSpec,
   EnvStatus,
   Environment,
+  InfraProvider,
   LifecycleEvent,
   Project,
   Provider,
   QaAssignment,
   QaRun,
   Quota,
+  RateCard,
   RequestStatus,
   Role,
   Suggestion,
@@ -31,6 +34,8 @@ import { addsInfrastructure, diffSpecs } from '@/lib/spec'
 import { alertLevel, currentPoint, utilisation } from '@/lib/metrics'
 import { envPath, itemPath, reportPath, requestPath, suggestionPath } from '@/lib/paths'
 import { seedQaRuns } from '@/lib/qa'
+import { ACCESS_MODE_LABELS, residencyProblem } from '@/lib/providers'
+import { environmentsInUse } from '@/lib/cost'
 import { parseGithubUrl } from '@/lib/suggestions'
 import { formatInt } from '@/lib/format'
 import { roleLabel } from '@/lib/labels'
@@ -69,6 +74,9 @@ export const useSessionStore = create<SessionState>()(
 )
 
 /* ---------- app data ---------- */
+
+export type InfraProviderInput = Pick<InfraProvider, 'name' | 'code' | 'type' | 'logoUrl' | 'status' | 'regions' | 'aiServices' | 'maxGpus' | 'allowedTenants'>
+export type RateCardInput = Omit<RateCard, 'version' | 'publishedAt' | 'publishedById'>
 
 export type Result = { ok: true; id?: string } | { ok: false; error: string }
 const ok = (id?: string): Result => ({ ok: true, id })
@@ -118,7 +126,7 @@ interface AppState extends SeedState {
   // projects
   createProject: (p: Pick<Project, 'name' | 'description' | 'memberIds' | 'limits'>) => string | null
   updateProject: (id: string, patch: Partial<Pick<Project, 'name' | 'description' | 'memberIds' | 'limits' | 'status'>>) => void
-  addProjectCapability: (projectId: string, itemId: string) => Result
+  addProjectCapability: (projectId: string, itemId: string, access?: AccessMode) => Result
 
   // tenants & users
   createTenant: (t: Pick<Tenant, 'name' | 'code' | 'description' | 'orgType' | 'city' | 'state' | 'contactName' | 'contactEmail' | 'quota'>) => string | null
@@ -149,6 +157,10 @@ interface AppState extends SeedState {
 
   // tests, monitoring, notifications
   recordTestRun: (run: Omit<TestRun, 'id' | 'at' | 'actorId' | 'tenantId'>) => void
+  createInfraProvider: (p: InfraProviderInput, card: RateCardInput) => Result
+  updateInfraProvider: (id: string, p: InfraProviderInput) => Result
+  setInfraProviderStatus: (id: string, status: InfraProvider['status']) => Result
+  publishRateCard: (id: string, card: RateCardInput) => Result
   createDataset: (input: Pick<Dataset, 'name' | 'language' | 'rows'>) => Result
   createTestConfig: (spec: TestConfigSpec) => Result
   /** Saves the change as a new version; earlier versions stay. */
@@ -188,6 +200,39 @@ export const useAppStore = create<AppState>()(
       })
       const qaScopeText = (qa: QaAssignment) =>
         `${qa.projectIds.length ? qa.projectIds.map(projectName).join(', ') : 'no projects yet'}${qa.tenantWideAllowed ? ' (tenant-wide view allowed)' : ''}`
+      const providerProblem = (input: InfraProviderInput, selfId?: string): string | null => {
+        if (input.name.trim().length < 2) return 'Give the provider a name.'
+        const code = input.code.trim().toUpperCase()
+        if (!/^[A-Z0-9]{2,6}$/.test(code)) return 'Use a short code of 2 to 6 letters or digits, such as AWS or E2E.'
+        if (get().infraProviders.some((p) => p.id !== selfId && p.code.toUpperCase() === code)) return `The code ${code} is already used by another provider.`
+        if (!input.regions.length) return 'Add at least one region.'
+        if (input.regions.some((r) => !r.name.trim())) return 'Every region needs a name.'
+        if (input.maxGpus < 0) return 'Maximum GPUs can’t be negative.'
+        if (input.allowedTenants !== 'all' && !input.allowedTenants.length) return 'Pick at least one tenant, or allow all tenants.'
+        return null
+      }
+      const rateCardProblem = (c: RateCardInput, latest: RateCard | null): string | null => {
+        if (!c.instanceTypes.length) return 'Add at least one instance type.'
+        if (c.instanceTypes.some((i) => !i.name.trim() || i.vcpu < 1 || i.ramGb < 1 || i.hourlyRate < 0 || (i.gpuType !== 'none' && i.gpuCount < 1))) return 'Each instance type needs a name, vCPU, RAM, an hourly rate and, for GPU types, a GPU count.'
+        if ([c.storageRate, c.egressRate, c.platformFeePct, c.ngoDiscountPct, c.gstPct].some((n) => !Number.isFinite(n) || n < 0)) return 'Rates and percentages must be zero or more.'
+        if (c.platformFeePct > 100 || c.ngoDiscountPct > 100 || c.gstPct > 100) return 'Percentages must be 100 or less.'
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(c.effectiveFrom)) return 'Choose the date these rates take effect.'
+        if (!c.source.trim()) return 'Say where these rates come from, for example “Published price list, Oct 2026”.'
+        if (latest) {
+          const today = new Date().toISOString().slice(0, 10)
+          if (c.effectiveFrom < today) return 'A new rate card can’t start in the past. Past costs stay on the rates in force at the time.'
+          if (c.effectiveFrom <= latest.effectiveFrom) return `Choose a date after ${latest.effectiveFrom}, when the current rate card took effect.`
+        }
+        return null
+      }
+      /** Provider must be active and allowed for the tenant; personal and children's data must stay in India. */
+      const placementProblem = (spec: EnvSpec, tenantId: string): string | null => {
+        const p = get().infraProviders.find((x) => x.id === spec.providerId)
+        if (!p) return 'Choose an infrastructure provider on the Compute step.'
+        if (p.status !== 'active') return `${p.name} is disabled. Choose another provider on the Compute step.`
+        if (p.allowedTenants !== 'all' && !p.allowedTenants.includes(tenantId)) return `${p.name} isn’t available to your organisation. Choose another provider.`
+        return residencyProblem(spec, get().infraProviders)
+      }
       /** QA may act on assigned projects, or any project in the tenant when tenant-wide is allowed. */
       const qaCanUseProject = (user: User, projectId: string) => {
         const p = get().projects.find((x) => x.id === projectId)
@@ -360,6 +405,8 @@ export const useAppStore = create<AppState>()(
           if (!user || user.role === 'super_admin') return fail('Only people in an organisation can request environments.')
           const project = get().projects.find((p) => p.id === spec.projectId)
           if (!project || project.tenantId !== user.tenantId) return fail('Choose a project in your organisation.')
+          const placement = placementProblem(spec, user.tenantId)
+          if (placement) return fail(placement)
           let id = draftId
           const draft = draftId ? get().requests.find((r) => r.id === draftId && r.status === 'draft' && r.requesterId === user.id) : undefined
           if (draft) {
@@ -397,8 +444,10 @@ export const useAppStore = create<AppState>()(
           const parties = partiesFor(user, env.ownerId, env.tenantId)
           if (!parties.length) return { mode: 'error', error: 'You can’t change this environment.' }
           if (!['active', 'stopped', 'provisioning'].includes(env.status)) return { mode: 'error', error: 'Only active or stopped environments can be changed.' }
+          const placement = placementProblem(spec, env.tenantId)
+          if (placement) return { mode: 'error', error: placement }
           if (user.role === 'super_admin' || !addsInfrastructure(env.spec, spec)) {
-            const changes = diffSpecs(env.spec, spec, get().catalog, get().projects)
+            const changes = diffSpecs(env.spec, spec, get().catalog, get().projects, get().infraProviders)
             patchEnv(envId, { spec })
             audit('environment.config_updated', 'environment', envId, `${user.name} changed “${env.spec.name}”: ${changes.map((c) => c.field).join(', ') || 'no visible changes'}`, env.tenantId)
             if (user.role === 'user') notify(tenantAdmins(env.tenantId), `${user.name} changed the setup of “${env.spec.name}”. No new infrastructure was needed.`, envLink(envId))
@@ -453,9 +502,11 @@ export const useAppStore = create<AppState>()(
 
           const extra: Partial<EnvRequest> = {}
           if (opts.spec && to !== 'cancelled') {
+            const placement = placementProblem(opts.spec, r.tenantId)
+            if (placement) return fail(placement)
             if (to === 'resubmitted') extra.spec = opts.spec
             else {
-              const changes = diffSpecs(r.spec, opts.spec, get().catalog, get().projects)
+              const changes = diffSpecs(r.spec, opts.spec, get().catalog, get().projects, get().infraProviders)
               if (changes.length) {
                 extra.spec = opts.spec
                 extra.adminChanges = [...r.adminChanges, ...changes]
@@ -514,6 +565,7 @@ export const useAppStore = create<AppState>()(
                   endpoint: endpointFor(tenant.code, envId),
                   apiKey: `aic_live_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`.slice(0, 41),
                   creditsUsed: 0,
+                  rateCardVersion: rateCardVersionAt(updated.spec.providerId, now(), get().infraProviders),
                   createdAt: now(),
                   expiresAt: new Date(Date.now() + updated.spec.durationWeeks * 7 * 86_400_000).toISOString(),
                   history: [event('provisioning', undefined, true)],
@@ -631,7 +683,7 @@ export const useAppStore = create<AppState>()(
           }
         },
 
-        addProjectCapability: (projectId, itemId) => {
+        addProjectCapability: (projectId, itemId, access) => {
           const user = me()
           const p = get().projects.find((x) => x.id === projectId)
           const item = get().catalog.find((c) => c.id === itemId)
@@ -639,8 +691,12 @@ export const useAppStore = create<AppState>()(
           const allowed = (user.role === 'tenant_admin' && user.tenantId === p.tenantId) || (user.tenantId === p.tenantId && p.memberIds.includes(user.id))
           if (!allowed) return fail('Only project members can add capabilities.')
           if (p.capabilityIds.includes(itemId)) return fail(`${item.name} is already in this project.`)
-          set((s) => ({ projects: s.projects.map((x) => (x.id === projectId ? { ...x, capabilityIds: [...x.capabilityIds, itemId] } : x)) }))
-          audit('project.capability_added', 'project', projectId, `${user.name} added ${item.name} to “${p.name}”`, p.tenantId)
+          set((s) => ({
+            projects: s.projects.map((x) =>
+              x.id === projectId ? { ...x, capabilityIds: [...x.capabilityIds, itemId], ...(access ? { modelAccess: { ...x.modelAccess, [itemId]: access } } : {}) } : x,
+            ),
+          }))
+          audit('project.capability_added', 'project', projectId, `${user.name} added ${item.name} to “${p.name}”${access && access !== 'direct' ? ` (${ACCESS_MODE_LABELS[access].toLowerCase()})` : ''}`, p.tenantId)
           return ok(projectId)
         },
 
@@ -987,6 +1043,74 @@ export const useAppStore = create<AppState>()(
 
         /* ---------- tests, monitoring, notifications ---------- */
 
+        /* ---------- infrastructure providers ---------- */
+
+        createInfraProvider: (input, cardInput) => {
+          const user = me()
+          if (!user || user.role !== 'super_admin') return fail('Only the Super Admin can add providers.')
+          const problem = providerProblem(input) ?? rateCardProblem(cardInput, null)
+          if (problem) return fail(problem)
+          const id = uid('ip')
+          const provider: InfraProvider = {
+            ...input,
+            code: input.code.trim().toUpperCase(),
+            name: input.name.trim(),
+            id,
+            rateCards: [{ ...cardInput, version: 1, publishedAt: now(), publishedById: user.id }],
+            createdAt: now(),
+          }
+          set((s) => ({ infraProviders: [...s.infraProviders, provider] }))
+          audit('infra_provider.created', 'infra_provider', id, `${user.name} added the provider ${provider.name} (${provider.code})`, null)
+          return ok(id)
+        },
+
+        updateInfraProvider: (id, input) => {
+          const user = me()
+          const p = get().infraProviders.find((x) => x.id === id)
+          if (!user || user.role !== 'super_admin' || !p) return fail('Provider not found.')
+          const problem = providerProblem(input, id)
+          if (problem) return fail(problem)
+          if (input.status === 'disabled' && p.status === 'active') {
+            const inUse = environmentsInUse(id, get().environments)
+            if (inUse.length) return fail(`${p.name} is used by ${inUse.length} environment${inUse.length === 1 ? '' : 's'}. Move or stop them before disabling it.`)
+          }
+          const gone = p.regions.filter((r) => !input.regions.some((x) => x.id === r.id)).filter((r) => environmentsInUse(id, get().environments).some((e) => e.spec.regionId === r.id))
+          if (gone.length) return fail(`${gone.map((r) => r.name).join(', ')} still has environments, so it can’t be removed.`)
+          set((s) => ({ infraProviders: s.infraProviders.map((x) => (x.id === id ? { ...x, ...input, code: input.code.trim().toUpperCase(), name: input.name.trim() } : x)) }))
+          audit('infra_provider.updated', 'infra_provider', id, `${user.name} updated the provider ${input.name.trim()}`, null)
+          return ok(id)
+        },
+
+        setInfraProviderStatus: (id, status) => {
+          const user = me()
+          const p = get().infraProviders.find((x) => x.id === id)
+          if (!user || user.role !== 'super_admin' || !p) return fail('Provider not found.')
+          if (status === 'disabled') {
+            const inUse = environmentsInUse(id, get().environments)
+            if (inUse.length) return fail(`${p.name} is used by ${inUse.length} environment${inUse.length === 1 ? '' : 's'}. Move or stop them before disabling it.`)
+          }
+          set((s) => ({ infraProviders: s.infraProviders.map((x) => (x.id === id ? { ...x, status } : x)) }))
+          audit(`infra_provider.${status === 'disabled' ? 'disabled' : 'enabled'}`, 'infra_provider', id, `${user.name} ${status === 'disabled' ? 'disabled' : 'enabled'} the provider ${p.name}`, null)
+          return ok(id)
+        },
+
+        publishRateCard: (id, cardInput) => {
+          const user = me()
+          const p = get().infraProviders.find((x) => x.id === id)
+          if (!user || user.role !== 'super_admin' || !p) return fail('Provider not found.')
+          const latest = p.rateCards[p.rateCards.length - 1]!
+          const problem = rateCardProblem(cardInput, latest)
+          if (problem) return fail(problem)
+          const version = latest.version + 1
+          set((s) => ({
+            infraProviders: s.infraProviders.map((x) => (x.id === id ? { ...x, rateCards: [...x.rateCards, { ...cardInput, version, publishedAt: now(), publishedById: user.id }] } : x)),
+          }))
+          audit('infra_provider.rate_card_published', 'infra_provider', id, `${user.name} published rate card v${version} for ${p.name}, effective from ${cardInput.effectiveFrom}`, null, cardInput.source)
+          const tenantIds = get().tenants.filter((t) => !t.isSystem && (p.allowedTenants === 'all' || p.allowedTenants.includes(t.id))).map((t) => t.id)
+          notify(tenantIds.flatMap(tenantAdmins), `${p.name} has new rates from ${cardInput.effectiveFrom}. Estimates for its environments change from that date; past months stay on the old rates.`, null)
+          return ok(id)
+        },
+
         /* ---------- QA ---------- */
 
         createDataset: (input) => {
@@ -1135,6 +1259,7 @@ export const useAppStore = create<AppState>()(
         suggestions: s.suggestions,
         quotaRequests: s.quotaRequests,
         testRuns: s.testRuns,
+        infraProviders: s.infraProviders,
         datasets: s.datasets,
         testConfigs: s.testConfigs,
         qaRuns: s.qaRuns,

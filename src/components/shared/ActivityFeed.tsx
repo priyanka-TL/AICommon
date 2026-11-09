@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Building2, ClipboardCheck, Cpu, FlaskConical, FolderKanban, Gauge, GitPullRequestArrow, Library, PlugZap, Send, Server, Settings, UserRound } from 'lucide-react'
+import { Building2, ClipboardCheck, Cloud, Cpu, FlaskConical, FolderKanban, Gauge, GitPullRequestArrow, Library, PlugZap, Send, Server, Settings, UserRound } from 'lucide-react'
 import type { AuditEntity, AuditEntry } from '@/data/types'
 import { relativeTime } from '@/lib/format'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -18,6 +18,7 @@ export const AUDIT_ICONS: Record<AuditEntity, { icon: LucideIcon; tint: string }
   test: { icon: FlaskConical, tint: 'bg-status-running-bg text-status-running-fg' },
   settings: { icon: Settings, tint: 'bg-status-stopped-bg text-status-stopped-fg' },
   capacity: { icon: Cpu, tint: 'bg-status-pending-bg text-status-pending-fg' },
+  infra_provider: { icon: Cloud, tint: 'bg-status-provisioning-bg text-status-provisioning-fg' },
   qa: { icon: ClipboardCheck, tint: 'bg-status-review-bg text-status-review-fg' },
 }
 

@@ -11,6 +11,7 @@ import { projectAllocated, RESOURCES, ZERO } from '@/lib/quota'
 import { envPath } from '@/lib/paths'
 import { CATEGORY_SINGULAR } from '@/lib/labels'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { ACCESS_MODE_LABELS } from '@/lib/providers'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { Avatar } from '@/components/shared/Avatar'
 import { ResourceQuota } from '@/components/shared/ResourceQuota'
@@ -264,7 +265,13 @@ export function ProjectDetail() {
               <div className="flex flex-wrap gap-1.5">
                 {project.capabilityIds.map((c) => {
                   const it = catalog.find((x) => x.id === c)
-                  return it ? <Tag key={c}>{it.name} · {CATEGORY_SINGULAR[it.category]}</Tag> : null
+                  const via = project.modelAccess?.[c]
+                  return it ? (
+                    <Tag key={c}>
+                      {it.name} · {CATEGORY_SINGULAR[it.category]}
+                      {via && via !== 'direct' ? ` · ${ACCESS_MODE_LABELS[via].replace('Through ', 'via ')}` : ''}
+                    </Tag>
+                  ) : null
                 })}
               </div>
             )}

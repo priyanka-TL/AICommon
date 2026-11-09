@@ -41,6 +41,7 @@ export const COMPUTE_TIERS: {
 }[] = [
   { value: 'cpu', label: 'CPU only', detail: '8 vCPU · 32 GB RAM', gpu: false, vcpu: 8, ramGb: 32, gpuMemGb: 0 },
   { value: 't4', label: 'NVIDIA T4', detail: '16 GB GPU · 8 vCPU · 32 GB RAM', gpu: true, vcpu: 8, ramGb: 32, gpuMemGb: 16 },
+  { value: 'l4', label: 'NVIDIA L4', detail: '24 GB GPU · 8 vCPU · 32 GB RAM', gpu: true, vcpu: 8, ramGb: 32, gpuMemGb: 24 },
   { value: 'a10', label: 'NVIDIA A10', detail: '24 GB GPU · 16 vCPU · 64 GB RAM', gpu: true, vcpu: 16, ramGb: 64, gpuMemGb: 24 },
   { value: 'a100', label: 'NVIDIA A100', detail: '80 GB GPU · 32 vCPU · 128 GB RAM', gpu: true, vcpu: 32, ramGb: 128, gpuMemGb: 80 },
 ]

@@ -177,8 +177,8 @@ test('5: over-quota request can only be forwarded; Super Admin approves', async 
   await go(page, '/app/environments/new')
   await page.getByLabel('Environment name').fill('Large speech benchmark')
   await page.getByRole('button', { name: /^Next:/ }).click()
-  await page.getByRole('radio', { name: /NVIDIA A100/ }).click()
-  await chooseOption(page, page.locator('#gpu-count'), '3 GPUs')
+  await page.getByRole('radiogroup', { name: 'Instance type' }).getByRole('radio', { name: /A100/ }).click()
+  await chooseOption(page, page.locator('#instance-count'), '3 instances')
   await expect(page.locator('main').getByText('Over quota', { exact: true }).locator('visible=true').first()).toBeVisible()
   for (let i = 0; i < 5; i++) await page.getByRole('button', { name: /^Next:/ }).click()
   await page.getByLabel(/Why does your organisation need this/).fill('State benchmark needs three GPUs for a week.')
@@ -511,6 +511,117 @@ test('12: QA test configurations are versioned and CSV uploads are checked', asy
       expect(overflow, `${path} at ${width}px overflows`).toBeLessThanOrEqual(1)
     }
   }
+})
+
+const breakdown = (page: Page) => page.getByTestId('cost-breakdown').locator('visible=true').first()
+const totalOf = async (page: Page) => Number(((await breakdown(page).innerText()).match(/Total per month\s*([\d,]+) credits/)?.[1] ?? '').replace(/,/g, ''))
+
+async function noProviderLabels(page: Page) {
+  const text = await page.locator('body').innerText()
+  expect(text.replace(/demo123/g, '')).not.toMatch(/demo|illustrative|simulated/i)
+}
+
+test('13: infrastructure providers, rate cards and the shared cost engine', async ({ page }) => {
+  await signIn(page, 'Super Admin')
+
+  // Baselines: an Azure environment, an AWS environment, and last month on Azure.
+  await go(page, '/super-admin/infrastructure/env-sl-tutor')
+  await expect(breakdown(page)).toContainText('Microsoft Azure')
+  const azureBefore = await totalOf(page)
+  await go(page, '/super-admin/infrastructure/env-sl-lessonplan')
+  await expect(breakdown(page)).toContainText('Amazon Web Services')
+  const awsBefore = await totalOf(page)
+  await go(page, '/super-admin/infra-providers/ip-azure?tab=spend')
+  const monthRows = page.getByRole('table', { name: 'Spend by month' }).locator('tbody tr')
+  await expect(monthRows).toHaveCount(6)
+  const pastBefore = await monthRows.nth(4).innerText()
+
+  // Provider screens carry no sample-data labels.
+  await go(page, '/super-admin/infra-providers')
+  await noProviderLabels(page)
+  await expect(page.locator('table tbody tr')).toHaveCount(6)
+  for (const tab of ['overview', 'rates', 'environments', 'spend']) {
+    await go(page, `/super-admin/infra-providers/ip-azure?tab=${tab}`)
+    await noProviderLabels(page)
+  }
+  await expect(page.getByRole('tab', { name: 'Rate Card' })).toBeVisible()
+
+  // Publish a new Azure rate card, effective today, with a higher A10 rate.
+  await go(page, '/super-admin/infra-providers/ip-azure?tab=rates')
+  await expect(page.getByText('Effective from').first()).toBeVisible()
+  await expect(page.getByText('Rate source').first()).toBeVisible()
+  await page.getByRole('button', { name: 'Publish new rate card' }).click()
+  await noProviderLabels(page)
+  await dialog(page).getByLabel('Rate source').fill('Published price list, Nov 2026')
+  await dialog(page).getByLabel('Instance 3 hourly rate').fill('300')
+  await dialog(page).getByRole('button', { name: 'Publish rate card' }).click()
+  await expect(page.getByText('Published rate card v3 for Microsoft Azure.')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Current: rate card v3' })).toBeVisible()
+  await expect(page.getByText('Earlier rate cards')).toBeVisible()
+
+  await go(page, '/super-admin/infrastructure/env-sl-tutor')
+  await expect(breakdown(page)).toContainText('rate card v3')
+  expect(await totalOf(page)).toBeGreaterThan(azureBefore)
+  await go(page, '/super-admin/infrastructure/env-sl-lessonplan')
+  expect(await totalOf(page)).toBe(awsBefore)
+  await go(page, '/super-admin/infra-providers/ip-azure?tab=spend')
+  await expect(monthRows).toHaveCount(6)
+  expect(await monthRows.nth(4).innerText()).toBe(pastBefore)
+
+  // Disabling a provider in use is blocked and lists the environments; an unused one can be disabled.
+  await go(page, '/super-admin/infra-providers/ip-onprem')
+  await page.getByRole('button', { name: 'Disable' }).click()
+  await expect(dialog(page).getByText('can’t be disabled yet')).toBeVisible()
+  await expect(dialog(page).getByRole('list', { name: 'Environments using this provider' })).toContainText('IndicConformer fine-tuning')
+  await expect(dialog(page).getByRole('button', { name: 'Disable provider' })).toHaveCount(0)
+  await dialog(page).getByRole('button', { name: 'Close' }).first().click()
+  await go(page, '/super-admin/infra-providers/ip-yotta')
+  await page.getByRole('button', { name: 'Disable' }).click()
+  await page.getByRole('button', { name: 'Disable provider' }).click()
+  await expect(page.getByText('Yotta is disabled.')).toBeVisible()
+
+  // Dashboard charts.
+  await go(page, '/super-admin')
+  for (const title of ['Cost by provider', 'Cost by tenant per provider', 'GPUs used against maximum']) await expect(page.getByRole('heading', { name: title })).toBeVisible()
+
+  // Children's data only sees India-resident regions.
+  await signIn(page, 'ShikshaLokam · User')
+  await go(page, '/app/environments/new')
+  await page.getByLabel('Environment name').fill('Phonics practice pilot')
+  await page.getByRole('button', { name: /^Next:/ }).click()
+  const regions = page.getByRole('radiogroup', { name: 'Region' })
+  await regions.getByRole('radio', { name: /Singapore/ }).click()
+  for (let i = 0; i < 4; i++) await page.getByRole('button', { name: /^Next:/ }).click()
+  await page.getByRole('radio', { name: /Children’s data/ }).click()
+  await page.getByRole('button', { name: /^Next:/ }).click()
+  await expect(page.getByRole('alert').filter({ hasText: 'Singapore stores data outside India' })).toBeVisible()
+  for (let i = 0; i < 4; i++) await page.getByRole('button', { name: 'Back' }).click()
+  await expect(regions.getByRole('radio', { name: /Singapore/ })).toHaveCount(0)
+  await expect(regions.getByRole('radio', { name: /Mumbai/ })).toBeVisible()
+  await expect(page.getByText('only India-resident regions are shown')).toBeVisible()
+
+  // The breakdown reads the same on the wizard, the request and the environment.
+  await regions.getByRole('radio', { name: /Mumbai/ }).click()
+  for (let i = 0; i < 5; i++) await page.getByRole('button', { name: /^Next:/ }).click()
+  await page.getByLabel(/Why does your organisation need this/).fill('Pilot with 20 schools in Dharwad for six weeks.')
+  const wizardText = await breakdown(page).innerText()
+  await page.getByRole('button', { name: 'Submit request' }).click()
+  await expect(page).toHaveURL(/\/app\/requests\/req-/)
+  const reqId = page.url().split('/').pop()!
+  expect(await breakdown(page).innerText()).toBe(wizardText)
+
+  await signIn(page, 'ShikshaLokam · Tenant Admin')
+  await go(page, `/tenant-admin/requests/${reqId}`)
+  expect(await breakdown(page).innerText()).toBe(wizardText)
+  await page.getByRole('button', { name: 'Forward to Super Admin' }).click()
+  await dialog(page).getByRole('button', { name: 'Forward to Super Admin' }).click()
+
+  await signIn(page, 'Super Admin')
+  await go(page, `/super-admin/requests/${reqId}`)
+  await page.getByRole('button', { name: 'Approve request' }).click()
+  await dialog(page).getByRole('button', { name: /^Approve/ }).click()
+  await page.getByRole('link', { name: 'Open environment' }).click()
+  expect(await breakdown(page).innerText()).toBe(wizardText)
 })
 
 test('responsive screenshots at 375, 768 and 1440 in light and dark', async ({ page }) => {

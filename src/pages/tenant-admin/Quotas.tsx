@@ -8,6 +8,7 @@ import { formatInt, relativeTime } from '@/lib/format'
 import { addQuota, projectAllocated, RESOURCES, tenantAllocated, ZERO } from '@/lib/quota'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { SpendThisMonth } from '@/components/shared/SpendThisMonth'
 import { ResourceQuota } from '@/components/shared/ResourceQuota'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
@@ -80,6 +81,8 @@ export default function Quotas() {
         </div>
         <ResourceQuota used={used} total={tenant.quota} className="lg:grid-cols-4" />
       </section>
+
+      <SpendThisMonth tenantId={tenant.id} className="mt-6" />
 
       <section className="card mt-6 p-6">
         <h2 className="mb-1 font-heading text-h3 text-text-primary">Split across projects</h2>

@@ -5,6 +5,10 @@ import { formatInt, relativeTime } from '@/lib/format'
 import { computeLabel, purposeLabel } from '@/lib/labels'
 import { envPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
+import { spendToDate } from '@/lib/cost'
+import { useAppStore } from '@/store/useAppStore'
+import { useCostContext } from '@/store/selectors'
+import { useMemo } from 'react'
 import { StatusBadge, Tag } from './StatusBadge'
 import { Avatar } from './Avatar'
 
@@ -18,6 +22,9 @@ interface Props {
 }
 
 export function EnvironmentCard({ env, catalog, role, owner, project, hasPendingChange }: Props) {
+  const costCtx = useCostContext(env.tenantId)
+  const spent = useMemo(() => spendToDate(env, costCtx).total, [env, costCtx])
+  const provider = useAppStore((s) => s.infraProviders.find((p) => p.id === env.spec.providerId))
   const name = (id: string) => catalog.find((c) => c.id === id)?.name ?? id
   const models = [...env.spec.llms.map((l) => name(l.id)), ...env.spec.asr.map(name)]
   const shown = models.slice(0, 3)
@@ -46,6 +53,7 @@ export function EnvironmentCard({ env, catalog, role, owner, project, hasPending
         <span className="flex items-center gap-1.5">
           <Cpu className="size-3.5 text-text-muted" aria-hidden /> {computeLabel(env.spec.compute)}
           {env.spec.compute !== 'cpu' && env.spec.gpuCount > 1 ? ` × ${env.spec.gpuCount}` : ''}
+          {provider ? ` · ${provider.code}` : ''}
         </span>
         <span className="flex items-center gap-1.5">
           <HardDrive className="size-3.5 text-text-muted" aria-hidden /> {env.spec.storageGb} GB
@@ -78,7 +86,7 @@ export function EnvironmentCard({ env, catalog, role, owner, project, hasPending
         </span>
         <span className="tabular shrink-0 text-right text-text-secondary">
           {env.status === 'active' || env.status === 'stopped' || env.status === 'suspended'
-            ? `${formatInt(env.creditsUsed)} credits used`
+            ? `${formatInt(spent)} credits used`
             : last
               ? relativeTime(last.at)
               : ''}

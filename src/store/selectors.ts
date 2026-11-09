@@ -162,3 +162,19 @@ export function useRequestItems(): RequestItem[] {
   const suggestions = useScopedSuggestions()
   return useMemo(() => [...requests.map(fromRequest), ...suggestions.map(fromSuggestion)], [requests, suggestions])
 }
+
+/** Everything the cost engine needs for one tenant. */
+export function useCostContext(tenantId: string | undefined) {
+  const providers = useAppStore((s) => s.infraProviders)
+  const tenants = useAppStore((s) => s.tenants)
+  const catalog = useAppStore((s) => s.catalog)
+  return useMemo(() => ({ providers, catalog, tenant: tenants.find((t) => t.id === tenantId) }), [providers, catalog, tenants, tenantId])
+}
+
+/** Builds a cost context for any tenant (for lists that span tenants). */
+export function useCostContexts() {
+  const providers = useAppStore((s) => s.infraProviders)
+  const tenants = useAppStore((s) => s.tenants)
+  const catalog = useAppStore((s) => s.catalog)
+  return useMemo(() => (tenantId: string) => ({ providers, catalog, tenant: tenants.find((t) => t.id === tenantId) }), [providers, catalog, tenants])
+}
