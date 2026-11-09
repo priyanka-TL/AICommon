@@ -9,6 +9,7 @@ import { formatCompact, formatInt } from '@/lib/format'
 import { tenantAllocated } from '@/lib/quota'
 import { envPath } from '@/lib/paths'
 import { cn } from '@/lib/utils'
+import { isAdmin } from '@/lib/roles'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { MonitoringPanel, RangePicker } from '@/components/shared/MonitoringPanel'
@@ -112,6 +113,8 @@ export default function Monitoring() {
         description={
           scope.role === 'user'
             ? 'Live metrics for environments you own or that belong to your projects.'
+            : scope.role === 'qa'
+              ? 'Live metrics for Active environments in the projects you test.'
             : scope.role === 'tenant_admin'
               ? 'Live metrics for every environment in your tenant.'
               : 'Live metrics across tenants. Use the tenant filter in the top bar to narrow it down.'
@@ -147,7 +150,7 @@ export default function Monitoring() {
             </SelectContent>
           </Select>
         )}
-        {scope.role !== 'user' && (
+        {isAdmin(scope.role) && (
           <Select value={ownerId} onValueChange={setOwnerId}>
             <SelectTrigger aria-label="Owner">
               <SelectValue />

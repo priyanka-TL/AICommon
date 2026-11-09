@@ -1,4 +1,4 @@
-export type Role = 'super_admin' | 'tenant_admin' | 'user'
+export type Role = 'super_admin' | 'tenant_admin' | 'user' | 'qa'
 export type ActorRole = Role | 'system'
 
 export type TenantStatus = 'active' | 'suspended'
@@ -40,6 +40,13 @@ export interface User {
   role: Role
   status: 'active' | 'deactivated'
   lastActiveAt: string
+  /** QA Engineers only: projects they test, and whether the Tenant Admin allows a tenant-wide view. */
+  qa?: QaAssignment
+}
+
+export interface QaAssignment {
+  projectIds: string[]
+  tenantWideAllowed: boolean
 }
 
 export interface Project {
@@ -53,6 +60,16 @@ export interface Project {
   limits: Quota
   capabilityIds: string[]
   createdAt: string
+  /** Model a QA Engineer recommended after a comparison. */
+  recommendation?: Recommendation
+}
+
+export interface Recommendation {
+  modelId: string
+  runId: string
+  byId: string
+  at: string
+  note: string
 }
 
 export type Purpose = 'development' | 'functional-testing' | 'load-testing' | 'evaluation' | 'pilot'
@@ -283,6 +300,7 @@ export type AuditEntity =
   | 'test'
   | 'settings'
   | 'capacity'
+  | 'qa'
 
 export interface AuditEntry {
   id: string
@@ -304,4 +322,111 @@ export interface Notification {
   text: string
   link: string | null
   read: boolean
+}
+
+/* ---------- QA ---------- */
+
+export interface DatasetRow {
+  input: string
+  expected: string
+  context?: string
+}
+
+export interface Dataset {
+  id: string
+  tenantId: string
+  name: string
+  language: Language
+  source: 'seeded' | 'upload'
+  rows: DatasetRow[]
+  createdById: string
+  createdAt: string
+}
+
+export type TestType = 'functional' | 'evaluation' | 'load' | 'comparison'
+export type QaMetric = 'accuracy' | 'faithfulness' | 'relevance' | 'toxicity' | 'latencyP95'
+export type TestSchedule = 'manual' | 'daily' | 'on_new_environment'
+
+export interface LoadProfile {
+  vus: number
+  rampUpSec: number
+  durationMin: number
+  targetRps: number
+}
+
+export interface TestConfigSpec {
+  name: string
+  projectId: string
+  type: TestType
+  datasetId: string
+  languages: Language[]
+  temperature: number
+  maxTokens: number
+  systemPrompt: string
+  /** Pass thresholds. Scores are 0–1 (toxicity: at most), latency in ms (at most). */
+  thresholds: Record<QaMetric, number>
+  metrics: QaMetric[]
+  load: LoadProfile | null
+  schedule: TestSchedule
+  notifyOnFailure: boolean
+}
+
+export interface TestConfigVersion {
+  version: number
+  spec: TestConfigSpec
+  at: string
+  byId: string
+  summary: string
+}
+
+export interface TestConfig {
+  id: string
+  tenantId: string
+  archived: boolean
+  versions: TestConfigVersion[]
+  createdAt: string
+}
+
+export interface PromptResult {
+  input: string
+  expected: string
+  output: string
+  scores: Record<'accuracy' | 'faithfulness' | 'relevance' | 'toxicity', number>
+  latencyMs: number
+  tokens: number
+  passed: boolean
+}
+
+export interface ModelSummary {
+  modelId: string
+  accuracy: number
+  faithfulness: number
+  relevance: number
+  toxicity: number
+  latencyP50: number
+  latencyP95: number
+  tokens: number
+  costCredits: number
+  passRate: number
+  passed: boolean
+  results: PromptResult[]
+}
+
+export type QaRunKind = 'single' | 'comparison' | 'functional' | 'load'
+
+export interface QaRun {
+  id: string
+  tenantId: string
+  projectId: string
+  configId: string | null
+  configVersion: number | null
+  kind: QaRunKind
+  envId: string | null
+  actorId: string
+  at: string
+  title: string
+  passed: boolean
+  models: ModelSummary[]
+  /** Load runs keep their headline numbers here. */
+  load?: { vus: number; rps: number; p95: number; errorPct: number }
 }

@@ -13,6 +13,7 @@ import { Avatar } from '@/components/shared/Avatar'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/controls'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -92,6 +93,17 @@ function TenantFilter() {
         ))}
       </SelectContent>
     </Select>
+  )
+}
+
+function QaScopeSwitch() {
+  const on = useSessionStore((s) => s.qaTenantWide)
+  const set = useSessionStore((s) => s.setQaTenantWide)
+  return (
+    <label className="hidden shrink-0 cursor-pointer items-center gap-2 text-caption font-semibold text-text-secondary sm:flex">
+      <Switch checked={on} onCheckedChange={set} aria-label="Tenant-wide view" />
+      Tenant-wide
+    </label>
   )
 }
 
@@ -310,6 +322,7 @@ export function Topbar({ onOpenMenu }: { onOpenMenu: () => void }) {
         <Breadcrumb />
       </div>
       {user?.role === 'super_admin' && <TenantFilter />}
+      {user?.role === 'qa' && user.qa?.tenantWideAllowed && <QaScopeSwitch />}
       <GlobalSearch />
       <Notifications />
       <UserMenu />

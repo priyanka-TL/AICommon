@@ -19,14 +19,17 @@ export function Sidebar({ collapsed = false, onToggleCollapse, onNavigate }: Sid
   const tenant = useCurrentTenant()
   const counts = useAppStore(
     useShallow((s) => {
-    if (!user) return { tenantReviews: 0, escalated: 0, suggestions: 0 }
+    if (!user) return { tenantReviews: 0, escalated: 0 }
     const mine = (tenantId: string) => user.role === 'super_admin' || tenantId === user.tenantId
+    const open = (x: { status: string }) => ['submitted', 'under_review'].includes(x.status)
     return {
-      tenantReviews: s.requests.filter((r) => mine(r.tenantId) && ['submitted', 'under_review', 'resubmitted'].includes(r.status) && r.raisedByRole !== 'tenant_admin').length,
-      escalated: s.requests.filter((r) => r.status === 'escalated').length + s.quotaRequests.filter((q) => q.status === 'pending').length,
-      suggestions: s.suggestions.filter((x) =>
-        user.role === 'super_admin' ? x.forwarded && ['submitted', 'under_review'].includes(x.status) : mine(x.tenantId) && !x.forwarded && ['submitted', 'under_review'].includes(x.status),
-      ).length,
+      tenantReviews:
+        s.requests.filter((r) => mine(r.tenantId) && ['submitted', 'under_review', 'resubmitted'].includes(r.status) && r.raisedByRole !== 'tenant_admin').length +
+        s.suggestions.filter((x) => mine(x.tenantId) && !x.forwarded && open(x)).length,
+      escalated:
+        s.requests.filter((r) => r.status === 'escalated').length +
+        s.quotaRequests.filter((q) => q.status === 'pending').length +
+        s.suggestions.filter((x) => (x.forwarded && open(x)) || x.status === 'approved_tenant').length,
       }
     }),
   )

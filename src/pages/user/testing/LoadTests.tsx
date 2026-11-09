@@ -38,10 +38,10 @@ interface HistoryRow extends LoadVerdict {
 const DURATIONS = [1, 5, 10, 15, 30]
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 
-export function LoadTests({ env }: { env: Environment }) {
+export function LoadTests({ env, initialConfig, onFinished }: { env: Environment; initialConfig?: LoadConfig; onFinished?: (verdict: LoadVerdict, cfg: LoadConfig) => void }) {
   const catalog = useAppStore((s) => s.catalog)
   const recordTestRun = useAppStore((s) => s.recordTestRun)
-  const [cfg, setCfg] = useState<LoadConfig>({ vus: 200, rampUpSec: 60, durationMin: 5 })
+  const [cfg, setCfg] = useState<LoadConfig>(initialConfig ?? { vus: 200, rampUpSec: 60, durationMin: 5 })
   const [phase, setPhase] = useState<Phase>('idle')
   const [points, setPoints] = useState<LoadPoint[]>([])
   const [verdict, setVerdict] = useState<LoadVerdict | null>(null)
@@ -76,6 +76,7 @@ export function LoadTests({ env }: { env: Environment }) {
         setVerdict(v)
         setPhase('done')
         setHistory((h) => [{ id: uid('lt'), at: new Date().toISOString(), vus: run.vus, ...v }, ...h].slice(0, 6))
+        onFinished?.(v, run)
         recordTestRun({
           envId: env.id,
           kind: 'load',

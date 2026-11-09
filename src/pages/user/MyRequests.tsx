@@ -1,152 +1,173 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { ArrowRight, ClipboardList, PencilLine, Plus } from 'lucide-react'
-import type { EnvRequest } from '@/data/types'
+import { useNavigate } from 'react-router-dom'
+import { ChevronDown, ClipboardList, GitPullRequestArrow, Plus, SearchX, Server } from 'lucide-react'
 import { useAppStore, useCurrentTenant } from '@/store/useAppStore'
-import { useScopedRequests } from '@/store/selectors'
+import { useRequestItems, useScopedProjects } from '@/store/selectors'
 import { useSimulatedLoading } from '@/hooks/useSimulatedLoading'
-import { relativeTime } from '@/lib/format'
-import { purposeLabel } from '@/lib/labels'
-import { continueRequestPath, requestPath } from '@/lib/paths'
-import { cn } from '@/lib/utils'
+import { useRequestFilters } from '@/hooks/useRequestFilters'
+import { filterCommon, filterItems, sortItems, type RequestItem } from '@/lib/requestItems'
+import { formatDate, relativeTime } from '@/lib/format'
+import { continueRequestPath, newEnvPath, requestPath, suggestionPath } from '@/lib/paths'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { DataTable, type Column } from '@/components/shared/DataTable'
 import { EmptyState } from '@/components/shared/EmptyState'
-import { StatusBadge, Tag } from '@/components/shared/StatusBadge'
-import { CompactTimeline, futureSteps, mergedHistory } from '@/components/shared/LifecycleTimeline'
+import { StatusBadge } from '@/components/shared/StatusBadge'
+import { ItemStatusBadge, RequestFilters, TypeLabel } from '@/components/shared/RequestFilters'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
-
-type Filter = 'all' | 'drafts' | 'open' | 'approved' | 'closed'
-
-const FILTERS: [Filter, string, (r: EnvRequest) => boolean][] = [
-  ['all', 'All', () => true],
-  ['drafts', 'Drafts', (r) => r.status === 'draft'],
-  ['open', 'In progress', (r) => ['submitted', 'under_review', 'changes_requested', 'resubmitted', 'escalated'].includes(r.status)],
-  ['approved', 'Approved', (r) => r.status === 'approved'],
-  ['closed', 'Rejected or cancelled', (r) => r.status === 'rejected' || r.status === 'cancelled'],
-]
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { SuggestDialog } from './SuggestDialog'
 
 export default function MyRequests() {
   const loading = useSimulatedLoading()
   const tenant = useCurrentTenant()!
-  const requests = useScopedRequests()
+  const items = useRequestItems()
+  const projects = useScopedProjects()
+  const allProjects = useAppStore((s) => s.projects)
   const environments = useAppStore((s) => s.environments)
-  const projects = useAppStore((s) => s.projects)
   const users = useAppStore((s) => s.users)
-  const [filter, setFilter] = useState<Filter>('all')
+  const navigate = useNavigate()
+  const { filters, update, clear, active } = useRequestFilters('user')
+  const [suggestOpen, setSuggestOpen] = useState(false)
 
-  const sorted = useMemo(() => [...requests].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [requests])
-  const test = FILTERS.find((f) => f[0] === filter)![2]
-  const rows = sorted.filter(test)
+  const common = useMemo(() => filterCommon(items, filters), [items, filters])
+  const counts = {
+    all: common.length,
+    environment: common.filter((i) => i.type === 'environment').length,
+    capability: common.filter((i) => i.type === 'capability').length,
+  }
+  const rows = useMemo(() => sortItems(filterItems(items, filters), filters.sort), [items, filters])
+
+  const projectName = (id: string | null) => allProjects.find((p) => p.id === id)?.name
+  const envFor = (i: RequestItem) => (i.type === 'environment' && i.source.kind === 'new' && i.source.envId ? environments.find((e) => e.id === i.source.envId) : undefined)
+
+  const open = (i: RequestItem) => {
+    if (i.type === 'capability') return navigate(suggestionPath('user', i.id))
+    const editable = i.source.status === 'draft' || i.source.status === 'changes_requested'
+    navigate(editable ? continueRequestPath('user', i.id) : requestPath('user', i.id))
+  }
+
+  const Comment = ({ i }: { i: RequestItem }) =>
+    i.reviewerComment ? (
+      <p className="max-w-[200px] truncate text-caption text-text-secondary" title={i.reviewerComment.text}>
+        <span className="font-semibold text-text-primary">{users.find((u) => u.id === i.reviewerComment!.actorId)?.name ?? 'Reviewer'}:</span> {i.reviewerComment.text}
+      </p>
+    ) : (
+      <span className="text-caption text-text-muted">—</span>
+    )
+
+  const Where = ({ i }: { i: RequestItem }) =>
+    i.type === 'capability' ? (
+      <span className="block max-w-[170px] truncate font-mono text-caption text-text-secondary" title={i.repo ?? undefined}>
+        {i.repo}
+      </span>
+    ) : (
+      <span className="text-text-secondary">{projectName(i.projectId)}</span>
+    )
+
+  const columns: Column<RequestItem>[] = [
+    { key: 'type', header: 'Type', cell: (i) => <TypeLabel type={i.type} /> },
+    {
+      key: 'name',
+      header: 'Request',
+      cell: (i) => (
+        <div className="min-w-0">
+          <span className="block truncate font-semibold text-text-primary">{i.name}</span>
+          <span className="font-mono text-xs text-text-muted">{i.id}</span>
+        </div>
+      ),
+    },
+    { key: 'where', header: 'Project or repo', cell: (i) => <Where i={i} />, className: 'hidden lg:table-cell' },
+    { key: 'submitted', header: 'Submitted', cell: (i) => <span className="tabular whitespace-nowrap text-text-secondary">{formatDate(i.submittedAt)}</span>, className: 'hidden xl:table-cell' },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (i) => {
+        const env = envFor(i)
+        return (
+          <div className="flex flex-wrap gap-1.5">
+            <ItemStatusBadge item={i} />
+            {env && <StatusBadge status={env.status} />}
+          </div>
+        )
+      },
+    },
+    { key: 'updated', header: 'Updated', cell: (i) => <span className="whitespace-nowrap text-text-secondary" title={formatDate(i.updatedAt)}>{relativeTime(i.updatedAt)}</span> },
+    { key: 'comment', header: 'Reviewer comment', cell: (i) => <Comment i={i} />, className: 'hidden xl:table-cell' },
+  ]
+
+  const newRequest = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button>
+          <Plus /> New request <ChevronDown />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={() => navigate(newEnvPath('user'))}>
+          <Server /> Request environment
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => setSuggestOpen(true)}>
+          <GitPullRequestArrow /> Suggest a capability
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
 
   return (
     <>
       <PageHeader
         eyebrow={tenant.name}
         title="My requests"
-        description="Drafts, requests in review and decisions. Open one to see its full approval timeline."
-        actions={
-          <Button asChild>
-            <Link to="/app/environments/new">
-              <Plus /> Request environment
-            </Link>
-          </Button>
-        }
+        description="Your environment requests and capability suggestions in one place. Open one to see its timeline."
+        actions={newRequest}
       />
 
-      <div className="-mx-4 mb-6 flex gap-1.5 overflow-x-auto px-4 pb-1 md:mx-0 md:px-0" role="group" aria-label="Filter requests">
-        {FILTERS.map(([f, label, fn]) => (
-          <button
-            key={f}
-            type="button"
-            aria-pressed={filter === f}
-            onClick={() => setFilter(f)}
-            className={cn(
-              'flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-caption font-semibold transition-colors',
-              filter === f ? 'border-indigo bg-indigo-50 text-indigo-text dark:border-indigo-text' : 'border-border bg-bg-surface text-text-secondary hover:border-border-strong',
-            )}
-          >
-            {label} <span className="tabular text-text-muted">{sorted.filter(fn).length}</span>
-          </button>
-        ))}
-      </div>
+      <RequestFilters role="user" filters={filters} update={update} clear={clear} active={active} counts={counts} projects={projects} />
 
-      {loading ? (
-        <div className="flex flex-col gap-4">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-28 rounded-card" />
-          ))}
-        </div>
-      ) : rows.length === 0 ? (
-        <div className="card">
-          <EmptyState
-            icon={ClipboardList}
-            title={requests.length === 0 ? 'You haven’t made any requests yet' : 'No requests here'}
-            description={requests.length === 0 ? 'Request an environment and follow its review here.' : undefined}
-            action={
-              requests.length === 0 ? (
-                <Button asChild variant="secondary">
-                  <Link to="/app/environments/new">Request environment</Link>
+      <DataTable
+        loading={loading}
+        rows={rows}
+        columns={columns}
+        rowKey={(i) => `${i.type}-${i.id}`}
+        rowLabel={(i) => `Open request ${i.name}`}
+        onRowClick={open}
+        empty={
+          items.length === 0 ? (
+            <EmptyState icon={ClipboardList} title="You haven’t made any requests yet" description="Request an environment or suggest a capability, and follow its review here." />
+          ) : (
+            <EmptyState
+              icon={SearchX}
+              title="No requests match these filters"
+              action={
+                <Button variant="secondary" onClick={() => (active ? clear() : update({ type: 'all' }))}>
+                  {active ? 'Clear filters' : 'Show all types'}
                 </Button>
-              ) : (
-                <Button variant="secondary" onClick={() => setFilter('all')}>
-                  Show all
-                </Button>
-              )
-            }
-          />
-        </div>
-      ) : (
-        <ul className="flex flex-col gap-4">
-          {rows.map((r) => {
-            const env = r.kind === 'new' && r.envId ? environments.find((e) => e.id === r.envId) : null
-            const events = mergedHistory(r, env)
-            const latest = [...r.history].reverse().find((h) => h.comment && h.actorId !== r.requesterId)
-            const editable = r.status === 'draft' || r.status === 'changes_requested'
-            return (
-              <li key={r.id} className="card flex flex-col gap-4 p-5">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Link to={editable ? continueRequestPath('user', r.id) : requestPath('user', r.id)} className="font-heading text-h3 text-text-primary hover:text-indigo-text">
-                        {r.spec.name}
-                      </Link>
-                      <Tag>{r.kind === 'new' ? 'New environment' : 'Change'}</Tag>
-                    </div>
-                    <p className="mt-1 text-caption text-text-secondary">
-                      {projects.find((p) => p.id === r.spec.projectId)?.name} · {purposeLabel(r.spec.purpose)} · updated {relativeTime(r.updatedAt)}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <StatusBadge status={r.status} />
-                    {env && <StatusBadge status={env.status} />}
-                  </div>
-                </div>
-                <CompactTimeline events={events} future={futureSteps(events, r)} />
-                {latest && (r.status === 'changes_requested' || r.status === 'rejected' || r.status === 'escalated') && (
-                  <p className={cn('rounded-control px-3 py-2 text-sm', r.status === 'rejected' ? 'bg-status-rejected-bg text-status-rejected-fg' : r.status === 'changes_requested' ? 'bg-status-change-bg text-status-change-fg' : 'bg-bg-subtle text-text-primary')}>
-                    <span className="font-semibold">{users.find((u) => u.id === latest.actorId)?.name}:</span> {latest.comment}
-                  </p>
-                )}
-                <div className="flex flex-wrap gap-2">
-                  {editable && (
-                    <Button asChild variant="secondary" size="compact">
-                      <Link to={continueRequestPath('user', r.id)}>
-                        <PencilLine /> {r.status === 'draft' ? 'Continue draft' : 'Edit & resubmit'}
-                      </Link>
-                    </Button>
-                  )}
-                  <Button asChild variant="ghost" size="compact">
-                    <Link to={requestPath('user', r.id)}>
-                      View timeline <ArrowRight />
-                    </Link>
-                  </Button>
-                </div>
-              </li>
-            )
-          })}
-        </ul>
-      )}
+              }
+            />
+          )
+        }
+        mobileCard={(i) => (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate font-semibold text-text-primary">{i.name}</p>
+                <p className="font-mono text-xs text-text-muted">{i.id}</p>
+              </div>
+              <ItemStatusBadge item={i} />
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-caption">
+              <TypeLabel type={i.type} />
+              <Where i={i} />
+            </div>
+            <p className="text-caption text-text-muted">
+              Submitted {formatDate(i.submittedAt)} · updated {relativeTime(i.updatedAt)}
+            </p>
+            {i.reviewerComment && <Comment i={i} />}
+          </div>
+        )}
+      />
+
+      <SuggestDialog open={suggestOpen} onOpenChange={setSuggestOpen} />
     </>
   )
 }

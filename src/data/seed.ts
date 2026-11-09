@@ -2,27 +2,33 @@ import type {
   ActorRole,
   AuditEntry,
   CatalogItem,
+  Dataset,
   EnvRequest,
   EnvSpec,
   EnvStatus,
   Environment,
   LifecycleEvent,
+  Language,
   LifecycleStatus,
   Notification,
   Project,
   Provider,
+  QaMetric,
+  QaRun,
   Quota,
   QuotaRequest,
   Role,
   Suggestion,
   Tenant,
+  TestConfig,
+  TestConfigSpec,
   TestRun,
   UsagePoint,
   User,
 } from './types'
 
 /** Bump to discard everyone's saved state and load this seed. */
-export const SEED_VERSION = 'v2'
+export const SEED_VERSION = 'v3'
 
 export const DEFAULT_TENANT_ID = 't-default'
 export const SUPER_ADMIN_ID = 'u-super'
@@ -34,6 +40,8 @@ export const QUICK_SIGN_IN: { userId: string; label: string }[] = [
   { userId: 'u-sl-dev', label: 'ShikshaLokam · User' },
   { userId: 'u-m4c-ta', label: 'Mantra4Change · Tenant Admin' },
   { userId: 'u-m4c-dev', label: 'Mantra4Change · User' },
+  { userId: 'u-sl-qa', label: 'ShikshaLokam · QA Engineer' },
+  { userId: 'u-m4c-qa', label: 'Mantra4Change · QA Engineer' },
 ]
 
 /* ---------- deterministic helpers ---------- */
@@ -174,6 +182,7 @@ export const seedUsers: User[] = [
   u('u-sl-kiran', 'Kiran Hegde', 'kiran.hegde@shikshalokam.org', 'Backend developer', SL, 'user', hoursAgo(50)),
   u('u-sl-fatima', 'Fatima Sheikh', 'fatima.sheikh@shikshalokam.org', 'Speech researcher', SL, 'user', hoursAgo(8)),
   u('u-sl-vikram', 'Vikram Patil', 'vikram.patil@shikshalokam.org', 'Intern', SL, 'user', at(45), 'deactivated'),
+  { ...u('u-sl-qa', 'Lakshmi Iyer', 'qa@shikshalokam.org', 'QA engineer', SL, 'qa', hoursAgo(7)), qa: { projectIds: ['p-sl-teacher', 'p-sl-edu'], tenantWideAllowed: false } },
 
   u('u-m4c-ta', 'Sneha Kulkarni', 'tenantadmin@mantra4change.org', 'Head of technology', M4C, 'tenant_admin', hoursAgo(4)),
   u('u-m4c-dev', 'Rahul Menon', 'developer@mantra4change.org', 'Full-stack developer', M4C, 'user', hoursAgo(6)),
@@ -181,6 +190,7 @@ export const seedUsers: User[] = [
   u('u-m4c-sanjay', 'Sanjay Gupta', 'sanjay.gupta@mantra4change.org', 'ML engineer', M4C, 'user', hoursAgo(12)),
   u('u-m4c-aisha', 'Aisha Khan', 'aisha.khan@mantra4change.org', 'Product manager', M4C, 'user', hoursAgo(20)),
   u('u-m4c-manoj', 'Manoj Das', 'manoj.das@mantra4change.org', 'Developer', M4C, 'user', at(60), 'deactivated'),
+  { ...u('u-m4c-qa', 'Imran Qureshi', 'qa@mantra4change.org', 'QA engineer', M4C, 'qa', hoursAgo(9)), qa: { projectIds: ['p-m4c-docs'], tenantWideAllowed: true } },
 ]
 
 /* ---------- projects ---------- */
@@ -188,13 +198,13 @@ export const seedUsers: User[] = [
 const q = (vcpu: number, ramGb: number, gpus: number, storageGb: number): Quota => ({ vcpu, ramGb, gpus, storageGb })
 
 export const seedProjects: Project[] = [
-  { id: 'p-sl-edu', tenantId: SL, name: 'AI Education Assistant', description: 'Reading and maths help for children in Kannada and Hindi.', ownerId: 'u-sl-ta', memberIds: ['u-sl-dev', 'u-sl-meera'], status: 'active', limits: q(48, 192, 2, 1000), capabilityIds: ['cap-langgraph', 'cap-qdrant'], createdAt: at(200) },
-  { id: 'p-sl-teacher', tenantId: SL, name: 'Teacher Support Chatbot', description: 'Answers teachers’ questions on lesson planning and classroom practice.', ownerId: 'u-sl-ta', memberIds: ['u-sl-dev', 'u-sl-kiran'], status: 'active', limits: q(40, 160, 2, 800), capabilityIds: ['cap-llamaindex'], createdAt: at(180) },
-  { id: 'p-sl-speech', tenantId: SL, name: 'Multilingual Speech Recognition', description: 'Speech models for Indian languages, tested with classroom audio.', ownerId: 'u-sl-ta', memberIds: ['u-sl-fatima', 'u-sl-meera'], status: 'active', limits: q(40, 160, 2, 1200), capabilityIds: ['cap-deepeval'], createdAt: at(150) },
+  { id: 'p-sl-edu', tenantId: SL, name: 'AI Education Assistant', description: 'Reading and maths help for children in Kannada and Hindi.', ownerId: 'u-sl-ta', memberIds: ['u-sl-dev', 'u-sl-meera'], status: 'active', limits: q(48, 192, 2, 1000), capabilityIds: ['cap-langgraph', 'cap-qdrant', 'llm-sarvam', 'llm-gemma', 'llm-mistral', 'llm-gpt'], createdAt: at(200) },
+  { id: 'p-sl-teacher', tenantId: SL, name: 'Teacher Support Chatbot', description: 'Answers teachers’ questions on lesson planning and classroom practice.', ownerId: 'u-sl-ta', memberIds: ['u-sl-dev', 'u-sl-kiran'], status: 'active', limits: q(40, 160, 2, 800), capabilityIds: ['cap-llamaindex', 'llm-sarvam', 'llm-llama', 'llm-claude', 'llm-gpt', 'llm-gemini'], createdAt: at(180) },
+  { id: 'p-sl-speech', tenantId: SL, name: 'Multilingual Speech Recognition', description: 'Speech models for Indian languages, tested with classroom audio.', ownerId: 'u-sl-ta', memberIds: ['u-sl-fatima', 'u-sl-meera'], status: 'active', limits: q(40, 160, 2, 1200), capabilityIds: ['cap-deepeval', 'llm-sarvam'], createdAt: at(150) },
 
-  { id: 'p-m4c-coach', tenantId: M4C, name: 'School Leader Coaching Assistant', description: 'Helps school leaders plan improvement goals and reflect on progress.', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-dev', 'u-m4c-aisha'], status: 'active', limits: q(40, 160, 2, 800), capabilityIds: ['cap-crewai'], createdAt: at(150) },
-  { id: 'p-m4c-docs', tenantId: M4C, name: 'Document Intelligence', description: 'Reads scanned school records and forms into structured data.', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-sanjay', 'u-m4c-dev'], status: 'active', limits: q(32, 128, 1, 700), capabilityIds: ['cap-haystack', 'cap-pgvector'], createdAt: at(120) },
-  { id: 'p-m4c-feedback', tenantId: M4C, name: 'Feedback Analysis', description: 'Finds themes in feedback from teachers and parents.', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-divya', 'u-m4c-aisha'], status: 'active', limits: q(24, 96, 1, 500), capabilityIds: [], createdAt: at(100) },
+  { id: 'p-m4c-coach', tenantId: M4C, name: 'School Leader Coaching Assistant', description: 'Helps school leaders plan improvement goals and reflect on progress.', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-dev', 'u-m4c-aisha'], status: 'active', limits: q(40, 160, 2, 800), capabilityIds: ['cap-crewai', 'llm-gpt', 'llm-gemma', 'llm-claude'], createdAt: at(150) },
+  { id: 'p-m4c-docs', tenantId: M4C, name: 'Document Intelligence', description: 'Reads scanned school records and forms into structured data.', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-sanjay', 'u-m4c-dev'], status: 'active', limits: q(32, 128, 1, 700), capabilityIds: ['cap-haystack', 'cap-pgvector', 'llm-claude', 'llm-sarvam', 'llm-gemini', 'llm-mistral'], createdAt: at(120) },
+  { id: 'p-m4c-feedback', tenantId: M4C, name: 'Feedback Analysis', description: 'Finds themes in feedback from teachers and parents.', ownerId: 'u-m4c-ta', memberIds: ['u-m4c-divya', 'u-m4c-aisha'], status: 'active', limits: q(24, 96, 1, 500), capabilityIds: ['llm-mistral', 'llm-gpt'], createdAt: at(100) },
 ]
 
 /* ---------- catalog ---------- */
@@ -643,6 +653,47 @@ export const seedUsage: UsagePoint[] = (() => {
 
 export const seedSuggestions: Suggestion[] = [
   {
+    id: 's-sl-indictrans',
+    tenantId: SL,
+    suggestedById: 'u-sl-dev',
+    githubUrl: 'https://github.com/AI4Bharat/IndicTrans2',
+    name: 'IndicTrans2',
+    category: 'llm',
+    description: 'Open translation models for 22 scheduled Indian languages.',
+    useCase: 'Teachers want lesson plans translated between Kannada, Hindi and English without a hosted API.',
+    licence: 'MIT',
+    docsUrl: '',
+    status: 'needs_info',
+    forwarded: false,
+    history: [
+      { status: 'submitted', at: at(5, 10, 30), actorId: 'u-sl-dev', actorRole: 'user' },
+      { status: 'under_review', at: at(4, 9, 15), actorId: 'u-sl-ta', actorRole: 'tenant_admin' },
+      { status: 'needs_info', at: at(3, 16, 0), actorId: 'u-sl-ta', actorRole: 'tenant_admin', comment: 'Which model size do you need? The 1B model needs a GPU, so tell me which project will host it.' },
+    ],
+    catalogItemId: null,
+    createdAt: at(5, 10, 30),
+  },
+  {
+    id: 's-sl-unstructured',
+    tenantId: SL,
+    suggestedById: 'u-sl-dev',
+    githubUrl: 'https://github.com/Unstructured-IO/unstructured',
+    name: 'Unstructured',
+    category: 'agent-framework',
+    description: 'Turns PDFs, scans and slides into clean text for retrieval.',
+    useCase: 'The teacher FAQ bot needs to read state textbook PDFs, many of which are scanned.',
+    licence: 'Apache 2.0',
+    docsUrl: 'https://docs.unstructured.io',
+    status: 'under_review',
+    forwarded: true,
+    history: [
+      { status: 'submitted', at: at(2, 11, 0), actorId: 'u-sl-dev', actorRole: 'user' },
+      { status: 'under_review', at: at(1, 15, 20), actorId: 'u-sl-ta', actorRole: 'tenant_admin', comment: 'Looks useful for other tenants too. Forwarded to the Super Admin.' },
+    ],
+    catalogItemId: null,
+    createdAt: at(2, 11, 0),
+  },
+  {
     id: 's-sl-langfuse',
     tenantId: SL,
     suggestedById: 'u-sl-meera',
@@ -925,6 +976,129 @@ export const DEFAULT_TEST_CASES: TestCaseSeed[] = [
   { input: 'Translate to Hindi: "Water the plants in the evening."', expected: 'शाम को पौधों को पानी दें', match: 'similar' },
 ]
 
+/* ---------- QA: datasets and test configurations ---------- */
+
+const ds = (id: string, tenantId: string, name: string, language: Language, createdById: string, rows: [string, string, string?][]): Dataset => ({
+  id,
+  tenantId,
+  name,
+  language,
+  source: 'seeded',
+  rows: rows.map(([input, expected, context]) => ({ input, expected, ...(context ? { context } : {}) })),
+  createdById,
+  createdAt: at(30),
+})
+
+const NIPUN = 'निपुण भारत मिशन का लक्ष्य है कि कक्षा 3 के अंत तक हर बच्चा पढ़ना, लिखना और गणित की बुनियादी समझ हासिल करे।'
+const ORF = 'मौखिक पठन प्रवाह आकलन में बच्चा एक मिनट तक पाठ पढ़ता है और सही पढ़े गए शब्द गिने जाते हैं।'
+const RAMU = 'ರಾಮು ಬೆಳಿಗ್ಗೆ ಏಳು ಗಂಟೆಗೆ ಶಾಲೆಗೆ ಹೋದನು. ಅವನು ತನ್ನ ಅಕ್ಕನ ಜೊತೆ ನಡೆದುಕೊಂಡು ಹೋದನು. ದಾರಿಯಲ್ಲಿ ಅವರು ಒಂದು ಹಸಿರು ಗಿಳಿಯನ್ನು ನೋಡಿದರು.'
+const PADDY = 'ಮಳೆಗಾಲದಲ್ಲಿ ರೈತರು ಭತ್ತ ಬಿತ್ತುತ್ತಾರೆ. ಭತ್ತಕ್ಕೆ ಹೆಚ್ಚು ನೀರು ಬೇಕು.'
+const SDP = 'विद्यालय विकास योजना विद्यालय प्रबंधन समिति और प्रधानाध्यापक मिलकर तीन साल के लिए बनाते हैं, और हर साल इसकी समीक्षा होती है।'
+
+export const seedDatasets: Dataset[] = [
+  ds('ds-sl-hindi', SL, 'Teacher FAQ – Hindi', 'Hindi', 'u-sl-qa', [
+    ['निपुण भारत मिशन किस कक्षा तक के बच्चों के लिए है?', 'कक्षा 3 तक', NIPUN],
+    ['बच्चों का पढ़ने का स्तर जाँचने के लिए कौन-सा आकलन उपयोग करें?', 'मौखिक पठन प्रवाह (ORF) आकलन', ORF],
+    ['एक मिनट में सही पढ़े गए शब्दों को क्या कहते हैं?', 'प्रति मिनट सही शब्द (WCPM)', ORF],
+    ['समूह कार्य के लिए एक समूह में कितने बच्चे रखें?', '4 से 6 बच्चे', 'समूह कार्य में 4 से 6 बच्चों के छोटे समूह सबसे अच्छे रहते हैं ताकि हर बच्चा भाग ले सके।'],
+    ['गणित में स्थानीय मान सिखाने के लिए कौन-सी सामग्री उपयोगी है?', 'तीलियों के बंडल', 'स्थानीय मान सिखाने के लिए दस तीलियों के बंडल और खुली तीलियाँ उपयोगी हैं।'],
+    ['पाठ योजना में सीखने के उद्देश्य कब लिखने चाहिए?', 'पाठ शुरू करने से पहले', 'अच्छी पाठ योजना में सीखने के उद्देश्य पाठ शुरू करने से पहले स्पष्ट लिखे जाते हैं।'],
+  ]),
+  ds('ds-sl-kannada', SL, 'Reading comprehension – Kannada', 'Kannada', 'u-sl-qa', [
+    ['ರಾಮು ಎಷ್ಟು ಗಂಟೆಗೆ ಶಾಲೆಗೆ ಹೋದನು?', 'ಏಳು ಗಂಟೆಗೆ', RAMU],
+    ['ರಾಮು ಯಾರ ಜೊತೆ ಶಾಲೆಗೆ ಹೋದನು?', 'ಅಕ್ಕನ ಜೊತೆ', RAMU],
+    ['ದಾರಿಯಲ್ಲಿ ಅವರು ಏನು ನೋಡಿದರು?', 'ಹಸಿರು ಗಿಳಿ', RAMU],
+    ['ರಾಮು ಶಾಲೆಗೆ ಹೇಗೆ ಹೋದನು?', 'ನಡೆದುಕೊಂಡು', RAMU],
+    ['ರೈತರು ಮಳೆಗಾಲದಲ್ಲಿ ಏನು ಬಿತ್ತುತ್ತಾರೆ?', 'ಭತ್ತ', PADDY],
+    ['ಭತ್ತಕ್ಕೆ ಏನು ಹೆಚ್ಚು ಬೇಕು?', 'ನೀರು', PADDY],
+  ]),
+  ds('ds-m4c-hindi', M4C, 'School improvement plans – Hindi', 'Hindi', 'u-m4c-qa', [
+    ['विद्यालय विकास योजना कौन बनाता है?', 'विद्यालय प्रबंधन समिति और प्रधानाध्यापक', SDP],
+    ['विद्यालय विकास योजना कितने समय के लिए बनती है?', 'तीन साल', SDP],
+    ['योजना की समीक्षा कितनी बार होती है?', 'हर साल', SDP],
+    ['शिक्षकों की उपस्थिति का रिकॉर्ड कौन रखता है?', 'प्रधानाध्यापक', 'प्रधानाध्यापक शिक्षकों की दैनिक उपस्थिति का रिकॉर्ड रखते हैं।'],
+    ['SMC की बैठक कितनी बार होनी चाहिए?', 'महीने में एक बार', 'SMC की बैठक महीने में कम से कम एक बार होनी चाहिए।'],
+    ['योजना बनाने से पहले क्या करते हैं?', 'विद्यालय की वर्तमान स्थिति का आकलन', 'योजना बनाने से पहले विद्यालय की वर्तमान स्थिति का आकलन किया जाता है।'],
+  ]),
+  ds('ds-m4c-english', M4C, 'School leader coaching – English', 'English', 'u-m4c-qa', [
+    ['What is the first step in a school improvement cycle?', "Assess the school's current situation"],
+    ['How often should a school leader observe classrooms?', 'At least once a week'],
+    ['What should feedback after a classroom observation focus on?', 'One or two specific, actionable points'],
+    ['Who should set the school’s improvement goals?', 'The school leader with teachers and the SMC'],
+    ['What does SMART stand for in goal setting?', 'Specific, measurable, achievable, relevant and time-bound'],
+    ['How long should a coaching conversation last?', 'About 20 to 30 minutes'],
+  ]),
+]
+
+export const DEFAULT_THRESHOLDS: Record<QaMetric, number> = { accuracy: 0.75, faithfulness: 0.75, relevance: 0.8, toxicity: 0.05, latencyP95: 1500 }
+export const ALL_METRICS: QaMetric[] = ['accuracy', 'faithfulness', 'relevance', 'toxicity', 'latencyP95']
+
+const cfgSpec = (p: Partial<TestConfigSpec> & Pick<TestConfigSpec, 'name' | 'projectId' | 'type' | 'datasetId' | 'languages'>): TestConfigSpec => ({
+  temperature: 0.2,
+  maxTokens: 512,
+  systemPrompt: 'You help teachers and school leaders. Answer briefly and only from what you know to be true.',
+  thresholds: { ...DEFAULT_THRESHOLDS },
+  metrics: ALL_METRICS,
+  load: null,
+  schedule: 'manual',
+  notifyOnFailure: true,
+  ...p,
+})
+
+const cfg = (id: string, tenantId: string, byId: string, versions: { spec: TestConfigSpec; days: number; summary: string }[]): TestConfig => ({
+  id,
+  tenantId,
+  archived: false,
+  versions: versions.map((v, i) => ({ version: i + 1, spec: v.spec, at: at(v.days), byId, summary: v.summary })),
+  createdAt: at(versions[0]!.days),
+})
+
+const slCompare = cfgSpec({
+  name: 'Teacher FAQ – model comparison',
+  projectId: 'p-sl-teacher',
+  type: 'comparison',
+  datasetId: 'ds-sl-hindi',
+  languages: ['Hindi'],
+  systemPrompt: 'आप शिक्षकों की मदद करने वाले सहायक हैं। छोटे और सही उत्तर हिंदी में दें।',
+})
+const m4cCompare = cfgSpec({ name: 'School plans – model comparison', projectId: 'p-m4c-docs', type: 'comparison', datasetId: 'ds-m4c-hindi', languages: ['Hindi'] })
+
+export const seedTestConfigs: TestConfig[] = [
+  cfg('cfg-sl-faq-compare', SL, 'u-sl-qa', [
+    { spec: { ...slCompare, thresholds: { ...DEFAULT_THRESHOLDS, accuracy: 0.7 } }, days: 20, summary: 'Created' },
+    { spec: slCompare, days: 6, summary: 'Raised the accuracy threshold from 0.70 to 0.75' },
+  ]),
+  cfg('cfg-sl-reading-functional', SL, 'u-sl-qa', [
+    {
+      spec: cfgSpec({ name: 'Kannada reading – functional checks', projectId: 'p-sl-edu', type: 'functional', datasetId: 'ds-sl-kannada', languages: ['Kannada'], schedule: 'on_new_environment' }),
+      days: 15,
+      summary: 'Created',
+    },
+  ]),
+  cfg('cfg-sl-faq-load', SL, 'u-sl-qa', [
+    {
+      spec: cfgSpec({ name: 'Teacher FAQ – exam week load', projectId: 'p-sl-teacher', type: 'load', datasetId: 'ds-sl-hindi', languages: ['Hindi'], load: { vus: 250, rampUpSec: 60, durationMin: 5, targetRps: 180 }, schedule: 'daily' }),
+      days: 10,
+      summary: 'Created',
+    },
+  ]),
+  cfg('cfg-m4c-sdp-compare', M4C, 'u-m4c-qa', [{ spec: m4cCompare, days: 18, summary: 'Created' }]),
+  cfg('cfg-m4c-coach-eval', M4C, 'u-m4c-qa', [
+    {
+      spec: cfgSpec({ name: 'Leader coaching – evaluation', projectId: 'p-m4c-coach', type: 'evaluation', datasetId: 'ds-m4c-english', languages: ['English'], schedule: 'daily' }),
+      days: 12,
+      summary: 'Created',
+    },
+  ]),
+  cfg('cfg-m4c-docs-load', M4C, 'u-m4c-qa', [
+    {
+      spec: cfgSpec({ name: 'Document parser – load test', projectId: 'p-m4c-docs', type: 'load', datasetId: 'ds-m4c-hindi', languages: ['Hindi'], load: { vus: 150, rampUpSec: 60, durationMin: 5, targetRps: 100 } }),
+      days: 9,
+      summary: 'Created',
+    },
+  ]),
+]
+
 export interface SeedState {
   tenants: Tenant[]
   users: User[]
@@ -939,6 +1113,9 @@ export interface SeedState {
   suggestions: Suggestion[]
   quotaRequests: QuotaRequest[]
   testRuns: TestRun[]
+  datasets: Dataset[]
+  testConfigs: TestConfig[]
+  qaRuns: QaRun[]
   capacity: Quota
   alertKeys: string[]
 }
@@ -958,6 +1135,9 @@ export function createSeed(): SeedState {
     suggestions: seedSuggestions,
     quotaRequests: seedQuotaRequests,
     testRuns: seedTestRuns,
+    datasets: seedDatasets,
+    testConfigs: seedTestConfigs,
+    qaRuns: [] as QaRun[],
     capacity: seedCapacity,
     alertKeys: [],
   })

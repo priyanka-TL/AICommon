@@ -1,4 +1,4 @@
-import type { EnvSpec, EnvStatus, Environment, Quota } from '@/data/types'
+import type { EnvSpec, EnvStatus, Environment, Quota, Role } from '@/data/types'
 import { COMPUTE_TIERS } from './labels'
 import { formatInt } from './format'
 
@@ -69,7 +69,7 @@ export function overageText(items: Overage[], orgName: string) {
   return items.map((i) => `${formatInt(i.need)} ${i.unit} needed, ${formatInt(i.left)} left at ${orgName}`).join('; ')
 }
 
-export function quotaMessage(items: Overage[], orgName: string, audience: 'user' | 'tenant_admin' | 'super_admin') {
+export function quotaMessage(items: Overage[], orgName: string, audience: Role) {
   if (!items.length) return null
   const first = items[0]!
   const lead = `This needs ${formatInt(first.need)} ${first.unit}, but ${orgName} has ${formatInt(first.left)} left${items.length > 1 ? `, and it is over on ${items.length - 1} more resource${items.length > 2 ? 's' : ''}` : ''}.`

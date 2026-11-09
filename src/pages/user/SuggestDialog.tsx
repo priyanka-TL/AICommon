@@ -6,7 +6,7 @@ import type { CatalogCategory, Suggestion } from '@/data/types'
 import { useAppStore, useCurrentUser } from '@/store/useAppStore'
 import { CATEGORY_SINGULAR } from '@/lib/labels'
 import { findDuplicate, nameFromRepo, parseGithubUrl } from '@/lib/suggestions'
-import { itemPath } from '@/lib/paths'
+import { itemPath, suggestionPath } from '@/lib/paths'
 import { cn, initials } from '@/lib/utils'
 import { tintFor } from '@/components/shared/Avatar'
 import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog'
@@ -131,7 +131,7 @@ export function SuggestDialog({ open, onOpenChange, existing }: { open: boolean;
                   <>
                     <span className="font-semibold">Already suggested.</span>{' '}
                     {duplicate.visible ? (
-                      <Link to="/app/catalog?tab=suggestions" className="underline underline-offset-2" onClick={() => onOpenChange(false)}>
+                      <Link to={suggestionPath('user', duplicate.suggestionId)} className="underline underline-offset-2" onClick={() => onOpenChange(false)}>
                         See the suggestion
                       </Link>
                     ) : (

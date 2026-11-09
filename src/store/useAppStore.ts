@@ -7,6 +7,7 @@ import type {
   CatalogCategory,
   CatalogItem,
   CatalogStatus,
+  Dataset,
   EnvRequest,
   EnvSpec,
   EnvStatus,
@@ -14,20 +15,26 @@ import type {
   LifecycleEvent,
   Project,
   Provider,
+  QaAssignment,
+  QaRun,
   Quota,
   RequestStatus,
   Role,
   Suggestion,
   Tenant,
+  TestConfigSpec,
   TestRun,
   User,
 } from '@/data/types'
 import { canTransition, partiesFor, findTransition } from '@/lib/lifecycle'
 import { addsInfrastructure, diffSpecs } from '@/lib/spec'
 import { alertLevel, currentPoint, utilisation } from '@/lib/metrics'
-import { envPath, itemPath, requestPath, suggestionsPath } from '@/lib/paths'
+import { envPath, itemPath, reportPath, requestPath, suggestionPath } from '@/lib/paths'
+import { seedQaRuns } from '@/lib/qa'
 import { parseGithubUrl } from '@/lib/suggestions'
 import { formatInt } from '@/lib/format'
+import { roleLabel } from '@/lib/labels'
+import { isAdmin } from '@/lib/roles'
 import { uid, slugify } from '@/lib/utils'
 
 export const STORAGE_KEY = `aic-demo-data-${SEED_VERSION}`
@@ -40,8 +47,11 @@ interface SessionState {
   currentUserId: string | null
   /** Super Admin tenant filter: 'all' or a tenant id. */
   tenantFilter: string
+  /** QA Engineer: show every project in the tenant (only when the Tenant Admin allows it). */
+  qaTenantWide: boolean
   setCurrentUser: (id: string | null) => void
   setTenantFilter: (id: string) => void
+  setQaTenantWide: (on: boolean) => void
 }
 
 export const useSessionStore = create<SessionState>()(
@@ -49,8 +59,10 @@ export const useSessionStore = create<SessionState>()(
     (set) => ({
       currentUserId: null,
       tenantFilter: 'all',
-      setCurrentUser: (id) => set({ currentUserId: id, tenantFilter: 'all' }),
+      qaTenantWide: false,
+      setCurrentUser: (id) => set({ currentUserId: id, tenantFilter: 'all', qaTenantWide: false }),
       setTenantFilter: (id) => set({ tenantFilter: id }),
+      setQaTenantWide: (on) => set({ qaTenantWide: on }),
     }),
     { name: 'aic-session', storage: createJSONStorage(() => sessionStorage) },
   ),
@@ -114,8 +126,8 @@ interface AppState extends SeedState {
   setTenantStatus: (id: string, status: Tenant['status']) => void
   setTenantQuota: (id: string, quota: Quota) => void
   setItemEnabled: (tenantId: string, itemId: string, enabled: boolean) => void
-  createUser: (u: Pick<User, 'name' | 'email' | 'title' | 'role' | 'tenantId'>) => Result
-  updateUser: (id: string, patch: Partial<Pick<User, 'name' | 'title' | 'role'>>) => void
+  createUser: (u: Pick<User, 'name' | 'email' | 'title' | 'role' | 'tenantId' | 'qa'>) => Result
+  updateUser: (id: string, patch: Partial<Pick<User, 'name' | 'title' | 'role' | 'qa'>>) => void
   setUserStatus: (id: string, status: User['status']) => void
   resetPassword: (id: string) => void
 
@@ -137,11 +149,25 @@ interface AppState extends SeedState {
 
   // tests, monitoring, notifications
   recordTestRun: (run: Omit<TestRun, 'id' | 'at' | 'actorId' | 'tenantId'>) => void
+  createDataset: (input: Pick<Dataset, 'name' | 'language' | 'rows'>) => Result
+  createTestConfig: (spec: TestConfigSpec) => Result
+  /** Saves the change as a new version; earlier versions stay. */
+  updateTestConfig: (id: string, spec: TestConfigSpec, summary: string) => Result
+  duplicateTestConfig: (id: string) => Result
+  setTestConfigArchived: (id: string, archived: boolean) => void
+  recordQaRun: (run: Omit<QaRun, 'id' | 'at' | 'actorId' | 'tenantId'>) => Result
+  setRecommendation: (projectId: string, modelId: string, runId: string, note: string) => Result
   checkAlerts: () => void
   markNotificationsRead: () => void
   markNotificationRead: (id: string) => void
 
   resetSampleData: () => void
+}
+
+/** Seed data plus QA history computed from it. */
+const fullSeed = () => {
+  const seed = createSeed()
+  return { ...seed, qaRuns: seedQaRuns(seed) }
 }
 
 const now = () => new Date().toISOString()
@@ -154,6 +180,20 @@ export const useAppStore = create<AppState>()(
 
       const me = () => get().users.find((u) => u.id === useSessionStore.getState().currentUserId) ?? null
       const userById = (id: string) => get().users.find((u) => u.id === id)
+      const projectName = (id: string) => get().projects.find((p) => p.id === id)?.name ?? id
+      /** Keep only active projects of that tenant. */
+      const cleanQa = (qa: QaAssignment | undefined, tenantId: string): QaAssignment => ({
+        projectIds: (qa?.projectIds ?? []).filter((pid) => get().projects.some((p) => p.id === pid && p.tenantId === tenantId)),
+        tenantWideAllowed: !!qa?.tenantWideAllowed,
+      })
+      const qaScopeText = (qa: QaAssignment) =>
+        `${qa.projectIds.length ? qa.projectIds.map(projectName).join(', ') : 'no projects yet'}${qa.tenantWideAllowed ? ' (tenant-wide view allowed)' : ''}`
+      /** QA may act on assigned projects, or any project in the tenant when tenant-wide is allowed. */
+      const qaCanUseProject = (user: User, projectId: string) => {
+        const p = get().projects.find((x) => x.id === projectId)
+        if (!p || p.tenantId !== user.tenantId) return false
+        return !!user.qa?.tenantWideAllowed || !!user.qa?.projectIds.includes(projectId)
+      }
       const tenantName = (id: string | null) => get().tenants.find((t) => t.id === id)?.name ?? ''
       const tenantAdmins = (tenantId: string) => get().users.filter((u) => u.tenantId === tenantId && u.role === 'tenant_admin' && u.status === 'active').map((u) => u.id)
       const superAdmins = () => get().users.filter((u) => u.role === 'super_admin' && u.status === 'active').map((u) => u.id)
@@ -258,7 +298,7 @@ export const useAppStore = create<AppState>()(
       }
 
       return {
-        ...createSeed(),
+        ...fullSeed(),
 
         /* ---------- auth ---------- */
 
@@ -672,15 +712,17 @@ export const useAppStore = create<AppState>()(
 
         createUser: (input) => {
           const user = me()
-          if (!user || user.role === 'user') return fail('Only admins can add people.')
+          if (!user || !isAdmin(user.role)) return fail('Only admins can add people.')
           const tenantId = user.role === 'tenant_admin' ? user.tenantId : input.tenantId
           const tenant = get().tenants.find((t) => t.id === tenantId)
           if (!tenant || tenant.isSystem) return fail('Choose a tenant.')
           if (input.role === 'super_admin') return fail('Super Admins can’t be created here.')
           if (get().users.some((x) => x.email.toLowerCase() === input.email.trim().toLowerCase())) return fail('Someone with this email already has an account.')
           const id = uid('u')
-          set((s) => ({ users: [...s.users, { ...input, tenantId, id, status: 'active', lastActiveAt: now() }] }))
-          audit('user.created', 'user', id, `${user.name} added ${input.name} to ${tenant.name} as ${input.role === 'tenant_admin' ? 'Tenant Admin' : 'User'}`, tenantId)
+          const qa = input.role === 'qa' ? cleanQa(input.qa, tenantId) : undefined
+          set((s) => ({ users: [...s.users, { ...input, qa, tenantId, id, status: 'active', lastActiveAt: now() }] }))
+          audit('user.created', 'user', id, `${user.name} added ${input.name} to ${tenant.name} as ${roleLabel(input.role)}`, tenantId)
+          if (qa) audit('user.qa_assigned', 'user', id, `${user.name} assigned ${input.name} to ${qaScopeText(qa)}`, tenantId)
           return ok(id)
         },
 
@@ -690,9 +732,15 @@ export const useAppStore = create<AppState>()(
           if (!user || !target || target.role === 'super_admin') return
           if (!(user.role === 'super_admin' || (user.role === 'tenant_admin' && user.tenantId === target.tenantId))) return
           if (patch.role === 'super_admin') return
-          set((s) => ({ users: s.users.map((x) => (x.id === id ? { ...x, ...patch } : x)) }))
-          audit(patch.role && patch.role !== target.role ? 'user.role_changed' : 'user.updated', 'user', id, patch.role && patch.role !== target.role ? `${user.name} made ${target.name} a ${patch.role === 'tenant_admin' ? 'Tenant Admin' : 'User'}` : `${user.name} updated ${target.name}’s profile`, target.tenantId)
-          if (patch.role && patch.role !== target.role) notify([id], `You are now a ${patch.role === 'tenant_admin' ? 'Tenant Admin' : 'User'} in ${tenantName(target.tenantId)}. Sign in again to see the change.`, null)
+          const role = patch.role ?? target.role
+          const qa = role === 'qa' ? cleanQa(patch.qa ?? target.qa, target.tenantId) : undefined
+          set((s) => ({ users: s.users.map((x) => (x.id === id ? { ...x, ...patch, qa } : x)) }))
+          audit(patch.role && patch.role !== target.role ? 'user.role_changed' : 'user.updated', 'user', id, patch.role && patch.role !== target.role ? `${user.name} made ${target.name} a ${roleLabel(patch.role)}` : `${user.name} updated ${target.name}’s profile`, target.tenantId)
+          if (patch.role && patch.role !== target.role) notify([id], `You are now a ${roleLabel(patch.role)} in ${tenantName(target.tenantId)}. Sign in again to see the change.`, null)
+          if (qa && JSON.stringify(qa) !== JSON.stringify(target.qa)) {
+            audit('user.qa_assigned', 'user', id, `${user.name} assigned ${target.name} to ${qaScopeText(qa)}`, target.tenantId)
+            if (patch.role === target.role || !patch.role) notify([id], `${user.name} changed the projects you test: ${qaScopeText(qa)}.`, () => '/qa')
+          }
         },
 
         setUserStatus: (id, status) => {
@@ -803,7 +851,7 @@ export const useAppStore = create<AppState>()(
           }
           set((st) => ({ suggestions: [s, ...st.suggestions] }))
           audit('suggestion.submitted', 'suggestion', id, `${user.name} suggested ${s.name} (${s.githubUrl})`, user.tenantId)
-          notify(tenantAdmins(user.tenantId), `${user.name} suggested a capability: ${s.name}.`, (role) => suggestionsPath(role))
+          notify(tenantAdmins(user.tenantId), `${user.name} suggested a capability: ${s.name}.`, (role) => suggestionPath(role, id))
           return ok(id)
         },
 
@@ -819,7 +867,7 @@ export const useAppStore = create<AppState>()(
             ),
           }))
           audit('suggestion.resubmitted', 'suggestion', id, `${user.name} added information to the suggestion ${input.name}`, s.tenantId)
-          notify(s.forwarded ? superAdmins() : tenantAdmins(s.tenantId), `${user.name} updated the suggestion ${input.name}.`, (role) => suggestionsPath(role))
+          notify(s.forwarded ? superAdmins() : tenantAdmins(s.tenantId), `${user.name} updated the suggestion ${input.name}.`, (role) => suggestionPath(role, id))
         },
 
         openSuggestion: (id) => {
@@ -832,7 +880,7 @@ export const useAppStore = create<AppState>()(
             suggestions: st.suggestions.map((x) => (x.id === id ? { ...x, status: 'under_review', history: [...x.history, { status: 'under_review', at: now(), actorId: user.id, actorRole: user.role }] } : x)),
           }))
           audit('suggestion.under_review', 'suggestion', id, `${user.name} started reviewing the suggestion ${s.name}`, s.tenantId)
-          notify([s.suggestedById], `${user.name} is reviewing your suggestion ${s.name}.`, (role) => suggestionsPath(role))
+          notify([s.suggestedById], `${user.name} is reviewing your suggestion ${s.name}.`, (role) => suggestionPath(role, id))
         },
 
         decideSuggestion: (id, action, opts = {}) => {
@@ -931,13 +979,96 @@ export const useAppStore = create<AppState>()(
             reject: `Your suggestion ${s.name} was not accepted: ${comment}`,
             publish: `Your suggestion ${s.name} was published to ${audience}.`,
           }[action]
-          notify([s.suggestedById], msg, (role) => (catalogItemId && (action === 'approve_tenant' || action === 'publish') ? itemPath(role, catalogItemId) : suggestionsPath(role)))
-          if (action === 'forward') notify(superAdmins(), `${tenantName(s.tenantId)} forwarded a capability suggestion: ${s.name}.`, (role) => suggestionsPath(role))
-          if (isSa) notify(tenantAdmins(s.tenantId), `The Super Admin ${verb} the suggestion ${s.name}.`, (role) => suggestionsPath(role))
+          notify([s.suggestedById], msg, (role) => (catalogItemId && (action === 'approve_tenant' || action === 'publish') ? itemPath(role, catalogItemId) : suggestionPath(role, id)))
+          if (action === 'forward') notify(superAdmins(), `${tenantName(s.tenantId)} forwarded a capability suggestion: ${s.name}.`, (role) => suggestionPath(role, id))
+          if (isSa) notify(tenantAdmins(s.tenantId), `The Super Admin ${verb} the suggestion ${s.name}.`, (role) => suggestionPath(role, id))
           return ok(id)
         },
 
         /* ---------- tests, monitoring, notifications ---------- */
+
+        /* ---------- QA ---------- */
+
+        createDataset: (input) => {
+          const user = me()
+          if (!user || user.role !== 'qa') return fail('Only QA Engineers can add datasets.')
+          if (input.name.trim().length < 3) return fail('Give the dataset a name.')
+          if (!input.rows.length) return fail('The dataset has no rows.')
+          const id = uid('ds')
+          set((s) => ({ datasets: [{ ...input, name: input.name.trim(), id, tenantId: user.tenantId, source: 'upload', createdById: user.id, createdAt: now() }, ...s.datasets] }))
+          audit('qa.dataset_uploaded', 'qa', id, `${user.name} uploaded the dataset ${input.name.trim()} (${input.rows.length} rows)`, user.tenantId)
+          return ok(id)
+        },
+
+        createTestConfig: (spec) => {
+          const user = me()
+          if (!user || user.role !== 'qa') return fail('Only QA Engineers can manage test configurations.')
+          if (!qaCanUseProject(user, spec.projectId)) return fail('You aren’t assigned to that project. Ask your Tenant Admin to add you.')
+          const id = uid('cfg')
+          set((s) => ({ testConfigs: [{ id, tenantId: user.tenantId, archived: false, versions: [{ version: 1, spec, at: now(), byId: user.id, summary: 'Created' }], createdAt: now() }, ...s.testConfigs] }))
+          audit('qa.config_created', 'qa', id, `${user.name} created the test configuration ${spec.name}`, user.tenantId)
+          return ok(id)
+        },
+
+        updateTestConfig: (id, spec, summary) => {
+          const user = me()
+          const c = get().testConfigs.find((x) => x.id === id)
+          if (!user || user.role !== 'qa' || !c || c.tenantId !== user.tenantId) return fail('You can’t change this configuration.')
+          if (!qaCanUseProject(user, spec.projectId)) return fail('You aren’t assigned to that project. Ask your Tenant Admin to add you.')
+          const version = c.versions[c.versions.length - 1]!.version + 1
+          set((s) => ({ testConfigs: s.testConfigs.map((x) => (x.id === id ? { ...x, versions: [...x.versions, { version, spec, at: now(), byId: user.id, summary }] } : x)) }))
+          audit('qa.config_versioned', 'qa', id, `${user.name} saved version ${version} of ${spec.name}: ${summary}`, user.tenantId)
+          return ok(id)
+        },
+
+        duplicateTestConfig: (id) => {
+          const user = me()
+          const c = get().testConfigs.find((x) => x.id === id)
+          if (!user || user.role !== 'qa' || !c || c.tenantId !== user.tenantId) return fail('You can’t copy this configuration.')
+          const spec = { ...c.versions[c.versions.length - 1]!.spec }
+          spec.name = `Copy of ${spec.name}`
+          const nid = uid('cfg')
+          set((s) => ({ testConfigs: [{ id: nid, tenantId: user.tenantId, archived: false, versions: [{ version: 1, spec, at: now(), byId: user.id, summary: `Copied from ${c.versions[c.versions.length - 1]!.spec.name}` }], createdAt: now() }, ...s.testConfigs] }))
+          audit('qa.config_duplicated', 'qa', nid, `${user.name} copied the test configuration ${spec.name.replace(/^Copy of /, '')}`, user.tenantId)
+          return ok(nid)
+        },
+
+        setTestConfigArchived: (id, archived) => {
+          const user = me()
+          const c = get().testConfigs.find((x) => x.id === id)
+          if (!user || user.role !== 'qa' || !c || c.tenantId !== user.tenantId) return
+          set((s) => ({ testConfigs: s.testConfigs.map((x) => (x.id === id ? { ...x, archived } : x)) }))
+          audit(archived ? 'qa.config_archived' : 'qa.config_restored', 'qa', id, `${user.name} ${archived ? 'archived' : 'restored'} the test configuration ${c.versions[c.versions.length - 1]!.spec.name}`, user.tenantId)
+        },
+
+        recordQaRun: (run) => {
+          const user = me()
+          if (!user || user.role !== 'qa') return fail('Only QA Engineers can record test runs.')
+          const project = get().projects.find((p) => p.id === run.projectId)
+          if (!project || !qaCanUseProject(user, project.id)) return fail('You aren’t assigned to that project.')
+          const id = uid('qr')
+          set((s) => ({ qaRuns: [{ ...run, id, at: now(), actorId: user.id, tenantId: user.tenantId }, ...s.qaRuns] }))
+          audit(`qa.run_${run.kind}`, 'qa', id, `${user.name} ran “${run.title}” for ${project.name}: ${run.passed ? 'passed' : 'did not pass'}`, user.tenantId)
+          const config = run.configId ? get().testConfigs.find((c) => c.id === run.configId) : undefined
+          if (!run.passed && config && config.versions[config.versions.length - 1]!.spec.notifyOnFailure) {
+            notify([project.ownerId, user.id], `QA run “${run.title}” for ${project.name} did not pass its thresholds.`, (role) => reportPath(role, id))
+          }
+          return ok(id)
+        },
+
+        setRecommendation: (projectId, modelId, runId, note) => {
+          const user = me()
+          const project = get().projects.find((p) => p.id === projectId)
+          const model = get().catalog.find((c) => c.id === modelId)
+          const run = get().qaRuns.find((r) => r.id === runId)
+          if (!user || user.role !== 'qa' || !project || !model || !run) return fail('Pick a model from a finished comparison.')
+          if (!qaCanUseProject(user, projectId) || run.projectId !== projectId) return fail('You aren’t assigned to that project.')
+          if (!run.models.some((m) => m.modelId === modelId)) return fail('That model wasn’t part of this comparison.')
+          set((s) => ({ projects: s.projects.map((p) => (p.id === projectId ? { ...p, recommendation: { modelId, runId, byId: user.id, at: now(), note: note.trim() } } : p)) }))
+          audit('qa.model_recommended', 'qa', projectId, `${user.name} recommended ${model.name} for ${project.name}`, project.tenantId, note.trim() || undefined)
+          notify([...project.memberIds, project.ownerId], `${user.name} recommended ${model.name} for ${project.name}.`, (role) => (role === 'user' ? itemPath(role, modelId) : reportPath(role, runId)))
+          return ok(projectId)
+        },
 
         recordTestRun: (run) => {
           const user = me()
@@ -981,7 +1112,7 @@ export const useAppStore = create<AppState>()(
         resetSampleData: () => {
           timers.forEach((t) => clearTimeout(t))
           timers.clear()
-          set({ ...createSeed() })
+          set({ ...fullSeed() })
         },
       }
     },
@@ -989,7 +1120,7 @@ export const useAppStore = create<AppState>()(
       name: STORAGE_KEY,
       version: 2,
       storage: createJSONStorage(() => localStorage),
-      migrate: () => createSeed() as unknown as AppState,
+      migrate: () => fullSeed() as unknown as AppState,
       partialize: (s) => ({
         tenants: s.tenants,
         users: s.users,
@@ -1004,6 +1135,9 @@ export const useAppStore = create<AppState>()(
         suggestions: s.suggestions,
         quotaRequests: s.quotaRequests,
         testRuns: s.testRuns,
+        datasets: s.datasets,
+        testConfigs: s.testConfigs,
+        qaRuns: s.qaRuns,
         capacity: s.capacity,
         alertKeys: s.alertKeys,
       }),

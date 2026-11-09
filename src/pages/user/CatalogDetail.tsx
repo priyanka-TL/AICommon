@@ -1,13 +1,16 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { BookOpen, FolderPlus, GitBranch, Lock, Plus } from 'lucide-react'
+import { Award, BookOpen, FolderPlus, GitBranch, Lock, Plus } from 'lucide-react'
 import { toast } from 'sonner'
-import { useAppStore, useCurrentTenant } from '@/store/useAppStore'
+import { useAppStore, useCurrentTenant, useCurrentUser } from '@/store/useAppStore'
 import { useScopedEnvironments, useScopedProjects, useTenantCatalog } from '@/store/selectors'
 import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Field } from '@/components/ui/field'
 import { CATEGORY_SINGULAR } from '@/lib/labels'
+import { relativeTime } from '@/lib/format'
+import { reportPath } from '@/lib/paths'
+import { qualityScore } from '@/lib/qa'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CatalogStatusBadge, StatusBadge, Tag } from '@/components/shared/StatusBadge'
 import { CodeBlock } from '@/components/shared/CodeBlock'
@@ -30,6 +33,10 @@ export default function CatalogDetail() {
   const [addOpen, setAddOpen] = useState(false)
   const [projectOpen, setProjectOpen] = useState(false)
   const [projectId, setProjectId] = useState('')
+  const role = useCurrentUser()?.role
+  const readOnly = role === 'qa'
+  const users = useAppStore((s) => s.users)
+  const qaRuns = useAppStore((s) => s.qaRuns)
 
   if (!item) return <NotFound message="This item isn’t available to your tenant. It may have been removed or not published to you yet." />
 
@@ -74,6 +81,7 @@ export default function CatalogDetail() {
                 </a>
               </Button>
             )}
+            {!readOnly && (<>
             <Button
               variant="secondary"
               disabled={!!blockedReason || projects.length === 0}
@@ -91,9 +99,44 @@ export default function CatalogDetail() {
             ) : (
               addButton
             )}
+            </>)}
           </>
         }
       />
+
+      {projects
+        .filter((p) => p.recommendation?.modelId === item.id)
+        .map((p) => {
+          const rec = p.recommendation!
+          const run = qaRuns.find((x) => x.id === rec.runId)
+          const s = run?.models.find((m) => m.modelId === item.id)
+          return (
+            <section key={p.id} className="card mb-6 flex flex-col gap-3 border-indigo p-5 dark:border-indigo-text sm:flex-row sm:items-start">
+              <Award className="size-6 shrink-0 text-indigo-text" aria-hidden />
+              <div className="min-w-0 flex-1">
+                <p className="eyebrow">Recommended by QA</p>
+                <p className="mt-1 font-semibold text-text-primary">
+                  Recommended for {p.name}
+                  {run && run.models.length > 1 ? ` after comparing ${run.models.length} models` : ''}
+                </p>
+                {s && (
+                  <p className="tabular mt-1 text-caption text-text-secondary">
+                    Quality {qualityScore(s).toFixed(2)} · accuracy {s.accuracy.toFixed(2)} · p95 {s.latencyP95} ms · {s.costCredits.toFixed(3)} credits for the test set
+                  </p>
+                )}
+                {rec.note && <p className="mt-2 border-l-[3px] border-purple pl-3 text-sm italic text-text-primary">{rec.note}</p>}
+                <p className="mt-2 text-caption text-text-muted">
+                  {users.find((u) => u.id === rec.byId)?.name} · {relativeTime(rec.at)}
+                </p>
+              </div>
+              {run && role && (
+                <Button asChild variant="secondary" size="compact">
+                  <Link to={reportPath(role, run.id)}>View report</Link>
+                </Button>
+              )}
+            </section>
+          )
+        })}
 
       {blockedReason && (
         <div className="mb-6 flex items-center gap-2.5 rounded-card bg-status-stopped-bg px-4 py-3 text-sm text-status-stopped-fg">

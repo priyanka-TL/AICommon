@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
-import type { CatalogItem, Environment, Role, User } from '@/data/types'
+import type { CatalogItem, Environment, Project, Role, User } from '@/data/types'
 import { isEnabledFor, isVisibleTo } from '@/lib/suggestions'
+import { fromRequest, fromSuggestion, type RequestItem } from '@/lib/requestItems'
 import { useAppStore, useCurrentUser, useSessionStore } from './useAppStore'
 
 export interface Scope {
@@ -41,13 +42,28 @@ export function canSeeEnvironment(scope: Scope, env: Environment, memberProjectI
   if (scope.role === 'super_admin') return true
   if (env.tenantId !== scope.user.tenantId) return false
   if (scope.role === 'tenant_admin') return true
+  // QA Engineers see Active environments in the projects they test, read-only.
+  if (scope.role === 'qa') return env.status === 'active' && memberProjectIds.includes(env.projectId)
   return env.ownerId === scope.user.id || memberProjectIds.includes(env.projectId)
 }
 
+/** Projects the current QA Engineer tests: assigned ones, or the whole tenant when allowed and switched on. */
+export function qaProjectIds(user: User, projects: Project[], tenantWide: boolean) {
+  const inTenant = projects.filter((p) => p.tenantId === user.tenantId && p.status === 'active')
+  if (user.qa?.tenantWideAllowed && tenantWide) return inTenant.map((p) => p.id)
+  return inTenant.filter((p) => user.qa?.projectIds.includes(p.id)).map((p) => p.id)
+}
+
+/** Project ids the current person works in: members for Users, assigned (or tenant-wide) for QA. */
 export function useMemberProjectIds() {
   const scope = useScope()
   const projects = useAppStore((s) => s.projects)
-  return useMemo(() => (scope ? projects.filter((p) => p.tenantId === scope.user.tenantId && p.memberIds.includes(scope.user.id)).map((p) => p.id) : []), [projects, scope])
+  const tenantWide = useSessionStore((s) => s.qaTenantWide)
+  return useMemo(() => {
+    if (!scope) return []
+    if (scope.role === 'qa') return qaProjectIds(scope.user, projects, tenantWide)
+    return projects.filter((p) => p.tenantId === scope.user.tenantId && p.memberIds.includes(scope.user.id)).map((p) => p.id)
+  }, [projects, scope, tenantWide])
 }
 
 export function useScopedEnvironments(includeTerminated = false) {
@@ -70,6 +86,7 @@ export function useScopedRequests() {
     if (!scope) return []
     return requests.filter((r) => {
       if (!inTenant(scope, r.tenantId)) return false
+      if (scope.role === 'qa') return false
       if (scope.role === 'user') return r.requesterId === scope.user.id
       if (scope.role === 'tenant_admin') return r.tenantId === scope.user.tenantId && (r.status !== 'draft' || r.requesterId === scope.user.id)
       return r.status !== 'draft'
@@ -80,6 +97,7 @@ export function useScopedRequests() {
 export function useScopedProjects(includeArchived = true) {
   const scope = useScope()
   const projects = useAppStore((s) => s.projects)
+  const memberOf = useMemberProjectIds()
   return useMemo(() => {
     if (!scope) return []
     return projects.filter((p) => {
@@ -87,9 +105,9 @@ export function useScopedProjects(includeArchived = true) {
       if (!inTenant(scope, p.tenantId)) return false
       if (scope.role === 'super_admin') return true
       if (p.tenantId !== scope.user.tenantId) return false
-      return scope.role === 'tenant_admin' || p.memberIds.includes(scope.user.id)
+      return scope.role === 'tenant_admin' || memberOf.includes(p.id)
     })
-  }, [projects, scope, includeArchived])
+  }, [projects, scope, includeArchived, memberOf])
 }
 
 export function useScopedUsers() {
@@ -107,7 +125,7 @@ export function useScopedAudit() {
   const scope = useScope()
   const audit = useAppStore((s) => s.audit)
   return useMemo(() => {
-    if (!scope || scope.role === 'user') return []
+    if (!scope || scope.role === 'user' || scope.role === 'qa') return []
     if (scope.role === 'tenant_admin') return audit.filter((a) => a.tenantId === scope.user.tenantId)
     return audit.filter((a) => scope.tenantId === null || a.tenantId === scope.tenantId)
   }, [audit, scope])
@@ -118,6 +136,7 @@ export function useScopedSuggestions() {
   const suggestions = useAppStore((s) => s.suggestions)
   return useMemo(() => {
     if (!scope) return []
+    if (scope.role === 'qa') return []
     if (scope.role === 'user') return suggestions.filter((s) => s.suggestedById === scope.user.id)
     if (scope.role === 'tenant_admin') return suggestions.filter((s) => s.tenantId === scope.user.tenantId)
     return suggestions.filter((s) => scope.tenantId === null || s.tenantId === scope.tenantId)
@@ -135,4 +154,11 @@ export function useTenantCatalog(): (CatalogItem & { enabled: boolean })[] {
     if (!tenant || tenant.isSystem) return catalog.map((c) => ({ ...c, enabled: true }))
     return catalog.filter((c) => isVisibleTo(c, tenant.id)).map((c) => ({ ...c, enabled: isEnabledFor(c, tenant) }))
   }, [catalog, tenants, scope])
+}
+
+/** Environment requests and capability suggestions in one list, scoped like their own hooks. */
+export function useRequestItems(): RequestItem[] {
+  const requests = useScopedRequests()
+  const suggestions = useScopedSuggestions()
+  return useMemo(() => [...requests.map(fromRequest), ...suggestions.map(fromSuggestion)], [requests, suggestions])
 }

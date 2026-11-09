@@ -1,3 +1,4 @@
+import { isAdmin } from '@/lib/roles'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -29,7 +30,7 @@ export function useEligibleEnvironments(item: CatalogItem | undefined) {
         ? environments.filter(
             (e) =>
               ['active', 'stopped'].includes(e.status) &&
-              (user.role !== 'user' || e.ownerId === user.id) &&
+              (isAdmin(user.role) || e.ownerId === user.id) &&
               !includes(e.spec, item.id) &&
               !requests.some((r) => r.envId === e.id && r.kind === 'change' && ['submitted', 'under_review', 'resubmitted', 'escalated'].includes(r.status)),
           )

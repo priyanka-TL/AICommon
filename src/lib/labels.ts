@@ -49,6 +49,7 @@ export const ROLE_LABELS: Record<Role, string> = {
   super_admin: 'Super Admin',
   tenant_admin: 'Tenant Admin',
   user: 'User',
+  qa: 'QA Engineer',
 }
 
 export const roleLabel = (r: ActorRole) => (r === 'system' ? 'System' : ROLE_LABELS[r])

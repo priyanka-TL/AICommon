@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes, useSearchParams } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { AppShell } from '@/components/layout/AppShell'
@@ -24,19 +24,33 @@ import Infrastructure from '@/pages/shared/Infrastructure'
 import EnvironmentDetail from '@/pages/shared/EnvironmentDetail'
 import Monitoring from '@/pages/shared/Monitoring'
 import AuditLog from '@/pages/shared/AuditLog'
-import Suggestions from '@/pages/shared/Suggestions'
 import UserDashboard from '@/pages/user/Dashboard'
 import NewEnvironment from '@/pages/user/NewEnvironment'
 import UserCatalog from '@/pages/user/Catalog'
 import CatalogDetail from '@/pages/user/CatalogDetail'
 import Testing from '@/pages/user/testing/Testing'
 import MyRequests from '@/pages/user/MyRequests'
+import SuggestionDetail from '@/pages/user/SuggestionDetail'
+import QaDashboard from '@/pages/qa/Dashboard'
+import ModelTesting from '@/pages/qa/ModelTesting'
+import ModelComparison from '@/pages/qa/ModelComparison'
+import TestConfigurations from '@/pages/qa/TestConfigurations'
+import EnvironmentTesting from '@/pages/qa/EnvironmentTesting'
+import TestReports from '@/pages/qa/TestReports'
+import ReportDetail, { SharedReportRedirect } from '@/pages/qa/ReportDetail'
 import NotFound from '@/pages/NotFound'
 import { AppEffects } from '@/components/layout/AppEffects'
 
 function RootRedirect() {
   const user = useCurrentUser()
   return <Navigate to={user ? homeFor(user.role) : '/login'} replace />
+}
+
+/** The old Capability suggestions pages now live inside the Requests queue. */
+function SuggestionsRedirect({ base }: { base: string }) {
+  const [params] = useSearchParams()
+  const id = params.get('id')
+  return <Navigate to={`${base}/requests?type=capability${id ? `&id=${encodeURIComponent(id)}` : ''}`} replace />
 }
 
 export default function App() {
@@ -60,11 +74,12 @@ export default function App() {
             <Route path="/super-admin/infrastructure/:id" element={<EnvironmentDetail />} />
             <Route path="/super-admin/infrastructure/:id/edit" element={<NewEnvironment />} />
             <Route path="/super-admin/registry" element={<Registry />} />
-            <Route path="/super-admin/suggestions" element={<Suggestions />} />
+            <Route path="/super-admin/suggestions" element={<SuggestionsRedirect base="/super-admin" />} />
             <Route path="/super-admin/providers" element={<Providers />} />
             <Route path="/super-admin/capacity" element={<Capacity />} />
             <Route path="/super-admin/monitoring" element={<Monitoring />} />
             <Route path="/super-admin/audit" element={<AuditLog />} />
+            <Route path="/super-admin/reports/:id" element={<ReportDetail />} />
             <Route path="/super-admin/*" element={<NotFound />} />
           </Route>
         </Route>
@@ -83,11 +98,12 @@ export default function App() {
             <Route path="/tenant-admin/requests/:id" element={<RequestDetail />} />
             <Route path="/tenant-admin/models" element={<CatalogToggles mode="models" />} />
             <Route path="/tenant-admin/capabilities" element={<CatalogToggles mode="capabilities" />} />
-            <Route path="/tenant-admin/suggestions" element={<Suggestions />} />
+            <Route path="/tenant-admin/suggestions" element={<SuggestionsRedirect base="/tenant-admin" />} />
             <Route path="/tenant-admin/monitoring" element={<Monitoring />} />
             <Route path="/tenant-admin/quotas" element={<Quotas />} />
             <Route path="/tenant-admin/audit" element={<AuditLog />} />
             <Route path="/tenant-admin/settings" element={<Settings />} />
+            <Route path="/tenant-admin/reports/:id" element={<ReportDetail />} />
             <Route path="/tenant-admin/*" element={<NotFound />} />
           </Route>
         </Route>
@@ -104,10 +120,30 @@ export default function App() {
             <Route path="/app/monitoring" element={<Monitoring />} />
             <Route path="/app/requests" element={<MyRequests />} />
             <Route path="/app/requests/:id" element={<RequestDetail />} />
+            <Route path="/app/suggestions/:id" element={<SuggestionDetail />} />
+            <Route path="/app/reports/:id" element={<ReportDetail />} />
             <Route path="/app/*" element={<NotFound />} />
           </Route>
         </Route>
 
+        <Route element={<RequireRole role="qa" />}>
+          <Route element={<AppShell />}>
+            <Route path="/qa" element={<QaDashboard />} />
+            <Route path="/qa/model-testing" element={<ModelTesting />} />
+            <Route path="/qa/comparison" element={<ModelComparison />} />
+            <Route path="/qa/configurations" element={<TestConfigurations />} />
+            <Route path="/qa/functional" element={<EnvironmentTesting mode="functional" />} />
+            <Route path="/qa/load" element={<EnvironmentTesting mode="load" />} />
+            <Route path="/qa/reports" element={<TestReports />} />
+            <Route path="/qa/reports/:id" element={<ReportDetail />} />
+            <Route path="/qa/monitoring" element={<Monitoring />} />
+            <Route path="/qa/environments/:id" element={<EnvironmentDetail />} />
+            <Route path="/qa/catalog/:id" element={<CatalogDetail />} />
+            <Route path="/qa/*" element={<NotFound />} />
+          </Route>
+        </Route>
+
+        <Route path="/reports/:id" element={<SharedReportRedirect />} />
         <Route path="*" element={<RootRedirect />} />
       </Routes>
 

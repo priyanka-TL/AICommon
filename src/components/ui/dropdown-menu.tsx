@@ -1,5 +1,6 @@
 import * as React from 'react'
 import * as DropdownPrimitive from '@radix-ui/react-dropdown-menu'
+import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export const DropdownMenu = DropdownPrimitive.Root
@@ -61,3 +62,18 @@ export function DropdownMenuLabel({ className, ...props }: React.HTMLAttributes<
 export function DropdownMenuSeparator() {
   return <DropdownPrimitive.Separator className="-mx-1 my-1 h-px bg-border" />
 }
+
+export const DropdownMenuCheckboxItem = React.forwardRef<
+  React.ElementRef<typeof DropdownPrimitive.CheckboxItem>,
+  React.ComponentPropsWithoutRef<typeof DropdownPrimitive.CheckboxItem>
+>(({ className, children, ...props }, ref) => (
+  <DropdownPrimitive.CheckboxItem ref={ref} className={cn(itemClass, 'pl-8', className)} {...props}>
+    <span className="absolute left-2.5 flex size-3.5 items-center justify-center rounded-[4px] border border-border-strong data-[state=checked]:border-indigo data-[state=checked]:bg-indigo" data-state={props.checked ? 'checked' : 'unchecked'}>
+      <DropdownPrimitive.ItemIndicator>
+        <Check className="!size-3 !text-white" strokeWidth={3} />
+      </DropdownPrimitive.ItemIndicator>
+    </span>
+    {children}
+  </DropdownPrimitive.CheckboxItem>
+))
+DropdownMenuCheckboxItem.displayName = 'DropdownMenuCheckboxItem'

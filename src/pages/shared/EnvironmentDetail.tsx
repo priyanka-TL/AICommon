@@ -31,6 +31,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog'
 import { RadioCardItem, RadioGroup } from '@/components/ui/controls'
 import NotFound from '@/pages/NotFound'
+import { isAdmin } from '@/lib/roles'
 
 function snippets(env: Environment, model: string, kind: 'chat' | 'asr') {
   const url = `${env.endpoint}/${kind === 'chat' ? 'chat/completions' : 'audio/transcriptions'}`
@@ -234,7 +235,7 @@ export default function EnvironmentDetail() {
   const alloc = allocationOf(env.spec)
   const tier = COMPUTE_TIERS.find((t) => t.value === env.spec.compute)!
   const live = env.status === 'active' || env.status === 'stopped' || env.status === 'suspended'
-  const canManage = scope.role !== 'user' || env.ownerId === scope.user.id
+  const canManage = isAdmin(scope.role) || env.ownerId === scope.user.id
   const requests7 = usage.slice(-7).reduce((s, u) => s + u.requests, 0)
   const firstModel = env.spec.llms[0] ? item(env.spec.llms[0].id)?.version : undefined
   const firstAsr = env.spec.asr[0] ? item(env.spec.asr[0])?.version : undefined
@@ -292,6 +293,13 @@ export default function EnvironmentDetail() {
                 )}
               </>
             )}
+            {scope.role === 'qa' && env.status === 'active' && (
+              <Button asChild>
+                <Link to={`/qa/functional?env=${env.id}`}>
+                  <FlaskConical /> Test this environment
+                </Link>
+              </Button>
+            )}
             {scope.role === 'user' && env.status === 'active' && !actions.some((a) => a.tone === 'primary') && (
               <Button asChild>
                 <Link to={`/app/testing?env=${env.id}`}>
@@ -346,9 +354,11 @@ export default function EnvironmentDetail() {
         {pendingChange && (
           <div className="rounded-card bg-status-review-bg px-4 py-3 text-sm text-status-review-fg">
             A change that needs more infrastructure is waiting for approval. The environment keeps its current setup until then.{' '}
-            <Link to={requestPath(scope.role, pendingChange.id)} className="font-semibold underline underline-offset-2">
-              See the request
-            </Link>
+            {scope.role !== 'qa' && (
+              <Link to={requestPath(scope.role, pendingChange.id)} className="font-semibold underline underline-offset-2">
+                See the request
+              </Link>
+            )}
           </div>
         )}
         {tenant?.status === 'suspended' && (
@@ -490,7 +500,7 @@ export default function EnvironmentDetail() {
               <section className="card p-6">
                 <h2 className="mb-4 font-heading text-h3 text-text-primary">Lifecycle</h2>
                 <LifecycleTimeline events={events} future={futureSteps(events, request)} users={users} />
-                {request && (
+                {request && scope.role !== 'qa' && (
                   <Link to={requestPath(scope.role, request.id)} className="link mt-4 inline-block text-caption">
                     Open the original request
                   </Link>
