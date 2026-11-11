@@ -19,6 +19,12 @@ export function formatINR(n: number) {
   return `₹${numberFmt.format(Math.round(n))}`
 }
 
+/** Rupees with paise for unit prices and small amounts: ₹0.15, ₹62.40, ₹1,250. */
+export function formatINRPrice(n: number) {
+  const digits = Math.abs(n) >= 1000 ? 0 : 2
+  return `₹${new Intl.NumberFormat('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(n)}`
+}
+
 export function formatCredits(n: number) {
   return `${numberFmt.format(Math.round(n))} credits`
 }

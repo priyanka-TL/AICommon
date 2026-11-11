@@ -1,10 +1,11 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { ArrowRight, FolderKanban, Inbox, Plus, Server, UserPlus, Users } from 'lucide-react'
+import { ArrowRight, Cpu, FolderKanban, Inbox, Plus, Server, UserPlus, Users } from 'lucide-react'
 import { useAppStore, useCurrentTenant } from '@/store/useAppStore'
 import { useScopedAudit, useScopedEnvironments, useScopedProjects, useScopedRequests, useScopedUsers } from '@/store/selectors'
 import { useSimulatedLoading } from '@/hooks/useSimulatedLoading'
-import { formatCompact, formatShortDate, plural } from '@/lib/format'
+import { formatCompact, formatINR, formatShortDate, plural } from '@/lib/format'
+import { useModelSpend } from '@/components/shared/ModelCosts'
 import { tenantAllocated } from '@/lib/quota'
 import { axisProps, CHART_COLORS, CHART_GRID } from '@/lib/chart'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -29,6 +30,7 @@ export default function TenantAdminDashboard() {
   const usage = useAppStore((s) => s.usage)
   const allUsers = useAppStore((s) => s.users)
   const navigate = useNavigate()
+  const modelSpend = useModelSpend(tenant.id)
 
   const toReview = requests.filter((r) => ['submitted', 'resubmitted', 'under_review'].includes(r.status) && r.raisedByRole !== 'tenant_admin')
   const withSuper = requests.filter((r) => r.status === 'escalated')
@@ -50,7 +52,17 @@ export default function TenantAdminDashboard() {
         }
       />
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <Link to="/tenant-admin/quotas#model-costs" className="rounded-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink focus-visible:ring-offset-2 sm:col-span-2 xl:col-span-1" aria-label="Model cost this month: open Model Costs">
+          <KpiCard
+            loading={loading}
+            label="Model cost this month"
+            icon={Cpu}
+            value={formatINR(modelSpend.mtd)}
+            trend={{ direction: modelSpend.pct >= 80 ? 'down' : 'flat', text: modelSpend.budget > 0 ? `${Math.round(modelSpend.pct)}% of ${formatINR(modelSpend.budget)} budget` : 'No budget set' }}
+            className="h-full transition-[box-shadow,border-color] hover:border-border-strong hover:shadow-card-hover"
+          />
+        </Link>
         <KpiCard loading={loading} label="Users" icon={Users} value={String(users.filter((u) => u.status === 'active').length)} trend={{ direction: 'flat', text: plural(users.filter((u) => u.role === 'tenant_admin').length, 'Tenant Admin') }} />
         <KpiCard loading={loading} label="Projects" icon={FolderKanban} value={String(projects.filter((p) => p.status === 'active').length)} trend={{ direction: 'flat', text: `${projects.filter((p) => p.status === 'archived').length} archived` }} />
         <KpiCard loading={loading} label="Active environments" icon={Server} value={String(environments.filter((e) => e.status === 'active').length)} trend={{ direction: 'flat', text: `${environments.length} not terminated` }} />

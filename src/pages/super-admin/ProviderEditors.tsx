@@ -1,5 +1,5 @@
 import { Plus, Trash2 } from 'lucide-react'
-import type { GpuType, InstanceType, InfraProvider, Region } from '@/data/types'
+import type { CatalogItem, GpuType, InstanceType, InfraProvider, ModelPrice, Region } from '@/data/types'
 import type { RateCardInput } from '@/store/useAppStore'
 import { GPU_TYPES } from '@/lib/providers'
 import { cn, initials, uid } from '@/lib/utils'
@@ -173,14 +173,15 @@ export function InstanceTypesEditor({ instances, onChange }: { instances: Instan
   )
 }
 
-export function OtherRatesEditor({ card, onChange }: { card: RateCardInput; onChange: (c: RateCardInput) => void }) {
-  const fields: [keyof RateCardInput, string, number][] = [
+export function OtherRatesEditor({ card, onChange, feesOnly }: { card: RateCardInput; onChange: (c: RateCardInput) => void; feesOnly?: boolean }) {
+  const all: [keyof RateCardInput, string, number][] = [
     ['storageRate', 'Storage ₹ per GB-month', 0.5],
     ['egressRate', 'Network egress ₹ per GB', 0.5],
     ['platformFeePct', 'Platform fee %', 0.5],
     ['ngoDiscountPct', 'NGO discount %', 0.5],
     ['gstPct', 'GST %', 1],
   ]
+  const fields = feesOnly ? all.slice(2) : all
   return (
     <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
       {fields.map(([k, label, step]) => (
@@ -201,6 +202,122 @@ export function RateCardInfoEditor({ card, onChange, minDate }: { card: RateCard
       <Field label="Rate source" htmlFor="rc-source" required>
         <Input id="rc-source" value={card.source} onChange={(e) => onChange({ ...card, source: e.target.value })} placeholder="Published price list, Oct 2026" />
       </Field>
+    </div>
+  )
+}
+
+/** Model rate card rows: model, its ID at this provider, regions, prices before fee, discount and GST, and status. */
+export function ModelPricesEditor({ prices, onChange, regions, catalog }: { prices: ModelPrice[]; onChange: (p: ModelPrice[]) => void; regions: Region[]; catalog: CatalogItem[] }) {
+  const models = catalog.filter((c) => c.category === 'llm' || c.category === 'asr' || c.category === 'embedding').sort((a, b) => a.name.localeCompare(b.name))
+  const up = (i: number, patch: Partial<ModelPrice>) => onChange(prices.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+  const free = models.filter((m) => !prices.some((p) => p.modelId === m.id))
+  const named = regions.filter((r) => r.name.trim())
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="overflow-x-auto rounded-control border border-border">
+        <table className="w-full min-w-[980px] text-sm">
+          <thead className="bg-bg-subtle text-left text-caption text-text-secondary">
+            <tr>
+              <th className="px-3 py-2 font-semibold">Model</th>
+              <th className="px-3 py-2 font-semibold">Model ID at this provider</th>
+              <th className="px-3 py-2 font-semibold">Regions</th>
+              <th className="px-3 py-2 font-semibold">Input ₹ / 1M</th>
+              <th className="px-3 py-2 font-semibold">Output ₹ / 1M</th>
+              <th className="px-3 py-2 font-semibold">₹ / audio min</th>
+              <th className="px-3 py-2 font-semibold">Available</th>
+              <th className="w-10 px-2 py-2" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {prices.map((m, i) => {
+              const item = models.find((c) => c.id === m.modelId)
+              const speech = item?.category === 'asr'
+              const embedding = item?.category === 'embedding'
+              return (
+                <tr key={`${m.modelId}-${i}`} data-model-price={m.modelId}>
+                  <td className="px-3 py-2">
+                    <Select
+                      value={m.modelId}
+                      onValueChange={(v) => {
+                        const next = models.find((c) => c.id === v)
+                        up(i, { modelId: v, ...(next?.category === 'asr' ? { inputPer1M: 0, outputPer1M: 0, perAudioMinute: m.perAudioMinute ?? 0 } : { perAudioMinute: undefined }) })
+                      }}
+                    >
+                      <SelectTrigger aria-label={`Model ${i + 1}`} className="h-9 min-w-[170px]">
+                        <SelectValue placeholder="Choose a model" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {models
+                          .filter((c) => c.id === m.modelId || !prices.some((p) => p.modelId === c.id))
+                          .map((c) => (
+                            <SelectItem key={c.id} value={c.id}>
+                              {c.name}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </td>
+                  <td className="px-3 py-2">
+                    <Input value={m.providerModelId} onChange={(e) => up(i, { providerModelId: e.target.value })} aria-label={`Model ${i + 1} ID at provider`} placeholder="meta.llama3-3-70b-instruct-v1:0" className="h-9 min-w-[200px] font-mono text-caption" />
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex flex-col gap-1">
+                      {named.map((r) => (
+                        <label key={r.id} className="flex cursor-pointer items-center gap-2 whitespace-nowrap text-caption text-text-primary">
+                          <Checkbox
+                            checked={m.regionIds.includes(r.id)}
+                            onCheckedChange={(v) => up(i, { regionIds: v ? [...m.regionIds, r.id] : m.regionIds.filter((x) => x !== r.id) })}
+                            aria-label={`${r.name} for model ${i + 1}`}
+                          />
+                          {r.name}
+                        </label>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2">
+                    <Input type="number" min={0} step={0.5} value={m.inputPer1M} disabled={speech} onChange={(e) => up(i, { inputPer1M: num(e.target.value) })} aria-label={`Model ${i + 1} input price`} className="h-9 w-24" />
+                  </td>
+                  <td className="px-3 py-2">
+                    <Input type="number" min={0} step={0.5} value={m.outputPer1M} disabled={speech || embedding} onChange={(e) => up(i, { outputPer1M: num(e.target.value) })} aria-label={`Model ${i + 1} output price`} className="h-9 w-24" />
+                  </td>
+                  <td className="px-3 py-2">
+                    <Input type="number" min={0} step={0.01} value={m.perAudioMinute ?? ''} disabled={!speech} onChange={(e) => up(i, { perAudioMinute: num(e.target.value) })} aria-label={`Model ${i + 1} price per audio minute`} className="h-9 w-24" />
+                  </td>
+                  <td className="px-3 py-2">
+                    <Checkbox checked={m.status === 'available'} onCheckedChange={(v) => up(i, { status: v ? 'available' : 'disabled' })} aria-label={`Model ${i + 1} available`} />
+                  </td>
+                  <td className="px-2 py-2">
+                    <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${item?.name ?? `model ${i + 1}`}`} onClick={() => onChange(prices.filter((_, j) => j !== i))}>
+                      <Trash2 />
+                    </Button>
+                  </td>
+                </tr>
+              )
+            })}
+            {prices.length === 0 && (
+              <tr>
+                <td colSpan={8} className="px-3 py-4 text-center text-caption text-text-secondary">
+                  No models priced yet.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {free.length > 0 && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="compact"
+          className="self-start"
+          onClick={() => {
+            const first = free[0]!
+            onChange([...prices, { modelId: first.id, providerModelId: '', regionIds: named.map((r) => r.id), inputPer1M: 0, outputPer1M: 0, ...(first.category === 'asr' ? { perAudioMinute: 0 } : {}), status: 'available' }])
+          }}
+        >
+          <Plus /> Add model
+        </Button>
+      )}
     </div>
   )
 }

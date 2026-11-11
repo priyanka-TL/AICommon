@@ -27,7 +27,11 @@ export function AppEffects() {
 
   useEffect(() => {
     checkAlerts()
-    const t = setInterval(checkAlerts, LIVE_INTERVAL_MS)
+    useAppStore.getState().checkModelBudgets()
+    const t = setInterval(() => {
+      checkAlerts()
+      useAppStore.getState().checkModelBudgets()
+    }, LIVE_INTERVAL_MS)
     return () => clearInterval(t)
   }, [checkAlerts])
 

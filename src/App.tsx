@@ -14,6 +14,7 @@ import Providers from '@/pages/super-admin/Providers'
 import InfraProviders from '@/pages/super-admin/InfraProviders'
 import InfraProviderDetail from '@/pages/super-admin/InfraProviderDetail'
 import Capacity from '@/pages/super-admin/Capacity'
+import SuperAdminModelCosts from '@/pages/super-admin/ModelCosts'
 import TenantAdminDashboard from '@/pages/tenant-admin/Dashboard'
 import Projects from '@/pages/shared/Projects'
 import ProjectDetail from '@/pages/shared/ProjectDetail'
@@ -89,6 +90,7 @@ export default function App() {
             <Route path="/super-admin/infra-providers" element={<InfraProviders />} />
             <Route path="/super-admin/infra-providers/:id" element={<InfraProviderDetail />} />
             <Route path="/super-admin/capacity" element={<Capacity />} />
+            <Route path="/super-admin/model-costs" element={<SuperAdminModelCosts />} />
             <Route path="/super-admin/monitoring" element={<Monitoring />} />
             <Route path="/super-admin/audit" element={<AuditLog />} />
             <Route path="/super-admin/reports/:id" element={<ReportDetail />} />

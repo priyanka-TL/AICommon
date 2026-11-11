@@ -30,6 +30,8 @@ export interface Tenant {
   approvedProviders: ProviderApproval[]
   /** Key names connected for this organisation (a stand-in until key management lands). Env vars reference them as ${NAME}. */
   connectedKeys: string[]
+  /** Monthly budget for platform model usage, with alert state. */
+  modelBudget: ModelBudget
   status: TenantStatus
   isSystem: boolean
   createdAt: string
@@ -80,11 +82,39 @@ export interface Project {
   updatedById: string
   /** Model a QA Engineer recommended after a comparison. */
   recommendation?: Recommendation
-  /** How each model is reached from this project. */
-  modelAccess?: Record<string, AccessMode>
+  /** Sensitivity of the data the project handles. Personal and Children's data keep model calls in India. */
+  dataClassification: DataClassification
+  /** Platform models: which provider and region serve each model for this project. */
+  platformModels: Record<string, ModelPlacement>
 }
 
-export type AccessMode = 'direct' | 'openrouter' | 'bedrock' | 'azure_openai' | 'vertex'
+export interface ModelPlacement {
+  providerId: string
+  regionId: string
+}
+
+export interface ModelBudget {
+  /** ₹ per month for platform model usage. */
+  monthly: number
+  /** What happens once month-to-date cost reaches the budget. */
+  onExceed: 'notify' | 'block'
+  /** Alerts already sent, so each level fires once a month. Month is YYYY-MM. */
+  alerted: { month: string; level: 80 | 100 }[]
+}
+
+/** One day of one platform model's usage in one project. */
+export interface ModelUsage {
+  date: string
+  tenantId: string
+  projectId: string
+  userId: string
+  modelId: string
+  providerId: string
+  regionId: string
+  inputTokens: number
+  outputTokens: number
+  audioMinutes: number
+}
 
 export interface Recommendation {
   modelId: string
@@ -508,8 +538,37 @@ export interface QaRun {
 /* ---------- infrastructure providers ---------- */
 
 export type GpuType = 'T4' | 'L4' | 'A10' | 'A100'
-export type InfraProviderType = 'public_cloud' | 'indian_cloud' | 'on_premise'
-export type AiService = 'bedrock' | 'azure_openai' | 'vertex'
+export type InfraProviderType = 'public_cloud' | 'indian_cloud' | 'on_premise' | 'model_gateway'
+export type AiService = 'bedrock' | 'azure_openai' | 'vertex' | 'onprem_models' | 'openrouter'
+
+/** A platform model's price at one provider. Prices are in ₹ before platform fee, NGO discount and GST. */
+export interface ModelPrice {
+  modelId: string
+  /** The model's identifier at this provider, e.g. meta.llama3-3-70b-instruct-v1:0 */
+  providerModelId: string
+  regionIds: string[]
+  /** ₹ per 1M input tokens (embeddings: per 1M tokens). */
+  inputPer1M: number
+  /** ₹ per 1M output tokens. */
+  outputPer1M: number
+  /** Speech models: ₹ per audio minute. */
+  perAudioMinute?: number
+  status: 'available' | 'disabled'
+}
+
+export type CredentialKind = 'Access key' | 'IAM role' | 'API key + endpoint' | 'Service account' | 'Internal token' | 'API key'
+
+/** The provider's own credential for its model service. Only the masked value is ever kept. */
+export interface ModelServiceConnection {
+  credentialKind: CredentialKind
+  maskedKey: string
+  endpoint?: string
+  status: 'connected' | 'revoked'
+  updatedAt: string
+  lastTestedAt?: string
+  lastTestOk?: boolean
+  lastTestLatencyMs?: number
+}
 
 export interface Region {
   id: string
@@ -544,6 +603,8 @@ export interface RateCard {
   platformFeePct: number
   ngoDiscountPct: number
   gstPct: number
+  /** Platform model prices (only for providers with an AI model service). */
+  modelPrices: ModelPrice[]
 }
 
 export interface InfraProvider {
@@ -556,6 +617,8 @@ export interface InfraProvider {
   regions: Region[]
   rateCards: RateCard[]
   aiServices: AiService[]
+  /** Super Admin only: the provider's model service credential. */
+  modelService?: ModelServiceConnection
   maxGpus: number
   allowedTenants: 'all' | string[]
   createdAt: string

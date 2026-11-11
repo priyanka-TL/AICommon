@@ -6,7 +6,7 @@ import type { CatalogCategory, CatalogItem, EnvSpec, InfraProvider, Language, Pr
 import { useAppStore, useCurrentTenant, useCurrentUser } from '@/store/useAppStore'
 import { useTenantCatalog } from '@/store/selectors'
 import { activeHoursPerMonth, costBreakdown, providerBudget, rateCardAt } from '@/lib/cost'
-import { approvalFor, providersOfferedTo, ensurePlacement, equivalentSpec, indiaResidency, instancesFor, isSensitive, PROVIDER_TYPE_LABELS, providerGpuTypes, providersFor, recommendProvider, residencyProblem, applyPlacement } from '@/lib/providers'
+import { approvalFor, isModelOnly, providersOfferedTo, ensurePlacement, equivalentSpec, indiaResidency, instancesFor, isSensitive, PROVIDER_TYPE_LABELS, providerGpuTypes, providersFor, recommendProvider, residencyProblem, applyPlacement } from '@/lib/providers'
 import { useCostContext } from '@/store/selectors'
 import { allocationOf, checkQuota, quotaMessage, subQuota, tenantAllocated } from '@/lib/quota'
 import { addsInfrastructure } from '@/lib/spec'
@@ -292,7 +292,7 @@ function StepProvider({ spec, set, providers, tenant, errors, editing, role, pla
   const approval = approvalFor(tenant, spec.providerId)
   const approvedRegions = (provider?.regions ?? []).filter((r) => !approval || approval.regionIds.includes(r.id))
   const superCreate = adminMode && role === 'super_admin'
-  const others = (superCreate ? providers.filter((p) => p.status === 'active') : providersOfferedTo(providers, tenant.id)).filter((p) => !approvalFor(tenant, p.id))
+  const others = (superCreate ? providers.filter((p) => p.status === 'active') : providersOfferedTo(providers, tenant.id)).filter((p) => !approvalFor(tenant, p.id) && !isModelOnly(p))
   const [enableFor, setEnableFor] = useState<string | null>(null)
   const [askFor, setAskFor] = useState<string | undefined>()
   const [askOpen, setAskOpen] = useState(false)

@@ -11,9 +11,10 @@ import { CATEGORY_SINGULAR } from '@/lib/labels'
 import { relativeTime } from '@/lib/format'
 import { reportPath } from '@/lib/paths'
 import { qualityScore } from '@/lib/qa'
-import { ACCESS_MODE_LABELS, accessModesFor } from '@/lib/providers'
+import { isPlatformModel } from '@/lib/modelCost'
 import { canEditProject } from '@/lib/roles'
-import type { AccessMode } from '@/data/types'
+import type { ModelPlacement } from '@/data/types'
+import { PlatformModelPicker } from '@/components/shared/PlatformModelPicker'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CatalogStatusBadge, StatusBadge, Tag } from '@/components/shared/StatusBadge'
 import { CodeBlock } from '@/components/shared/CodeBlock'
@@ -40,14 +41,14 @@ export default function CatalogDetail() {
   const readOnly = role === 'qa'
   const users = useAppStore((s) => s.users)
   const qaRuns = useAppStore((s) => s.qaRuns)
-  const infraProviders = useAppStore((s) => s.infraProviders)
-  const [access, setAccess] = useState<AccessMode>('direct')
+  const [placement, setPlacement] = useState<ModelPlacement | null>(null)
   const [version, setVersion] = useState('')
   const me = useCurrentUser()
 
   if (!item) return <NotFound message="This item isn’t available to your tenant. It may have been removed or not published to you yet." />
 
-  const accessModes = accessModesFor(item, infraProviders, tenant)
+  const platformModel = isPlatformModel(item)
+  const targetProject = projects.find((p) => p.id === projectId)
   const allowed = item.enabled
   const usedIn = environments.filter(
     (e) =>
@@ -95,7 +96,7 @@ export default function CatalogDetail() {
               disabled={!!blockedReason || projects.length === 0}
               onClick={() => {
                 setProjectId(projects.find((p) => !p.capabilityIds.includes(item.id))?.id ?? projects[0]?.id ?? '')
-                setAccess('direct')
+                setPlacement(null)
                 setProjectOpen(true)
               }}
             >
@@ -256,11 +257,17 @@ export default function CatalogDetail() {
 
       <AddToEnvironmentDialog item={item} open={addOpen} onOpenChange={setAddOpen} />
       <Dialog open={projectOpen} onOpenChange={setProjectOpen}>
-        <DialogContent size="sm">
+        <DialogContent size={platformModel ? 'lg' : 'sm'}>
           <DialogHeader title={`Add ${item.name} to a project`} description="Project members see it in the project’s toolset. Adding it doesn’t need approval." />
           <DialogBody>
             <Field label="Project" htmlFor="ap-project">
-              <Select value={projectId} onValueChange={setProjectId}>
+              <Select
+                value={projectId}
+                onValueChange={(v) => {
+                  setProjectId(v)
+                  setPlacement(null)
+                }}
+              >
                 <SelectTrigger id="ap-project">
                   <SelectValue placeholder="Choose a project" />
                 </SelectTrigger>
@@ -290,21 +297,10 @@ export default function CatalogDetail() {
                 </Select>
               </Field>
             )}
-            {item.category === 'llm' && (
-              <Field label="Access through" helper="How this project reaches the model. Cloud model services come from the infrastructure providers your organisation can use." className="mt-4">
-                <Select value={access} onValueChange={(v) => setAccess(v as AccessMode)}>
-                  <SelectTrigger aria-label="Access through">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {accessModes.map((m) => (
-                      <SelectItem key={m} value={m}>
-                        {ACCESS_MODE_LABELS[m]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
+            {platformModel && targetProject && (
+              <div className="mt-4">
+                <PlatformModelPicker item={item} tenant={tenant} classification={targetProject.dataClassification} value={placement} onChange={setPlacement} />
+              </div>
             )}
           </DialogBody>
           <DialogFooter>
@@ -312,9 +308,9 @@ export default function CatalogDetail() {
               <Button variant="secondary">Cancel</Button>
             </DialogClose>
             <Button
-              disabled={!projectId}
+              disabled={!projectId || (platformModel && !placement)}
               onClick={() => {
-                const res = addProjectCapability(projectId, item.id, item.category === 'llm' ? access : undefined, version || item.version)
+                const res = addProjectCapability(projectId, item.id, platformModel ? (placement ?? undefined) : undefined, version || item.version)
                 if (!res.ok) {
                   toast.error(res.error)
                   return

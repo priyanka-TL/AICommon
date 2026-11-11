@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ArrowUpRight, Save } from 'lucide-react'
 import type { Quota } from '@/data/types'
@@ -9,6 +10,7 @@ import { addQuota, projectAllocated, RESOURCES, tenantAllocated, ZERO } from '@/
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { SpendThisMonth } from '@/components/shared/SpendThisMonth'
+import { ModelCosts } from '@/components/shared/ModelCosts'
 import { ResourceQuota } from '@/components/shared/ResourceQuota'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Button } from '@/components/ui/button'
@@ -32,6 +34,12 @@ export default function Quotas() {
   const [asked, setAsked] = useState<Record<keyof Quota, string>>({ vcpu: '', ramGb: '', gpus: '', storageGb: '' })
   const [reason, setReason] = useState('')
   const [reasonError, setReasonError] = useState<string | null>(null)
+  const { hash } = useLocation()
+
+  // Links to #model-costs (dashboard KPI, budget alerts) land on the Model Costs section.
+  useEffect(() => {
+    if (hash === '#model-costs') requestAnimationFrame(() => document.getElementById('model-costs')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  }, [hash])
 
   useEffect(() => {
     setDraft(Object.fromEntries(projects.map((p) => [p.id, Object.fromEntries(RESOURCES.map((r) => [r.key, String(p.limits[r.key])])) as Record<keyof Quota, string>])))
@@ -58,7 +66,7 @@ export default function Quotas() {
       <PageHeader
         eyebrow={tenant.name}
         title="Quotas & Usage"
-        description="Your tenant’s quota from the Super Admin, how much is in use, and how it is split across projects."
+        description="Your tenant’s quota from the Super Admin, how much is in use, how it is split across projects, and what platform models cost."
         actions={
           <Button
             variant="secondary"
@@ -84,6 +92,8 @@ export default function Quotas() {
       </section>
 
       <SpendThisMonth tenantId={tenant.id} className="mt-6" />
+
+      <ModelCosts tenantId={tenant.id} className="mt-8" />
 
       <section className="card mt-6 p-6">
         <h2 className="mb-1 font-heading text-h3 text-text-primary">Split across projects</h2>

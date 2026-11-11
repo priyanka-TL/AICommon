@@ -14,6 +14,8 @@ import type {
   GpuType,
   InfraProvider,
   InstanceType,
+  ModelPrice,
+  ModelUsage,
   LifecycleEvent,
   Language,
   LifecycleStatus,
@@ -38,9 +40,10 @@ import type {
   User,
 } from './types'
 import { SEEDED_BUILD_ERROR, STEP_ORDER } from '@/lib/deploy'
+import { thisMonth, usageCost } from '@/lib/modelCost'
 
 /** Bump to discard everyone's saved state and load this seed. */
-export const SEED_VERSION = 'v8'
+export const SEED_VERSION = 'v9'
 
 export const DEFAULT_TENANT_ID = 't-default'
 export const SUPER_ADMIN_ID = 'u-super'
@@ -136,6 +139,7 @@ export const seedTenants: Tenant[] = [
     enabledItemIds: [],
     approvedProviders: [],
     connectedKeys: [],
+    modelBudget: { monthly: 0, onExceed: 'notify', alerted: [] },
     status: 'active',
     isSystem: true,
     createdAt: at(400),
@@ -162,7 +166,10 @@ export const seedTenants: Tenant[] = [
     approvedProviders: [
       approval('ip-aws', ['aws-mum', 'aws-hyd', 'aws-sin'], 60000, 180),
       approval('ip-e2e', ['e2e-del', 'e2e-mum'], 95000, 180),
+      approval('ip-onprem', ['op-blr', 'op-pune'], 40000, 110),
+      approval('ip-openrouter', ['or-global'], 30000, 80),
     ],
+    modelBudget: { monthly: 0, onExceed: 'notify', alerted: [] },
     status: 'active',
     isSystem: false,
     createdAt: at(210),
@@ -186,7 +193,12 @@ export const seedTenants: Tenant[] = [
       'cap-qdrant', 'emb-bge-m3', 'cap-langchain', 'cap-langfuse',
     ],
     connectedKeys: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
-    approvedProviders: [approval('ip-azure', ['azr-cin', 'azr-sin'], 120000, 150)],
+    approvedProviders: [
+      approval('ip-azure', ['azr-cin', 'azr-sin'], 120000, 150),
+      approval('ip-onprem', ['op-blr', 'op-pune'], 40000, 110),
+      approval('ip-openrouter', ['or-global'], 30000, 80),
+    ],
+    modelBudget: { monthly: 0, onExceed: 'block', alerted: [] },
     status: 'active',
     isSystem: false,
     createdAt: at(160),
@@ -230,7 +242,27 @@ export const seedUsers: User[] = [
 
 const q = (vcpu: number, ramGb: number, gpus: number, storageGb: number): Quota => ({ vcpu, ramGb, gpus, storageGb })
 
-type ProjectSeed = Omit<Project, 'memberAccess' | 'capabilityVersions' | 'updatedAt' | 'updatedById' | 'repoUrl' | 'defaultBranch' | 'type' | 'defaultRuntime' | 'defaultRuntimeVersion'> &
+/** Data each project handles. Children's and personal data keep model calls in India. */
+const PROJECT_DATA: Record<string, Project['dataClassification']> = {
+  'p-sl-edu': 'children',
+  'p-sl-speech': 'personal',
+  'p-sl-quiz': 'public',
+}
+
+const at_ = (providerId: string, regionId: string) => ({ providerId, regionId })
+/** Which provider and region serve each platform model in each project. */
+const PROJECT_MODELS: Record<string, Project['platformModels']> = {
+  'p-sl-edu': { 'llm-sarvam': at_('ip-onprem', 'op-blr'), 'llm-gemma': at_('ip-onprem', 'op-blr'), 'llm-mistral': at_('ip-onprem', 'op-blr'), 'emb-bge-m3': at_('ip-onprem', 'op-blr') },
+  'p-sl-teacher': { 'llm-sarvam': at_('ip-onprem', 'op-pune'), 'llm-llama': at_('ip-aws', 'aws-mum'), 'llm-claude': at_('ip-aws', 'aws-mum'), 'llm-gpt': at_('ip-openrouter', 'or-global'), 'llm-gemini': at_('ip-openrouter', 'or-global') },
+  'p-sl-speech': { 'llm-sarvam': at_('ip-onprem', 'op-blr') },
+  'p-sl-quiz': { 'llm-sarvam': at_('ip-onprem', 'op-pune') },
+  'p-m4c-coach': { 'llm-gpt': at_('ip-azure', 'azr-cin'), 'llm-gemma': at_('ip-onprem', 'op-pune'), 'llm-claude': at_('ip-openrouter', 'or-global') },
+  'p-m4c-docs': { 'llm-claude': at_('ip-openrouter', 'or-global'), 'llm-sarvam': at_('ip-onprem', 'op-blr'), 'llm-gemini': at_('ip-openrouter', 'or-global'), 'llm-mistral': at_('ip-onprem', 'op-blr') },
+  'p-m4c-feedback': { 'emb-bge-m3': at_('ip-onprem', 'op-pune'), 'llm-mistral': at_('ip-openrouter', 'or-global'), 'llm-gpt': at_('ip-azure', 'azr-cin') },
+  'p-m4c-survey': { 'llm-gemini': at_('ip-openrouter', 'or-global') },
+}
+
+type ProjectSeed = Omit<Project, 'memberAccess' | 'capabilityVersions' | 'dataClassification' | 'platformModels' | 'updatedAt' | 'updatedById' | 'repoUrl' | 'defaultBranch' | 'type' | 'defaultRuntime' | 'defaultRuntimeVersion'> &
   Partial<Pick<Project, 'memberAccess' | 'capabilityVersions' | 'repoUrl' | 'defaultBranch' | 'type' | 'defaultRuntime' | 'defaultRuntimeVersion'>> & { updatedDaysAgo?: number; updatedById?: string }
 
 const proj = ({ updatedDaysAgo, updatedById, ...p }: ProjectSeed): Project => ({
@@ -242,6 +274,8 @@ const proj = ({ updatedDaysAgo, updatedById, ...p }: ProjectSeed): Project => ({
   memberAccess: Object.fromEntries(p.memberIds.map((m) => [m, 'editor' as const])),
   capabilityVersions: {},
   ...p,
+  dataClassification: PROJECT_DATA[p.id] ?? 'internal',
+  platformModels: PROJECT_MODELS[p.id] ?? {},
   updatedAt: updatedDaysAgo !== undefined ? at(updatedDaysAgo) : p.createdAt,
   updatedById: updatedById ?? p.ownerId,
 })
@@ -424,6 +458,7 @@ const card = (
   source: string,
   instanceTypes: InstanceType[],
   rates: { storage: number; egress: number; fee: number; ngo: number; gst?: number },
+  modelPrices: ModelPrice[] = [],
 ): RateCard => ({
   version,
   effectiveFrom: dayAgo(days),
@@ -436,7 +471,37 @@ const card = (
   platformFeePct: rates.fee,
   ngoDiscountPct: rates.ngo,
   gstPct: rates.gst ?? 18,
+  modelPrices,
 })
+
+/** A model price row: ₹ per 1M input / output tokens, or ₹ per audio minute for speech. */
+const mp = (modelId: string, providerModelId: string, regionIds: string[], inputPer1M: number, outputPer1M: number, perAudioMinute?: number): ModelPrice => ({
+  modelId,
+  providerModelId,
+  regionIds,
+  inputPer1M,
+  outputPer1M,
+  ...(perAudioMinute !== undefined ? { perAudioMinute } : {}),
+  status: 'available',
+})
+
+const awsInstances = [
+  inst('aws-c6i-2xl', 'c6i.2xlarge', 8, 16, 'none', 0, 32),
+  inst('aws-g4dn-2xl', 'g4dn.2xlarge', 8, 32, 'T4', 1, 70),
+  inst('aws-g6-2xl', 'g6.2xlarge', 8, 32, 'L4', 1, 96),
+  inst('aws-g5-4xl', 'g5.4xlarge', 16, 64, 'A10', 1, 152),
+  inst('aws-p4d-1g', 'p4d A100 80 GB (1 GPU)', 12, 144, 'A100', 1, 360),
+]
+const bedrockV1 = [
+  mp('llm-claude', 'anthropic.claude-sonnet-5-5-v1:0', ['aws-mum', 'aws-sin'], 250, 1250),
+  mp('llm-llama', 'meta.llama3-3-70b-instruct-v1:0', ['aws-mum', 'aws-hyd'], 62, 84),
+  mp('llm-mistral', 'mistral.mistral-small-2503-v1:0', ['aws-sin'], 9, 26),
+]
+/** v2 lowers the Llama price from its effective date; usage before it stays on v1. */
+const bedrockV2 = bedrockV1.map((m) => (m.modelId === 'llm-llama' ? { ...m, inputPer1M: 52, outputPer1M: 70 } : m))
+
+/** The rate card change on AWS takes effect this many days ago (inside the current month when possible). */
+const AWS_V2_DAYS = Math.max(0, Math.min(5, new Date().getDate() - 2))
 
 const region = (id: string, name: string, indiaResident: boolean, gpuTypes: GpuType[]): Region => ({ id, name, indiaResident, gpuTypes })
 
@@ -447,6 +512,10 @@ const azureV1 = [
   inst('azr-nc24-a100', 'NC24ads A100 v4', 24, 220, 'A100', 1, 315),
 ]
 const azureV2 = azureV1.map((i) => ({ ...i, hourlyRate: Math.round(i.hourlyRate * 1.06) }))
+const azureOpenAi = [
+  mp('llm-gpt', 'gpt-5 (2025-08-07)', ['azr-cin', 'azr-sea'], 105, 840),
+  mp('llm-gpt4o-mini', 'gpt-4o-mini (2024-07-18)', ['azr-cin'], 13, 52),
+]
 
 export const seedInfraProviders: InfraProvider[] = [
   {
@@ -457,21 +526,11 @@ export const seedInfraProviders: InfraProvider[] = [
     status: 'active',
     regions: [region('aws-mum', 'Mumbai', true, ['T4', 'L4', 'A10', 'A100']), region('aws-hyd', 'Hyderabad', true, ['T4', 'A10']), region('aws-sin', 'Singapore', false, ['T4', 'L4', 'A10', 'A100'])],
     rateCards: [
-      card(
-        1,
-        200,
-        'Published price list, Apr 2026 (ap-south-1, on-demand)',
-        [
-          inst('aws-c6i-2xl', 'c6i.2xlarge', 8, 16, 'none', 0, 32),
-          inst('aws-g4dn-2xl', 'g4dn.2xlarge', 8, 32, 'T4', 1, 70),
-          inst('aws-g6-2xl', 'g6.2xlarge', 8, 32, 'L4', 1, 96),
-          inst('aws-g5-4xl', 'g5.4xlarge', 16, 64, 'A10', 1, 152),
-          inst('aws-p4d-1g', 'p4d A100 80 GB (1 GPU)', 12, 144, 'A100', 1, 360),
-        ],
-        { storage: 7, egress: 7.5, fee: 10, ngo: 10 },
-      ),
+      card(1, 200, 'Published price list, Apr 2026 (ap-south-1, on-demand)', awsInstances, { storage: 7, egress: 7.5, fee: 10, ngo: 10 }, bedrockV1),
+      card(2, AWS_V2_DAYS, 'Bedrock price update, Nov 2026 (ap-south-1, on-demand)', awsInstances, { storage: 7, egress: 7.5, fee: 10, ngo: 10 }, bedrockV2),
     ],
     aiServices: ['bedrock'],
+    modelService: { credentialKind: 'IAM role', maskedKey: 'arn:aws:iam::••••••••4821:role/aic-bedrock', status: 'connected', updatedAt: at(170), lastTestedAt: hoursAgo(5), lastTestOk: true, lastTestLatencyMs: 320 },
     maxGpus: 24,
     allowedTenants: 'all',
     createdAt: at(210),
@@ -484,10 +543,11 @@ export const seedInfraProviders: InfraProvider[] = [
     status: 'active',
     regions: [region('azr-cin', 'Central India (Pune)', true, ['T4', 'A10', 'A100']), region('azr-sin', 'South India (Chennai)', true, ['T4', 'A10']), region('azr-sea', 'Southeast Asia (Singapore)', false, ['T4', 'A10', 'A100'])],
     rateCards: [
-      card(1, 200, 'Published price list, Apr 2026 (Central India, pay-as-you-go)', azureV1, { storage: 6.5, egress: 7, fee: 10, ngo: 15 }),
-      card(2, 40, 'Published price list, Oct 2026 (Central India, pay-as-you-go)', azureV2, { storage: 6.5, egress: 7, fee: 10, ngo: 15 }),
+      card(1, 200, 'Published price list, Apr 2026 (Central India, pay-as-you-go)', azureV1, { storage: 6.5, egress: 7, fee: 10, ngo: 15 }, azureOpenAi),
+      card(2, 40, 'Published price list, Oct 2026 (Central India, pay-as-you-go)', azureV2, { storage: 6.5, egress: 7, fee: 10, ngo: 15 }, azureOpenAi),
     ],
     aiServices: ['azure_openai'],
+    modelService: { credentialKind: 'API key + endpoint', maskedKey: '••••••••••••••••7f2c', endpoint: 'https://aic-openai-cin.openai.azure.com', status: 'connected', updatedAt: at(150), lastTestedAt: hoursAgo(9), lastTestOk: true, lastTestLatencyMs: 410 },
     maxGpus: 20,
     allowedTenants: 'all',
     createdAt: at(210),
@@ -511,9 +571,14 @@ export const seedInfraProviders: InfraProvider[] = [
           inst('gcp-a2-1g', 'a2-highgpu-1g', 12, 85, 'A100', 1, 322),
         ],
         { storage: 7, egress: 9.5, fee: 10, ngo: 10 },
+        [
+          mp('llm-gemini', 'gemini-2.5-pro', ['gcp-mum', 'gcp-sin'], 105, 840),
+          mp('llm-gemma', 'gemma-3-27b-it', ['gcp-mum'], 10, 20),
+        ],
       ),
     ],
     aiServices: ['vertex'],
+    modelService: { credentialKind: 'Service account', maskedKey: 'aic-vertex@••••••••.iam.gserviceaccount.com', status: 'connected', updatedAt: at(160), lastTestedAt: hoursAgo(30), lastTestOk: true, lastTestLatencyMs: 380 },
     maxGpus: 16,
     allowedTenants: 'all',
     createdAt: at(210),
@@ -570,6 +635,55 @@ export const seedInfraProviders: InfraProvider[] = [
     maxGpus: 12,
     allowedTenants: 'all',
     createdAt: at(210),
+  },
+  {
+    id: 'ip-onprem',
+    name: 'Shared On-premise GPU Pool',
+    code: 'OPG',
+    type: 'on_premise',
+    status: 'active',
+    regions: [region('op-blr', 'Bengaluru DC', true, ['A10', 'A100']), region('op-pune', 'Pune DC', true, ['L4', 'A100'])],
+    rateCards: [
+      card(1, 120, 'Internal cost recovery rates, Jul 2026', [], { storage: 0, egress: 0, fee: 5, ngo: 10 }, [
+        mp('llm-llama', 'llama-3.3-70b-instruct (vLLM)', ['op-blr', 'op-pune'], 22, 30),
+        mp('llm-gemma', 'gemma-3-27b-it (vLLM)', ['op-blr', 'op-pune'], 8, 12),
+        mp('llm-mistral', 'mistral-small-3.1 (vLLM)', ['op-blr'], 7, 10),
+        mp('llm-sarvam', 'sarvam-m (vLLM)', ['op-blr', 'op-pune'], 15, 20),
+        mp('llm-qwen', 'qwen2.5-7b-instruct (vLLM)', ['op-pune'], 5, 7),
+        mp('asr-whisper', 'whisper-large-v3', ['op-blr', 'op-pune'], 0, 0, 0.15),
+        mp('asr-indicconformer', 'indicconformer-600m', ['op-blr'], 0, 0, 0.2),
+        mp('emb-bge-m3', 'bge-m3', ['op-blr', 'op-pune'], 2, 0),
+      ]),
+    ],
+    aiServices: ['onprem_models'],
+    modelService: { credentialKind: 'Internal token', maskedKey: 'internal-••••••••a0b4', endpoint: 'https://models.gpu-pool.internal/v1', status: 'connected', updatedAt: at(120), lastTestedAt: hoursAgo(2), lastTestOk: true, lastTestLatencyMs: 140 },
+    maxGpus: 0,
+    allowedTenants: 'all',
+    createdAt: at(125),
+  },
+  {
+    id: 'ip-openrouter',
+    name: 'OpenRouter',
+    code: 'ORT',
+    type: 'model_gateway',
+    status: 'active',
+    regions: [region('or-global', 'Global (routed)', false, [])],
+    rateCards: [
+      card(1, 90, 'OpenRouter published model prices, Aug 2026 (converted at ₹88/$)', [], { storage: 0, egress: 0, fee: 8, ngo: 5 }, [
+        mp('llm-claude', 'anthropic/claude-sonnet-5.5', ['or-global'], 270, 1350),
+        mp('llm-gpt', 'openai/gpt-5', ['or-global'], 115, 920),
+        mp('llm-gemini', 'google/gemini-2.5-pro', ['or-global'], 115, 900),
+        mp('llm-llama', 'meta-llama/llama-3.3-70b-instruct', ['or-global'], 70, 95),
+        mp('llm-mistral', 'mistralai/mistral-small-3.1', ['or-global'], 10, 28),
+        mp('llm-gemma', 'google/gemma-3-27b-it', ['or-global'], 11, 22),
+        mp('llm-qwen', 'qwen/qwen-2.5-7b-instruct', ['or-global'], 6, 9),
+      ]),
+    ],
+    aiServices: ['openrouter'],
+    modelService: { credentialKind: 'API key', maskedKey: 'sk-or-••••••••••••e81b', endpoint: 'https://openrouter.ai/api/v1', status: 'connected', updatedAt: at(90), lastTestedAt: hoursAgo(12), lastTestOk: true, lastTestLatencyMs: 900 },
+    maxGpus: 0,
+    allowedTenants: 'all',
+    createdAt: at(95),
   },
 ]
 
@@ -1314,6 +1428,71 @@ export const seedUsage: UsagePoint[] = (() => {
   return out
 })()
 
+/* ---------- platform model usage (60 days) ---------- */
+
+/** Typical weekday volume per model: millions of input and output tokens, or audio minutes. */
+const MODEL_VOLUME: Record<string, { inM: number; outM: number; minutes?: number }> = {
+  'llm-claude': { inM: 0.45, outM: 0.11 },
+  'llm-gpt': { inM: 0.55, outM: 0.14 },
+  'llm-gemini': { inM: 0.35, outM: 0.09 },
+  'llm-llama': { inM: 1.1, outM: 0.38 },
+  'llm-mistral': { inM: 0.8, outM: 0.25 },
+  'llm-gemma': { inM: 0.9, outM: 0.3 },
+  'llm-sarvam': { inM: 1.4, outM: 0.45 },
+  'llm-qwen': { inM: 0.5, outM: 0.2 },
+  'emb-bge-m3': { inM: 3, outM: 0 },
+  'asr-whisper': { inM: 0, outM: 0, minutes: 600 },
+  'asr-indicconformer': { inM: 0, outM: 0, minutes: 400 },
+}
+
+const isoDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+export const seedModelUsage: ModelUsage[] = (() => {
+  const out: ModelUsage[] = []
+  for (const project of seedProjects) {
+    const users = project.memberIds.length ? project.memberIds : [project.ownerId]
+    for (const [modelId, place] of Object.entries(project.platformModels)) {
+      const vol = MODEL_VOLUME[modelId]
+      if (!vol) continue
+      const rand = seededRandom(hashString(`${project.id}:${modelId}`))
+      const scale = 0.6 + rand() * 0.8
+      for (let i = 59; i >= 0; i--) {
+        const d = new Date(Date.now() - i * DAY)
+        if (d.getTime() < new Date(project.createdAt).getTime()) continue
+        const weekend = d.getDay() === 0 || d.getDay() === 6
+        const growth = 0.7 + ((59 - i) / 59) * 0.5
+        const f = scale * (weekend ? 0.45 : 1) * growth * (0.8 + rand() * 0.4)
+        out.push({
+          date: isoDate(d),
+          tenantId: project.tenantId,
+          projectId: project.id,
+          userId: users[Math.floor(rand() * users.length)]!,
+          modelId,
+          providerId: place.providerId,
+          regionId: place.regionId,
+          inputTokens: Math.round(vol.inM * 1_000_000 * f),
+          outputTokens: Math.round(vol.outM * 1_000_000 * f),
+          audioMinutes: Math.round((vol.minutes ?? 0) * f),
+        })
+      }
+    }
+  }
+  return out
+})()
+
+/** Model budgets set so ShikshaLokam is past 80% this month and Mantra4Change is near 40%. */
+function withModelBudgets(tenants: Tenant[]): Tenant[] {
+  const ctx = { providers: seedInfraProviders, tenants }
+  const target: Record<string, number> = { [SL]: 0.82, [M4C]: 0.4 }
+  return tenants.map((t) => {
+    const share = target[t.id]
+    if (!share) return t
+    const mtd = usageCost(thisMonth(seedModelUsage.filter((u) => u.tenantId === t.id)), ctx).total
+    const monthly = Math.max(5000, Math.round(mtd / share / 500) * 500)
+    return { ...t, modelBudget: { ...t.modelBudget, monthly } }
+  })
+}
+
 /* ---------- suggestions ---------- */
 
 export const seedSuggestions: Suggestion[] = [
@@ -1791,6 +1970,7 @@ export interface SeedState {
   quotaRequests: QuotaRequest[]
   testRuns: TestRun[]
   infraProviders: InfraProvider[]
+  modelUsage: ModelUsage[]
   providerRequests: ProviderRequest[]
   datasets: Dataset[]
   testConfigs: TestConfig[]
@@ -1801,7 +1981,7 @@ export interface SeedState {
 
 export function createSeed(): SeedState {
   return structuredClone({
-    tenants: seedTenants,
+    tenants: withModelBudgets(seedTenants),
     users: seedUsers,
     projects: seedProjects,
     environments: seedEnvironments,
@@ -1816,6 +1996,7 @@ export function createSeed(): SeedState {
     quotaRequests: seedQuotaRequests,
     testRuns: seedTestRuns,
     infraProviders: seedInfraProviders,
+    modelUsage: seedModelUsage,
     providerRequests: seedProviderRequests,
     datasets: seedDatasets,
     testConfigs: seedTestConfigs,

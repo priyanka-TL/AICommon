@@ -2,17 +2,20 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { AlertTriangle, Archive, ArchiveRestore, ArrowUpCircle, GitBranch, Plus, Rocket, Save, Server, Trash2 } from 'lucide-react'
-import type { AccessMode, CatalogItem, Environment, Project } from '@/data/types'
+import type { CatalogItem, Environment, ModelPlacement, Project } from '@/data/types'
 import { useAppStore, type ProjectInput } from '@/store/useAppStore'
 import { useScope, useScopedEnvironments, useScopedProjects } from '@/store/selectors'
 import { canEditProject } from '@/lib/roles'
 import { canOperateDeployment, capacityShortfall, deploymentUrl, envCapacity, isStatic, limitsUsed, runtimeLabel, shortfallText } from '@/lib/deploy'
 import { effectiveCapabilities, isModelItem, isServiceItem, missingServices, projectVersion, SOURCE_LABELS } from '@/lib/capabilities'
 import { summariseProject } from '@/lib/projects'
-import { CATEGORY_SINGULAR } from '@/lib/labels'
-import { ACCESS_MODE_LABELS, accessModesFor } from '@/lib/providers'
+import { CATEGORY_SINGULAR, dataClassLabel } from '@/lib/labels'
+import { isPlatformModel, modelPriceAt, placementProblem, unitPrices } from '@/lib/modelCost'
+import { useProjectModelCost } from '@/hooks/useModelCost'
+import { KeyManagedBy, PlatformModelPicker, priceLabel } from '@/components/shared/PlatformModelPicker'
+import { ProjectCostCard } from '@/components/shared/ProjectCostCard'
 import { envPath, projectsPath, requestPath } from '@/lib/paths'
-import { formatDate, formatDateTime, relativeTime } from '@/lib/format'
+import { formatCompact, formatDate, formatDateTime, formatINR, relativeTime } from '@/lib/format'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ActivityFeed } from '@/components/shared/ActivityFeed'
 import { Avatar } from '@/components/shared/Avatar'
@@ -92,7 +95,7 @@ export default function ProjectDetail() {
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="capabilities">Capabilities &amp; Models ({project.capabilityIds.length})</TabsTrigger>
+          <TabsTrigger value="capabilities">AI Models &amp; Capabilities ({project.capabilityIds.length})</TabsTrigger>
           <TabsTrigger value="environments">Environments &amp; Deployments ({summary.deployments.length})</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
           <TabsTrigger value="activity">Activity</TabsTrigger>
@@ -146,10 +149,12 @@ function Overview({ project, summary, onOpenTab }: { project: Project; summary: 
   return (
     <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
       <div className="flex min-w-0 flex-col gap-6">
+        <ProjectCostCard project={project} envs={summary.environments} />
         <section className="card p-6">
           <h2 className="mb-4 font-heading text-h3 text-text-primary">Summary</h2>
           <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
             <Item label="Type">{projectTypeLabel(project.type)}</Item>
+            <Item label="Data classification">{dataClassLabel(project.dataClassification)}</Item>
             <Item label="Default runtime">{runtimeLabel(project.defaultRuntime, project.defaultRuntimeVersion)}</Item>
             <Item label="Repository">
               {project.repoUrl ? (
@@ -256,23 +261,24 @@ function CapabilitiesTab({ project, canEdit, envs }: { project: Project; canEdit
   const setVersion = useAppStore((s) => s.setProjectCapabilityVersion)
   const [itemId, setItemId] = useState('')
   const [version, setVersionDraft] = useState('')
-  const [access, setAccess] = useState<AccessMode>('direct')
+  const [placement, setPlacement] = useState<ModelPlacement | null>(null)
+  const cost = useProjectModelCost(project.id)
 
   const own = project.capabilityIds.map((cid) => catalog.find((c) => c.id === cid)).filter((c): c is CatalogItem => !!c)
   const addable = catalog
     .filter((c) => tenant?.enabledItemIds.includes(c.id) && c.status !== 'deprecated' && !project.capabilityIds.includes(c.id))
     .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name))
   const picked = catalog.find((c) => c.id === itemId)
-  const pickedModes = picked?.category === 'llm' && tenant ? accessModesFor(picked, infraProviders, tenant) : []
+  const pickedIsModel = isPlatformModel(picked)
 
   const submit = () => {
     if (!picked) return
-    const r = add(project.id, picked.id, picked.category === 'llm' ? access : undefined, version || picked.version)
+    const r = add(project.id, picked.id, pickedIsModel ? (placement ?? undefined) : undefined, version || picked.version)
     if (!r.ok) return toast.error(r.error)
     toast.success(`Added ${picked.name} ${version || picked.version} to ${project.name}.`)
     setItemId('')
     setVersionDraft('')
-    setAccess('direct')
+    setPlacement(null)
   }
 
   return (
@@ -287,7 +293,14 @@ function CapabilitiesTab({ project, canEdit, envs }: { project: Project; canEdit
         ) : (
           <ul className="grid gap-3 md:grid-cols-2">
             {own.map((c) => {
-              const via = project.modelAccess?.[c.id]
+              const place = project.platformModels[c.id]
+              const provider = place ? infraProviders.find((p) => p.id === place.providerId) : undefined
+              const region = provider?.regions.find((r) => r.id === place?.regionId)
+              const { price, card } = modelPriceAt(provider, c.id)
+              const unit = price ? unitPrices(price, card, tenant) : null
+              const used = cost.byModel.find((g) => g.key === c.id)
+              const problem = isPlatformModel(c) ? (place ? placementProblem(project, c.id, infraProviders, tenant) : 'No provider serves this model for the project yet. Remove it and add it again to choose one.') : null
+              const projected = used ? (used.cost / Math.max(1, cost.total)) * cost.projected : 0
               return (
                 <li key={c.id} className="flex items-start gap-3 rounded-control border border-border p-3" data-project-capability={c.id}>
                   <div className="min-w-0 flex-1">
@@ -295,8 +308,37 @@ function CapabilitiesTab({ project, canEdit, envs }: { project: Project; canEdit
                     <p className="truncate text-caption text-text-muted">
                       {CATEGORY_SINGULAR[c.category]}
                       {isServiceItem(c) ? ' · service' : isModelItem(c) ? ' · model' : ' · library'}
-                      {via && via !== 'direct' ? ` · ${ACCESS_MODE_LABELS[via].replace('Through ', 'via ')}` : ''}
                     </p>
+                    {isPlatformModel(c) && provider && (
+                      <div className="mt-2 flex flex-col gap-1 text-caption text-text-secondary" data-testid="platform-model-row">
+                        <span>
+                          <span className="font-semibold text-text-primary">{provider.name}</span>
+                          {region ? ` · ${region.name}` : ''}
+                        </span>
+                        {unit && <span className="tabular">{priceLabel({ inputPer1M: unit.input, outputPer1M: unit.output, perMinute: unit.perMinute, speech: unit.speech })}</span>}
+                        <dl className="mt-1 grid grid-cols-3 gap-2">
+                          <div>
+                            <dt className="text-text-muted">{unit?.speech ? 'Minutes' : 'Tokens'} this month</dt>
+                            <dd className="tabular font-semibold text-text-primary">{used ? formatCompact(unit?.speech ? used.audioMinutes : used.inputTokens + used.outputTokens) : '0'}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-text-muted">Cost this month</dt>
+                            <dd className="tabular font-semibold text-text-primary" data-testid="model-cost-mtd">{formatINR(used?.cost ?? 0)}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-text-muted">Projected</dt>
+                            <dd className="tabular font-semibold text-text-primary">{formatINR(projected)}</dd>
+                          </div>
+                        </dl>
+                        <KeyManagedBy providerName={provider.name} />
+                      </div>
+                    )}
+                    {problem && (
+                      <p className="mt-2 flex items-start gap-1.5 text-caption text-red-text" role="alert">
+                        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                        {problem}
+                      </p>
+                    )}
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <Tag>{SOURCE_LABELS.project}</Tag>
                       {c.versions.length > 1 && canEdit ? (
@@ -344,14 +386,15 @@ function CapabilitiesTab({ project, canEdit, envs }: { project: Project; canEdit
           </ul>
         )}
         {canEdit && addable.length > 0 && (
-          <div className="flex flex-col gap-3 rounded-control bg-bg-subtle p-3 md:flex-row md:items-end">
+          <div className="flex flex-col gap-4 rounded-control bg-bg-subtle p-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-end">
             <Field label="Add a capability or model" htmlFor="pj-cap-add" className="flex-1">
               <Select
                 value={itemId}
                 onValueChange={(v) => {
                   setItemId(v)
                   setVersionDraft(catalog.find((c) => c.id === v)?.version ?? '')
-                  setAccess('direct')
+                  setPlacement(null)
                 }}
               >
                 <SelectTrigger id="pj-cap-add" className="bg-bg-surface">
@@ -382,25 +425,22 @@ function CapabilitiesTab({ project, canEdit, envs }: { project: Project; canEdit
                 </Select>
               </Field>
             )}
-            {pickedModes.length > 1 && (
-              <Field label="Access through" htmlFor="pj-cap-access" className="md:w-52">
-                <Select value={access} onValueChange={(v) => setAccess(v as AccessMode)}>
-                  <SelectTrigger id="pj-cap-access" className="bg-bg-surface">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {pickedModes.map((m) => (
-                      <SelectItem key={m} value={m}>
-                        {ACCESS_MODE_LABELS[m]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
+            {!pickedIsModel && (
+              <Button variant="secondary" onClick={submit} disabled={!picked}>
+                <Plus /> Add to project
+              </Button>
             )}
-            <Button variant="secondary" onClick={submit} disabled={!picked}>
-              <Plus /> Add to project
-            </Button>
+          </div>
+          {picked && pickedIsModel && (
+            <>
+              <PlatformModelPicker item={picked} tenant={tenant} classification={project.dataClassification} value={placement} onChange={setPlacement} />
+              <div>
+                <Button variant="secondary" onClick={submit} disabled={!placement}>
+                  <Plus /> Add to project
+                </Button>
+              </div>
+            </>
+          )}
           </div>
         )}
       </section>

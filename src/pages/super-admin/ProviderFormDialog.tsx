@@ -5,7 +5,7 @@ import type { AiService, InfraProvider, InfraProviderType } from '@/data/types'
 import { useAppStore, type InfraProviderInput, type RateCardInput } from '@/store/useAppStore'
 import { useVisibleTenants } from '@/store/selectors'
 import { environmentsInUse, latestRateCard } from '@/lib/cost'
-import { AI_SERVICE_LABELS, PROVIDER_TYPE_LABELS } from '@/lib/providers'
+import { AI_SERVICE_LABELS, isModelOnly, PROVIDER_TYPE_LABELS } from '@/lib/providers'
 import { formatDate, formatInt } from '@/lib/format'
 import { uid } from '@/lib/utils'
 import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog'
@@ -14,7 +14,7 @@ import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Checkbox, RadioGroup, RadioGroupItem } from '@/components/ui/controls'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { FormSection, InstanceTypesEditor, OtherRatesEditor, ProviderMark, RateCardInfoEditor, RegionsEditor } from './ProviderEditors'
+import { FormSection, InstanceTypesEditor, ModelPricesEditor, OtherRatesEditor, ProviderMark, RateCardInfoEditor, RegionsEditor } from './ProviderEditors'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
@@ -27,6 +27,7 @@ const blankCard = (): RateCardInput => ({
   platformFeePct: 0,
   ngoDiscountPct: 0,
   gstPct: 18,
+  modelPrices: [],
 })
 
 const blankProvider = (): InfraProviderInput => ({
@@ -58,6 +59,7 @@ export function ProviderFormDialog({
   const updateInfraProvider = useAppStore((s) => s.updateInfraProvider)
   const environments = useAppStore((s) => s.environments)
   const tenants = useVisibleTenants(true)
+  const catalog = useAppStore((s) => s.catalog)
   const fileRef = useRef<HTMLInputElement>(null)
   const [p, setP] = useState<InfraProviderInput>(blankProvider)
   const [card, setCard] = useState<RateCardInput>(blankCard)
@@ -103,7 +105,8 @@ export function ProviderFormDialog({
       toast.success(`Saved ${p.name.trim()}.`)
       onSaved?.(editing.id)
     } else {
-      const res = createInfraProvider(p, card)
+      const modelOnly = isModelOnly({ type: p.type })
+      const res = createInfraProvider(modelOnly ? { ...p, maxGpus: 0 } : p, modelOnly ? { ...card, instanceTypes: [], storageRate: 0, egressRate: 0 } : card)
       if (!res.ok) return setError(res.error)
       toast.success(`Added ${p.name.trim()}.`, { description: `Rate card v1 takes effect from ${formatDate(card.effectiveFrom)}.` })
       onSaved?.(res.id!)
@@ -112,6 +115,8 @@ export function ProviderFormDialog({
   }
 
   const current = editing ? latestRateCard(editing) : undefined
+  const modelOnly = isModelOnly({ type: p.type })
+  const servesModels = modelOnly || p.aiServices.length > 0
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -181,7 +186,7 @@ export function ProviderFormDialog({
             <FormSection n={3} title="Instance types, other rates and rate card" used="the Compute step and the cost engine">
               <div className="rounded-card border border-border bg-bg-subtle p-4 text-sm">
                 <p className="text-text-primary">
-                  Rate card v{current.version} · effective from {formatDate(current.effectiveFrom)} · {current.instanceTypes.length} instance types · storage ₹{current.storageRate}/GB-month · egress ₹{current.egressRate}/GB · fee {current.platformFeePct}% · NGO discount{' '}
+                  Rate card v{current.version} · effective from {formatDate(current.effectiveFrom)} · {current.instanceTypes.length} instance types · {current.modelPrices.length} model prices · storage ₹{current.storageRate}/GB-month · egress ₹{current.egressRate}/GB · fee {current.platformFeePct}% · NGO discount{' '}
                   {current.ngoDiscountPct}% · GST {current.gstPct}%
                 </p>
                 <p className="mt-1 text-caption text-text-secondary">Rate source: {current.source}</p>
@@ -203,19 +208,22 @@ export function ProviderFormDialog({
             </FormSection>
           ) : (
             <>
-              <FormSection n={3} title="Instance types" used="the Compute step in the wizard and the cost engine">
-                <InstanceTypesEditor instances={card.instanceTypes} onChange={(instanceTypes) => setCard({ ...card, instanceTypes })} />
+              {!modelOnly && (
+                <FormSection n={3} title="Instance types" used="the Compute step in the wizard and the cost engine">
+                  <InstanceTypesEditor instances={card.instanceTypes} onChange={(instanceTypes) => setCard({ ...card, instanceTypes })} />
+                </FormSection>
+              )}
+              <FormSection n={4} title={modelOnly ? 'Fees and tax' : 'Other rates'} used="the cost engine, for infrastructure and model usage">
+                <OtherRatesEditor card={card} onChange={setCard} feesOnly={modelOnly} />
               </FormSection>
-              <FormSection n={4} title="Other rates" used="the cost engine">
-                <OtherRatesEditor card={card} onChange={setCard} />
-              </FormSection>
+
               <FormSection n={5} title="Rate card info" used="rate history. Past costs stay on the old rate">
                 <RateCardInfoEditor card={card} onChange={setCard} />
               </FormSection>
             </>
           )}
 
-          <FormSection n={6} title="AI model services" used="model access modes when adding a model to a project">
+          <FormSection n={6} title="AI model services" used="platform models: which providers can serve models to projects">
             <div className="flex flex-wrap gap-x-6 gap-y-2">
               {(Object.keys(AI_SERVICE_LABELS) as AiService[]).map((k) => (
                 <label key={k} className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">
@@ -227,13 +235,21 @@ export function ProviderFormDialog({
             <p className="-mt-2 text-caption text-text-muted">Optional</p>
           </FormSection>
 
-          <FormSection n={7} title="Capacity" used="approval screens warn when a request needs more GPUs than remain">
-            <Field label="Maximum GPUs available to the platform" htmlFor="pf-gpus" required>
-              <Input id="pf-gpus" type="number" min={0} value={p.maxGpus} onChange={(e) => up({ maxGpus: Math.max(0, Number(e.target.value) || 0) })} className="sm:max-w-[160px]" />
-            </Field>
-          </FormSection>
+          {!editing && servesModels && (
+            <FormSection n={7} title="Model rate card" used="the provider choice when people add a platform model, and model cost reports">
+              <ModelPricesEditor prices={card.modelPrices} onChange={(modelPrices) => setCard({ ...card, modelPrices })} regions={p.regions} catalog={catalog} />
+            </FormSection>
+          )}
 
-          <FormSection n={8} title="Access" used="tenant provider access and the request wizard">
+          {!modelOnly && (
+            <FormSection n={8} title="Capacity" used="approval screens warn when a request needs more GPUs than remain">
+              <Field label="Maximum GPUs available to the platform" htmlFor="pf-gpus" required>
+                <Input id="pf-gpus" type="number" min={0} value={p.maxGpus} onChange={(e) => up({ maxGpus: Math.max(0, Number(e.target.value) || 0) })} className="sm:max-w-[160px]" />
+              </Field>
+            </FormSection>
+          )}
+
+          <FormSection n={9} title="Access" used="tenant provider access and the request wizard">
             <RadioGroup value={p.allowedTenants === 'all' ? 'all' : 'selected'} onValueChange={(v) => up({ allowedTenants: v === 'all' ? 'all' : [] })} className="gap-2" aria-label="Allowed tenants">
               <label className="flex cursor-pointer items-center gap-3 text-sm">
                 <RadioGroupItem value="all" /> All tenants
@@ -279,8 +295,11 @@ export function ProviderFormDialog({
   )
 }
 
-export function PublishRateCardDialog({ open, onOpenChange, provider }: { open: boolean; onOpenChange: (o: boolean) => void; provider: InfraProvider }) {
+export function PublishRateCardDialog({ open, onOpenChange, provider, modelsFirst }: { open: boolean; onOpenChange: (o: boolean) => void; provider: InfraProvider; modelsFirst?: boolean }) {
   const publish = useAppStore((s) => s.publishRateCard)
+  const catalog = useAppStore((s) => s.catalog)
+  const modelOnly = isModelOnly(provider)
+  const servesModels = modelOnly || provider.aiServices.length > 0
   const latest = latestRateCard(provider)!
   const minDate = (() => {
     const after = new Date(latest.effectiveFrom)
@@ -298,6 +317,12 @@ export function PublishRateCardDialog({ open, onOpenChange, provider }: { open: 
     setError(null)
   }, [open])
 
+  const modelSection = (n: number) => (
+    <FormSection n={n} title="Model rate card" used="the provider choice when people add a platform model, and model cost reports">
+      <ModelPricesEditor prices={card.modelPrices} onChange={(modelPrices) => { setCard({ ...card, modelPrices }); setError(null) }} regions={provider.regions} catalog={catalog} />
+    </FormSection>
+  )
+
   const save = () => {
     const res = publish(provider.id, card)
     if (!res.ok) return setError(res.error)
@@ -313,12 +338,16 @@ export function PublishRateCardDialog({ open, onOpenChange, provider }: { open: 
           <FormSection n={1} title="Rate card info" used="rate history. Past costs stay on the old rate">
             <RateCardInfoEditor card={card} onChange={(c) => { setCard(c); setError(null) }} minDate={minDate} />
           </FormSection>
-          <FormSection n={2} title="Instance types" used="the Compute step in the wizard and the cost engine">
-            <InstanceTypesEditor instances={card.instanceTypes} onChange={(instanceTypes) => { setCard({ ...card, instanceTypes }); setError(null) }} />
+          {servesModels && modelsFirst && modelSection(2)}
+          {!modelOnly && (
+            <FormSection n={modelsFirst ? 3 : 2} title="Instance types" used="the Compute step in the wizard and the cost engine">
+              <InstanceTypesEditor instances={card.instanceTypes} onChange={(instanceTypes) => { setCard({ ...card, instanceTypes }); setError(null) }} />
+            </FormSection>
+          )}
+          <FormSection n={modelOnly ? (modelsFirst ? 3 : 2) : modelsFirst ? 4 : 3} title={modelOnly ? 'Fees and tax' : 'Other rates'} used="the cost engine, for infrastructure and model usage">
+            <OtherRatesEditor card={card} onChange={(c) => { setCard(c); setError(null) }} feesOnly={modelOnly} />
           </FormSection>
-          <FormSection n={3} title="Other rates" used="the cost engine">
-            <OtherRatesEditor card={card} onChange={(c) => { setCard(c); setError(null) }} />
-          </FormSection>
+          {servesModels && !modelsFirst && modelSection(modelOnly ? 3 : 4)}
         </DialogBody>
         {error && (
           <p className="mx-6 mb-2 rounded-control bg-status-rejected-bg px-3 py-2 text-caption text-status-rejected-fg" role="alert">

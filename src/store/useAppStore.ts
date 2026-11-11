@@ -2,13 +2,16 @@ import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import { createSeed, endpointFor, GPU_TIER, rateCardVersionAt, SAMPLE_PASSWORD, SEED_VERSION, type SeedState } from '@/data/seed'
 import type {
-  AccessMode,
   AdminCreation,
   ActorRole,
   AuditEntity,
   CatalogCategory,
   CatalogItem,
   CatalogStatus,
+  CredentialKind,
+  DataClassification,
+  ModelBudget,
+  ModelPlacement,
   Dataset,
   Deployment,
   DeploymentConfig,
@@ -47,7 +50,9 @@ import { addsInfrastructure, diffSpecs } from '@/lib/spec'
 import { alertLevel, currentPoint, utilisation } from '@/lib/metrics'
 import { envPath, itemPath, projectPath, providerRequestPath, reportPath, requestPath, suggestionPath } from '@/lib/paths'
 import { seedQaRuns } from '@/lib/qa'
-import { ACCESS_MODE_LABELS, residencyProblem } from '@/lib/providers'
+import { isModelOnly, residencyProblem } from '@/lib/providers'
+import { isPlatformModel, modelUsageBlocked, monthKey, platformModelOptions, tenantModelSpend } from '@/lib/modelCost'
+import { formatINR as formatCurrency } from '@/lib/format'
 import { environmentsInUse } from '@/lib/cost'
 import { parseGithubUrl } from '@/lib/suggestions'
 import { formatDate, formatDuration, formatInt } from '@/lib/format'
@@ -90,6 +95,7 @@ export interface ProjectInput {
   memberIds: string[]
   memberAccess: Record<string, ProjectAccess>
   limits?: Quota
+  dataClassification?: DataClassification
 }
 
 const PROJECT_FIELD_LABELS: Partial<Record<keyof ProjectInput | 'status', string>> = {
@@ -103,6 +109,7 @@ const PROJECT_FIELD_LABELS: Partial<Record<keyof ProjectInput | 'status', string
   memberIds: 'members',
   memberAccess: 'member access',
   limits: 'limits',
+  dataClassification: 'data classification',
   status: 'status',
 }
 const PROVISIONING_MS = 5000
@@ -239,7 +246,8 @@ interface AppState extends SeedState {
   // projects
   createProject: (p: ProjectInput) => Result
   updateProject: (id: string, patch: Partial<ProjectInput & Pick<Project, 'status'>>) => Result
-  addProjectCapability: (projectId: string, itemId: string, access?: AccessMode, version?: string) => Result
+  /** Platform models (llm, asr, embedding) need a placement: the provider and region that serve them. */
+  addProjectCapability: (projectId: string, itemId: string, placement?: ModelPlacement, version?: string) => Result
   removeProjectCapability: (projectId: string, itemId: string) => Result
   setProjectCapabilityVersion: (projectId: string, itemId: string, version: string) => Result
 
@@ -284,6 +292,14 @@ interface AppState extends SeedState {
   updateInfraProvider: (id: string, p: InfraProviderInput) => Result
   setInfraProviderStatus: (id: string, status: InfraProvider['status']) => Result
   publishRateCard: (id: string, card: RateCardInput) => Result
+  /** Super Admin: save the provider's model service credential. Only a masked value is kept. */
+  setModelServiceKey: (id: string, input: { credentialKind: CredentialKind; key: string; endpoint?: string }) => Result
+  revokeModelServiceKey: (id: string) => Result
+  testModelServiceKey: (id: string) => Promise<Result>
+  /** Tenant Admin (own tenant) or Super Admin: monthly model budget and what happens at 100%. */
+  setModelBudget: (tenantId: string, patch: Pick<ModelBudget, 'monthly' | 'onExceed'>) => Result
+  /** Sends 80% and 100% model budget alerts once per month. */
+  checkModelBudgets: () => void
   createDataset: (input: Pick<Dataset, 'name' | 'language' | 'rows'>) => Result
   createTestConfig: (spec: TestConfigSpec) => Result
   /** Saves the change as a new version; earlier versions stay. */
@@ -334,8 +350,13 @@ export const useAppStore = create<AppState>()(
         if (input.allowedTenants !== 'all' && !input.allowedTenants.length) return 'Pick at least one tenant, or allow all tenants.'
         return null
       }
-      const rateCardProblem = (c: RateCardInput, latest: RateCard | null): string | null => {
-        if (!c.instanceTypes.length) return 'Add at least one instance type.'
+      const rateCardProblem = (c: RateCardInput, latest: RateCard | null, modelOnly = false): string | null => {
+        if (!modelOnly && !c.instanceTypes.length) return 'Add at least one instance type.'
+        if (modelOnly && !c.modelPrices.length) return 'Add at least one model price.'
+        if (c.modelPrices.some((m) => !m.modelId || !m.providerModelId.trim())) return 'Each model price needs a model and its ID at this provider.'
+        if (c.modelPrices.some((m) => !m.regionIds.length)) return 'Each model price needs at least one region.'
+        if (c.modelPrices.some((m) => [m.inputPer1M, m.outputPer1M, m.perAudioMinute ?? 0].some((n) => !Number.isFinite(n) || n < 0))) return 'Model prices must be zero or more.'
+        if (new Set(c.modelPrices.map((m) => m.modelId)).size !== c.modelPrices.length) return 'Each model can appear only once on a rate card.'
         if (c.instanceTypes.some((i) => !i.name.trim() || i.vcpu < 1 || i.ramGb < 1 || i.hourlyRate < 0 || (i.gpuType !== 'none' && i.gpuCount < 1))) return 'Each instance type needs a name, vCPU, RAM, an hourly rate and, for GPU types, a GPU count.'
         if ([c.storageRate, c.egressRate, c.platformFeePct, c.ngoDiscountPct, c.gstPct].some((n) => !Number.isFinite(n) || n < 0)) return 'Rates and percentages must be zero or more.'
         if (c.platformFeePct > 100 || c.ngoDiscountPct > 100 || c.gstPct > 100) return 'Percentages must be 100 or less.'
@@ -1451,6 +1472,8 @@ export const useAppStore = create<AppState>()(
             limits: input.limits ?? { vcpu: 16, ramGb: 64, gpus: 0, storageGb: Math.min(200, tenant?.quota.storageGb ?? 200) },
             capabilityIds: [],
             capabilityVersions: {},
+            dataClassification: input.dataClassification ?? 'internal',
+            platformModels: {},
             createdAt: now(),
             updatedAt: now(),
             updatedById: user.id,
@@ -1493,13 +1516,24 @@ export const useAppStore = create<AppState>()(
           return ok(id)
         },
 
-        addProjectCapability: (projectId, itemId, access, version) => {
+        addProjectCapability: (projectId, itemId, placement, version) => {
           const user = me()
           const p = get().projects.find((x) => x.id === projectId)
           const item = get().catalog.find((c) => c.id === itemId)
           if (!user || !p || !item) return fail('Project not found.')
           if (!canEditProject(user, p)) return fail('Only the project owner, its editors or an admin can add capabilities.')
           if (p.capabilityIds.includes(itemId)) return fail(`${item.name} is already in this project.`)
+          const tenant = get().tenants.find((t) => t.id === p.tenantId)
+          let via = ''
+          if (isPlatformModel(item)) {
+            if (!placement) return fail(`Choose the provider that will serve ${item.name}.`)
+            const option = platformModelOptions(itemId, get().infraProviders, tenant, p.dataClassification).find((o) => o.provider.id === placement.providerId)
+            if (!option) return fail(`${providerName(placement.providerId)} can’t serve ${item.name} for this project. Choose another provider.`)
+            if (!option.regions.some((r) => r.id === placement.regionId)) return fail('That region isn’t allowed for this project’s data. Choose a region in India.')
+            if (modelUsageBlocked(tenant, get().modelUsage, { providers: get().infraProviders, tenants: get().tenants }))
+              return fail('Your organisation’s model budget for this month is used up. Ask your Tenant Admin to raise it.')
+            via = ` through ${option.provider.name} (${option.regions.find((r) => r.id === placement.regionId)?.name})`
+          }
           const v = version && item.versions.includes(version) ? version : item.version
           set((s) => ({
             projects: s.projects.map((x) =>
@@ -1508,14 +1542,14 @@ export const useAppStore = create<AppState>()(
                     ...x,
                     capabilityIds: [...x.capabilityIds, itemId],
                     capabilityVersions: v !== item.version ? { ...x.capabilityVersions, [itemId]: v } : x.capabilityVersions,
-                    ...(access ? { modelAccess: { ...x.modelAccess, [itemId]: access } } : {}),
+                    ...(placement && isPlatformModel(item) ? { platformModels: { ...x.platformModels, [itemId]: placement } } : {}),
                     updatedAt: now(),
                     updatedById: user.id,
                   }
                 : x,
             ),
           }))
-          audit('project.capability_added', 'project', projectId, `${user.name} added ${item.name} ${v} to “${p.name}”${access && access !== 'direct' ? ` (${ACCESS_MODE_LABELS[access].toLowerCase()})` : ''}`, p.tenantId)
+          audit('project.capability_added', 'project', projectId, `${user.name} added ${item.name} ${v} to “${p.name}”${via}`, p.tenantId)
           return ok(projectId)
         },
 
@@ -1526,8 +1560,8 @@ export const useAppStore = create<AppState>()(
           if (!user || !p || !item) return fail('Project not found.')
           if (!canEditProject(user, p)) return fail('Only the project owner, its editors or an admin can remove capabilities.')
           const { [itemId]: _v, ...versions } = p.capabilityVersions
-          const { [itemId]: _a, ...access } = p.modelAccess ?? {}
-          set((s) => ({ projects: s.projects.map((x) => (x.id === projectId ? { ...x, capabilityIds: x.capabilityIds.filter((c) => c !== itemId), capabilityVersions: versions, modelAccess: access, updatedAt: now(), updatedById: user.id } : x)) }))
+          const { [itemId]: _a, ...platformModels } = p.platformModels
+          set((s) => ({ projects: s.projects.map((x) => (x.id === projectId ? { ...x, capabilityIds: x.capabilityIds.filter((c) => c !== itemId), capabilityVersions: versions, platformModels, updatedAt: now(), updatedById: user.id } : x)) }))
           audit('project.capability_removed', 'project', projectId, `${user.name} removed ${item.name} from “${p.name}”`, p.tenantId)
           return ok(projectId)
         },
@@ -1565,7 +1599,7 @@ export const useAppStore = create<AppState>()(
             requestId: null,
             status: 'approved',
           }))
-          set((s) => ({ tenants: [...s.tenants, { ...t, id, approvedProviders, enabledItemIds: enabled, connectedKeys: [], status: 'active', isSystem: false, createdAt: now() }] }))
+          set((s) => ({ tenants: [...s.tenants, { ...t, id, approvedProviders, enabledItemIds: enabled, connectedKeys: [], modelBudget: { monthly: 10000, onExceed: 'notify', alerted: [] }, status: 'active', isSystem: false, createdAt: now() }] }))
           audit('tenant.created', 'tenant', id, `${user.name} created the tenant ${t.name} with ${usable.map((x) => providerName(x.providerId)).join(', ')}`, id)
           return id
         },
@@ -2051,7 +2085,7 @@ export const useAppStore = create<AppState>()(
         createInfraProvider: (input, cardInput) => {
           const user = me()
           if (!user || user.role !== 'super_admin') return fail('Only the Super Admin can add providers.')
-          const problem = providerProblem(input) ?? rateCardProblem(cardInput, null)
+          const problem = providerProblem(input) ?? rateCardProblem(cardInput, null, isModelOnly({ type: input.type }))
           if (problem) return fail(problem)
           const id = uid('ip')
           const provider: InfraProvider = {
@@ -2115,7 +2149,7 @@ export const useAppStore = create<AppState>()(
           const p = get().infraProviders.find((x) => x.id === id)
           if (!user || user.role !== 'super_admin' || !p) return fail('Provider not found.')
           const latest = p.rateCards[p.rateCards.length - 1]!
-          const problem = rateCardProblem(cardInput, latest)
+          const problem = rateCardProblem(cardInput, latest, isModelOnly(p))
           if (problem) return fail(problem)
           const version = latest.version + 1
           set((s) => ({
@@ -2125,6 +2159,92 @@ export const useAppStore = create<AppState>()(
           const tenantIds = get().tenants.filter((t) => !t.isSystem && (p.allowedTenants === 'all' || p.allowedTenants.includes(t.id))).map((t) => t.id)
           notify(tenantIds.flatMap(tenantAdmins), `${p.name} has new rates from ${cardInput.effectiveFrom}. Estimates for its environments change from that date; past months stay on the old rates.`, null)
           return ok(id)
+        },
+
+        setModelServiceKey: (id, input) => {
+          const user = me()
+          const p = get().infraProviders.find((x) => x.id === id)
+          if (!user || user.role !== 'super_admin' || !p) return fail('Provider not found.')
+          const key = input.key.trim()
+          if (key.length < 12) return fail('Paste the full credential. It looks too short.')
+          if (input.credentialKind === 'API key + endpoint' && !/^https:\/\/\S+$/.test(input.endpoint?.trim() ?? '')) return fail('Enter the endpoint URL, starting with https://')
+          // Only the masked value is kept; the credential itself is never stored or shown again.
+          const maskedKey = `${key.slice(0, Math.min(6, Math.floor(key.length / 4)))}••••••••${key.slice(-4)}`
+          const replaced = !!p.modelService && p.modelService.status === 'connected'
+          set((s) => ({
+            infraProviders: s.infraProviders.map((x) =>
+              x.id === id ? { ...x, modelService: { credentialKind: input.credentialKind, maskedKey, ...(input.endpoint?.trim() ? { endpoint: input.endpoint.trim() } : {}), status: 'connected', updatedAt: now() } } : x,
+            ),
+          }))
+          audit('infra_provider.model_key_saved', 'infra_provider', id, `${user.name} ${replaced ? 'replaced' : 'connected'} the model service credential for ${p.name}`, null)
+          return ok(id)
+        },
+
+        revokeModelServiceKey: (id) => {
+          const user = me()
+          const p = get().infraProviders.find((x) => x.id === id)
+          if (!user || user.role !== 'super_admin' || !p?.modelService) return fail('Provider not found.')
+          set((s) => ({ infraProviders: s.infraProviders.map((x) => (x.id === id && x.modelService ? { ...x, modelService: { ...x.modelService, status: 'revoked', updatedAt: now() } } : x)) }))
+          audit('infra_provider.model_key_revoked', 'infra_provider', id, `${user.name} revoked the model service credential for ${p.name}`, null)
+          const affected = get().projects.filter((pr) => Object.values(pr.platformModels).some((m) => m.providerId === id))
+          const tenantIds = [...new Set(affected.map((pr) => pr.tenantId))]
+          notify(tenantIds.flatMap(tenantAdmins), `Platform models served by ${p.name} are paused: its model service credential was revoked. Projects using it need another provider.`, null)
+          return ok(id)
+        },
+
+        testModelServiceKey: async (id) => {
+          const user = me()
+          const p = get().infraProviders.find((x) => x.id === id)
+          if (!user || user.role !== 'super_admin' || !p?.modelService) return fail('Provider not found.')
+          await new Promise((r) => setTimeout(r, 900))
+          const okNow = p.modelService.status === 'connected'
+          const latency = okNow ? 120 + Math.round(Math.random() * 600) : 0
+          set((s) => ({
+            infraProviders: s.infraProviders.map((x) =>
+              x.id === id && x.modelService ? { ...x, modelService: { ...x.modelService, lastTestedAt: now(), lastTestOk: okNow, lastTestLatencyMs: latency } } : x,
+            ),
+          }))
+          return okNow ? ok(id) : fail(`The credential for ${p.name} is revoked. Replace it, then test again.`)
+        },
+
+        setModelBudget: (tenantId, patch) => {
+          const user = me()
+          const t = get().tenants.find((x) => x.id === tenantId)
+          if (!user || !t) return fail('Organisation not found.')
+          if (!(user.role === 'super_admin' || (user.role === 'tenant_admin' && user.tenantId === tenantId))) return fail('Only your Tenant Admin can change the model budget.')
+          if (!Number.isFinite(patch.monthly) || patch.monthly < 0) return fail('Enter a monthly budget of ₹0 or more.')
+          const monthly = Math.round(patch.monthly)
+          // A raised budget re-arms the alerts for levels no longer reached.
+          const pct = monthly > 0 ? (tenantModelSpend({ ...t, modelBudget: { ...t.modelBudget, monthly } }, get().modelUsage, { providers: get().infraProviders, tenants: get().tenants }).pct) : 0
+          const alerted = t.modelBudget.alerted.filter((a) => a.month === monthKey() && pct >= a.level)
+          set((s) => ({ tenants: s.tenants.map((x) => (x.id === tenantId ? { ...x, modelBudget: { monthly, onExceed: patch.onExceed, alerted } } : x)) }))
+          audit('tenant.model_budget', 'tenant', tenantId, `${user.name} set ${t.name}’s model budget to ${formatCurrency(monthly)} a month (${patch.onExceed === 'block' ? 'block new platform model usage' : 'notify only'} at 100%)`, tenantId)
+          get().checkModelBudgets()
+          return ok(tenantId)
+        },
+
+        checkModelBudgets: () => {
+          const ctx = { providers: get().infraProviders, tenants: get().tenants }
+          const month = monthKey()
+          for (const t of get().tenants) {
+            if (t.isSystem || !t.modelBudget || t.modelBudget.monthly <= 0) continue
+            const spend = tenantModelSpend(t, get().modelUsage, ctx)
+            const sent = t.modelBudget.alerted.filter((a) => a.month === month)
+            const levels = ([80, 100] as const).filter((l) => spend.pct >= l && !sent.some((a) => a.level === l))
+            if (!levels.length) continue
+            const level = levels[levels.length - 1]!
+            const text =
+              level === 100
+                ? `${t.name} has used ${Math.round(spend.pct)}% of this month’s model budget (${formatCurrency(spend.mtd)} of ${formatCurrency(t.modelBudget.monthly)}). ${t.modelBudget.onExceed === 'block' ? 'New platform models are blocked until the budget is raised.' : 'Usage continues; raise the budget or review Model Costs.'}`
+                : `${t.name} has used ${Math.round(spend.pct)}% of this month’s model budget (${formatCurrency(spend.mtd)} of ${formatCurrency(t.modelBudget.monthly)}). Projected month-end: ${formatCurrency(spend.projected)}.`
+            // Budget alerts reach every Tenant Admin, including one who is signed in.
+            const recipients = tenantAdmins(t.id)
+            set((s) => ({
+              tenants: s.tenants.map((x) => (x.id === t.id ? { ...x, modelBudget: { ...x.modelBudget, alerted: [...x.modelBudget.alerted, ...levels.map((l) => ({ month, level: l }))] } } : x)),
+              notifications: [...recipients.map((userId) => ({ id: uid('n'), userId, at: now(), text, link: '/tenant-admin/quotas#model-costs', read: false })), ...s.notifications],
+            }))
+            audit('tenant.model_budget_alert', 'tenant', t.id, `${t.name} reached ${level}% of its monthly model budget`, t.id, undefined, true)
+          }
         },
 
         /* ---------- QA ---------- */
@@ -2296,6 +2416,7 @@ export const useAppStore = create<AppState>()(
         quotaRequests: s.quotaRequests,
         testRuns: s.testRuns,
         infraProviders: s.infraProviders,
+        modelUsage: s.modelUsage,
         providerRequests: s.providerRequests,
         datasets: s.datasets,
         testConfigs: s.testConfigs,

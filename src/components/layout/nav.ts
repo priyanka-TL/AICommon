@@ -22,7 +22,7 @@ import {
   Server,
   Settings,
   Users,
-} from 'lucide-react'
+ IndianRupee } from 'lucide-react'
 import type { Role } from '@/data/types'
 
 export type NavBadge = 'tenantReviews' | 'escalated'
@@ -66,6 +66,7 @@ export const NAV: Record<Role, NavSection[]> = {
       label: 'Oversight',
       items: [
         { to: '/super-admin/monitoring', label: 'Monitoring', icon: Activity },
+        { to: '/super-admin/model-costs', label: 'Model costs', icon: IndianRupee },
         { to: '/super-admin/audit', label: 'Audit log', icon: ScrollText },
       ],
     },
@@ -167,6 +168,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   models: 'AI Models',
   capabilities: 'AI Capabilities',
   quotas: 'Quotas & Usage',
+  'model-costs': 'Model costs',
   settings: 'Settings',
   new: 'New environment',
   qa: 'QA',

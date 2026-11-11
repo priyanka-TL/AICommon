@@ -84,6 +84,18 @@ export interface CostContext {
   at?: string | Date
 }
 
+/**
+ * The one place fee, discount and GST are applied: + platform fee %, − NGO discount % (NGO tenants only), + GST %.
+ * `round` rounds each step to whole credits (environment estimates); model cost passes `false` and rounds on display.
+ */
+export function rateAdjustments(subtotal: number, card: RateCard | undefined, tenant: Pick<Tenant, 'orgType'> | undefined, round = true) {
+  const r = round ? Math.round : (n: number) => n
+  const platformFee = r((subtotal * (card?.platformFeePct ?? 0)) / 100)
+  const ngoDiscount = tenant?.orgType === 'NGO' ? r(((subtotal + platformFee) * (card?.ngoDiscountPct ?? 0)) / 100) : 0
+  const gst = r(((subtotal + platformFee - ngoDiscount) * (card?.gstPct ?? 0)) / 100)
+  return { platformFee, ngoDiscount, gst, total: subtotal + platformFee - ngoDiscount + gst }
+}
+
 /** Applies fee, discount and GST to the four base lines. */
 export function applyRates(base: Pick<CostLines, 'compute' | 'storage' | 'network' | 'models'>, card: RateCard | undefined, tenant: Tenant | undefined): CostLines {
   const compute = Math.round(base.compute)
@@ -91,10 +103,7 @@ export function applyRates(base: Pick<CostLines, 'compute' | 'storage' | 'networ
   const network = Math.round(base.network)
   const models = Math.round(base.models)
   const subtotal = compute + storage + network + models
-  const platformFee = Math.round((subtotal * (card?.platformFeePct ?? 0)) / 100)
-  const ngoDiscount = tenant?.orgType === 'NGO' ? Math.round(((subtotal + platformFee) * (card?.ngoDiscountPct ?? 0)) / 100) : 0
-  const gst = Math.round(((subtotal + platformFee - ngoDiscount) * (card?.gstPct ?? 0)) / 100)
-  return { compute, storage, network, models, subtotal, platformFee, ngoDiscount, gst, total: subtotal + platformFee - ngoDiscount + gst }
+  return { compute, storage, network, models, subtotal, ...rateAdjustments(subtotal, card, tenant) }
 }
 
 /** Finds the instance on the card; if the card dropped it, uses the most recent card that still lists it. */

@@ -1,39 +1,24 @@
-import type { ProviderApproval, ProviderWorkload, AccessMode, AiService, CatalogItem, ComputeTier, EnvSpec, GpuType, InfraProvider, InfraProviderType, InstanceType, Region } from '@/data/types'
+import type { ProviderApproval, ProviderWorkload, AiService, ComputeTier, EnvSpec, GpuType, InfraProvider, InfraProviderType, InstanceType, Region } from '@/data/types'
 import { latestRateCard, rateCardAt } from './cost'
 
 export const PROVIDER_TYPE_LABELS: Record<InfraProviderType, string> = {
   public_cloud: 'Public cloud',
   indian_cloud: 'Indian cloud',
   on_premise: 'On-premise',
+  model_gateway: 'Model gateway',
 }
+
+/** Providers that only serve models (no compute): kept out of environment placement. */
+export const isModelOnly = (p: Pick<InfraProvider, 'type'> & { rateCards?: InfraProvider['rateCards'] }) =>
+  p.type === 'model_gateway' || (!!p.rateCards && p.rateCards.length > 0 && p.rateCards.every((c) => !c.instanceTypes.length))
 
 export const AI_SERVICE_LABELS: Record<AiService, string> = {
   bedrock: 'AWS Bedrock',
   azure_openai: 'Azure OpenAI',
   vertex: 'Google Vertex AI',
+  onprem_models: 'On-premise model serving',
+  openrouter: 'OpenRouter',
 }
-
-export const ACCESS_MODE_LABELS: Record<AccessMode, string> = {
-  direct: 'Direct from the model provider',
-  openrouter: 'Through OpenRouter',
-  bedrock: 'Through AWS Bedrock',
-  azure_openai: 'Through Azure OpenAI',
-  vertex: 'Through Google Vertex AI',
-}
-
-/** Which cloud model services offer each model. */
-const MODEL_SERVICES: Record<string, AiService[]> = {
-  'llm-gpt': ['azure_openai'],
-  'llm-gpt4o-mini': ['azure_openai'],
-  'llm-claude': ['bedrock', 'vertex'],
-  'llm-gemini': ['vertex'],
-  'llm-llama': ['bedrock', 'vertex', 'azure_openai'],
-  'llm-mistral': ['bedrock', 'vertex', 'azure_openai'],
-  'llm-gemma': ['vertex'],
-}
-
-/** Models OpenRouter can route to. */
-const OPENROUTER_MODELS = new Set(['llm-gpt', 'llm-gpt4o-mini', 'llm-claude', 'llm-gemini', 'llm-llama', 'llm-mistral', 'llm-gemma', 'llm-qwen'])
 
 export const GPU_TYPES: GpuType[] = ['T4', 'L4', 'A10', 'A100']
 export const GPU_TIER: Record<GpuType | 'none', ComputeTier> = { none: 'cpu', T4: 't4', L4: 'l4', A10: 'a10', A100: 'a100' }
@@ -51,8 +36,11 @@ export const approvalFor = (tenant: TenantRef | undefined, providerId: string) =
 /** Active providers the Super Admin may offer a tenant (provider-side access). */
 export const providersOfferedTo = (providers: InfraProvider[], tenantId: string) => providers.filter((p) => p.status === 'active' && isAllowedFor(p, tenantId))
 
-/** Providers a tenant can request environments on: active, offered to it, and approved for it. */
-export const providersFor = (providers: InfraProvider[], tenant: TenantRef) => providersOfferedTo(providers, tenant.id).filter((p) => !!approvalFor(tenant, p.id))
+/** Providers a tenant can request environments on: active, offered to it, approved for it, and offering compute. */
+export const providersFor = (providers: InfraProvider[], tenant: TenantRef) => approvedProviders(providers, tenant).filter((p) => !isModelOnly(p))
+
+/** Every provider approved for the tenant, including model-only ones (for platform models). */
+export const approvedProviders = (providers: InfraProvider[], tenant: TenantRef) => providersOfferedTo(providers, tenant.id).filter((p) => !!approvalFor(tenant, p.id))
 
 /** Personal and children's data may only use India-resident regions. With an approval, only its approved regions. */
 export const regionsFor = (p: InfraProvider | undefined, sensitive: boolean, approval?: ProviderApproval) =>
@@ -119,15 +107,6 @@ export function residencyProblem(spec: EnvSpec, providers: InfraProvider[]): str
   const india = regionsFor(p, true).map((r) => r.name)
   const kind = spec.dataClassification === 'children' ? 'Children’s' : 'Personal'
   return `${region.name} stores data outside India. ${kind} data must stay in India. ${india.length ? `Choose ${india.join(' or ')} on the Compute step.` : `${p.name} has no region in India, so choose another provider on the Compute step.`}`
-}
-
-/** Ways a project can reach a model, given the providers this tenant may use. */
-export function accessModesFor(model: CatalogItem, providers: InfraProvider[], tenant: TenantRef): AccessMode[] {
-  const modes: AccessMode[] = ['direct']
-  if (OPENROUTER_MODELS.has(model.id)) modes.push('openrouter')
-  const services = new Set(providersFor(providers, tenant).flatMap((p) => p.aiServices))
-  for (const s of MODEL_SERVICES[model.id] ?? []) if (services.has(s)) modes.push(s)
-  return modes
 }
 
 export const currentCard = latestRateCard

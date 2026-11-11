@@ -1,4 +1,5 @@
-import type { Project, ProjectAccess, ProjectType, Runtime, User } from '@/data/types'
+import type { DataClassification, Project, ProjectAccess, ProjectType, Runtime, User } from '@/data/types'
+import { DATA_CLASSES } from '@/lib/labels'
 import type { ProjectInput } from '@/store/useAppStore'
 import { RUNTIMES } from '@/lib/deploy'
 import { Field } from '@/components/ui/field'
@@ -28,6 +29,7 @@ export const emptyProjectInput = (): ProjectInput => ({
   defaultRuntimeVersion: '20',
   memberIds: [],
   memberAccess: {},
+  dataClassification: 'internal',
 })
 
 export const projectToInput = (p: Project): ProjectInput => ({
@@ -40,6 +42,7 @@ export const projectToInput = (p: Project): ProjectInput => ({
   defaultRuntimeVersion: p.defaultRuntimeVersion,
   memberIds: p.memberIds,
   memberAccess: p.memberAccess,
+  dataClassification: p.dataClassification,
 })
 
 /**
@@ -79,6 +82,28 @@ export function ProjectForm({
       </Field>
       <Field label="Description" htmlFor={`${idPrefix}-desc`}>
         <Textarea id={`${idPrefix}-desc`} value={value.description} onChange={(e) => set({ description: e.target.value })} className="min-h-[64px]" />
+      </Field>
+      <Field
+        label="Data classification"
+        htmlFor={`${idPrefix}-data`}
+        helper={
+          value.dataClassification === 'personal' || value.dataClassification === 'children'
+            ? 'Platform models for this project must run in India-resident regions.'
+            : (DATA_CLASSES.find((d) => d.value === (value.dataClassification ?? 'internal'))?.description ?? undefined)
+        }
+      >
+        <Select value={value.dataClassification ?? 'internal'} onValueChange={(v) => set({ dataClassification: v as DataClassification })} disabled={disabled}>
+          <SelectTrigger id={`${idPrefix}-data`} className="sm:max-w-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {DATA_CLASSES.map((d) => (
+              <SelectItem key={d.value} value={d.value}>
+                {d.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </Field>
       <div className="grid gap-4 sm:grid-cols-3">
         <Field label="Project type" htmlFor={`${idPrefix}-type`}>

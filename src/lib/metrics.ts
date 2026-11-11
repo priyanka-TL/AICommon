@@ -225,3 +225,9 @@ export function downloadText(filename: string, text: string, type = 'text/csv') 
   a.click()
   URL.revokeObjectURL(a.href)
 }
+
+/** CSV text from a header and rows; every cell is quoted so commas and quotes are safe. */
+export function rowsToCsv(head: string[], rows: (string | number)[][]) {
+  const cell = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`
+  return [head.map(cell).join(','), ...rows.map((r) => r.map(cell).join(','))].join('\n')
+}

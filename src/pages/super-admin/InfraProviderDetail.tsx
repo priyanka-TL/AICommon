@@ -7,7 +7,7 @@ import type { RateCard } from '@/data/types'
 import { useAppStore } from '@/store/useAppStore'
 import { useMonthToDate, lastMonths, sumLines } from '@/hooks/useSpend'
 import { environmentsInUse, latestRateCard, providerGpuUse, rateCardAt, spendBetween } from '@/lib/cost'
-import { AI_SERVICE_LABELS, indiaResidency, PROVIDER_TYPE_LABELS } from '@/lib/providers'
+import { AI_SERVICE_LABELS, indiaResidency, isModelOnly, PROVIDER_TYPE_LABELS } from '@/lib/providers'
 import { formatDate, formatDateTime, formatInt } from '@/lib/format'
 import { envPath } from '@/lib/paths'
 import { axisProps, CHART_COLORS, CHART_GRID } from '@/lib/chart'
@@ -24,6 +24,7 @@ import { Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHea
 import NotFound from '@/pages/NotFound'
 import { ProviderMark } from './ProviderEditors'
 import { ProviderFormDialog, PublishRateCardDialog } from './ProviderFormDialog'
+import { ProviderModelsTab } from './ProviderModelsTab'
 
 function RateCardView({ card, current }: { card: RateCard; current?: boolean }) {
   const users = useAppStore((s) => s.users)
@@ -100,6 +101,7 @@ export default function InfraProviderDetail() {
   const tab = params.get('tab') ?? 'overview'
   const [editOpen, setEditOpen] = useState(false)
   const [publishOpen, setPublishOpen] = useState(false)
+  const [publishModels, setPublishModels] = useState(false)
   const [disableOpen, setDisableOpen] = useState(false)
   const mtd = useMonthToDate()
   const months = useMemo(() => lastMonths(6), [])
@@ -126,6 +128,8 @@ export default function InfraProviderDetail() {
   const latest = latestRateCard(provider)!
   const upcoming = latest.version !== current?.version ? latest : undefined
   const mtdLines = sumLines(mtd.filter((r) => r.env.spec.providerId === provider.id))
+  const modelOnly = isModelOnly(provider)
+  const servesModels = modelOnly || provider.aiServices.length > 0
 
   return (
     <>
@@ -135,7 +139,11 @@ export default function InfraProviderDetail() {
       <PageHeader
         eyebrow={`${PROVIDER_TYPE_LABELS[provider.type]} · ${provider.code}`}
         title={provider.name}
-        description={`${provider.regions.length} regions · India residency: ${indiaResidency(provider)} · ${inUse.length} environments in use`}
+        description={
+          modelOnly
+            ? `${provider.regions.length} region${provider.regions.length === 1 ? '' : 's'} · India residency: ${indiaResidency(provider)} · serves models only`
+            : `${provider.regions.length} regions · India residency: ${indiaResidency(provider)} · ${inUse.length} environments in use`
+        }
         actions={
           <div className="flex flex-wrap gap-2">
             {provider.status === 'active' ? (
@@ -156,7 +164,12 @@ export default function InfraProviderDetail() {
             <Button variant="secondary" onClick={() => setEditOpen(true)}>
               <Pencil /> Edit
             </Button>
-            <Button onClick={() => setPublishOpen(true)}>
+            <Button
+              onClick={() => {
+                setPublishModels(modelOnly)
+                setPublishOpen(true)
+              }}
+            >
               <FileText /> Publish new rate card
             </Button>
           </div>
@@ -172,10 +185,23 @@ export default function InfraProviderDetail() {
       <Tabs value={tab} onValueChange={(v) => setParams({ tab: v }, { replace: true })}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="rates">Rate Card</TabsTrigger>
-          <TabsTrigger value="environments">Environments ({using.length})</TabsTrigger>
-          <TabsTrigger value="spend">Spend</TabsTrigger>
+          {servesModels && <TabsTrigger value="models">Models</TabsTrigger>}
+          {!modelOnly && <TabsTrigger value="rates">Rate Card</TabsTrigger>}
+          {!modelOnly && <TabsTrigger value="environments">Environments ({using.length})</TabsTrigger>}
+          {!modelOnly && <TabsTrigger value="spend">Spend</TabsTrigger>}
         </TabsList>
+
+        {servesModels && (
+          <TabsContent value="models">
+            <ProviderModelsTab
+              provider={provider}
+              onEditPrices={() => {
+                setPublishModels(true)
+                setPublishOpen(true)
+              }}
+            />
+          </TabsContent>
+        )}
 
         <TabsContent value="overview">
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -205,11 +231,13 @@ export default function InfraProviderDetail() {
               </div>
             </section>
             <div className="flex flex-col gap-6">
+              {!modelOnly && (
               <section className="card p-6">
                 <h2 className="mb-4 font-heading text-h3 text-text-primary">Capacity</h2>
                 <QuotaBar label="GPUs in use" used={gpuUsed} total={provider.maxGpus} unit="GPUs" />
                 <p className="mt-2 text-caption text-text-secondary">Approvals warn when a request needs more than the {Math.max(0, provider.maxGpus - gpuUsed)} GPUs left.</p>
               </section>
+              )}
               <section className="card p-6">
                 <h2 className="mb-3 font-heading text-h3 text-text-primary">AI model services</h2>
                 {provider.aiServices.length ? (
@@ -371,7 +399,7 @@ export default function InfraProviderDetail() {
       </Tabs>
 
       <ProviderFormDialog open={editOpen} onOpenChange={setEditOpen} editing={provider} onPublish={() => setPublishOpen(true)} />
-      <PublishRateCardDialog open={publishOpen} onOpenChange={setPublishOpen} provider={provider} />
+      <PublishRateCardDialog open={publishOpen} onOpenChange={setPublishOpen} provider={provider} modelsFirst={publishModels} />
 
       {inUse.length > 0 ? (
         <Dialog open={disableOpen} onOpenChange={setDisableOpen}>

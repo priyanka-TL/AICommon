@@ -540,7 +540,7 @@ test('13: infrastructure providers, rate cards and the shared cost engine', asyn
   // Provider screens carry no sample-data labels.
   await go(page, '/super-admin/infra-providers')
   await noProviderLabels(page)
-  await expect(page.locator('table tbody tr')).toHaveCount(5)
+  await expect(page.locator('table tbody tr')).toHaveCount(7)
   for (const tab of ['overview', 'rates', 'environments', 'spend']) {
     await go(page, `/super-admin/infra-providers/ip-azure?tab=${tab}`)
     await noProviderLabels(page)

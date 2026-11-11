@@ -4,7 +4,10 @@ import { ArrowDownRight, ArrowUpRight, Download, Info } from 'lucide-react'
 import type { CatalogItem, Environment } from '@/data/types'
 import { LIVE_INTERVAL_MS, RANGES, seriesFor, toCsv, downloadText, type MetricPoint, type Range } from '@/lib/metrics'
 import { axisProps, CHART_COLORS, CHART_GRID } from '@/lib/chart'
-import { formatCompact, formatInt, formatShortDate, formatTime } from '@/lib/format'
+import { formatCompact, formatINR, formatInt, formatShortDate, formatTime } from '@/lib/format'
+import { modelCost, modelPriceAt } from '@/lib/modelCost'
+import { envProjectIds } from '@/lib/capabilities'
+import { useAppStore } from '@/store/useAppStore'
 import { cn } from '@/lib/utils'
 import { ChartCard, ChartTooltip } from './ChartCard'
 import { StatusBadge, Tag } from './StatusBadge'
@@ -84,11 +87,20 @@ export function MonitoringPanel({ env, catalog }: { env: Environment; catalog: C
     [series, models],
   )
   const sum = (k: keyof MetricPoint) => series.reduce((s, p) => s + (p[k] as number), 0)
-  const tokenTotals = models.map((m) => ({
-    ...m,
-    in: series.reduce((s, p) => s + (p.tokens[m.id]?.in ?? 0), 0),
-    out: series.reduce((s, p) => s + (p.tokens[m.id]?.out ?? 0), 0),
-  }))
+  const deployments = useAppStore((s) => s.deployments)
+  const projects = useAppStore((s) => s.projects)
+  const infraProviders = useAppStore((s) => s.infraProviders)
+  const tenant = useAppStore((s) => s.tenants.find((t) => t.id === env.tenantId))
+  // Price each model where a project on this environment placed it, with the same engine as every other model cost.
+  const onEnv = envProjectIds(env.id, deployments).map((id) => projects.find((p) => p.id === id)).filter((p) => !!p)
+  const tokenTotals = models.map((m) => {
+    const tin = series.reduce((s, p) => s + (p.tokens[m.id]?.in ?? 0), 0)
+    const tout = series.reduce((s, p) => s + (p.tokens[m.id]?.out ?? 0), 0)
+    const place = onEnv.map((p) => p.platformModels[m.id]).find((x) => !!x)
+    const provider = place ? infraProviders.find((p) => p.id === place.providerId) : undefined
+    const { price, card } = modelPriceAt(provider, m.id)
+    return { ...m, in: tin, out: tout, provider: provider?.name, cost: price ? modelCost({ inputTokens: tin, outputTokens: tout }, price, card, tenant).total : null }
+  })
   const ramPct = cur.ramAlloc ? (cur.ramUsed / cur.ramAlloc) * 100 : 0
   const gpuMemPct = cur.gpuMemAlloc ? (cur.gpuMemUsed / cur.gpuMemAlloc) * 100 : 0
   const storagePct = cur.storageAlloc ? (cur.storageUsed / cur.storageAlloc) * 100 : 0
@@ -158,7 +170,7 @@ export function MonitoringPanel({ env, catalog }: { env: Environment; catalog: C
           </ResponsiveContainer>
         </ChartCard>
 
-        <ChartCard title="Token usage by model" description="Input + output tokens per step. Simulated data" height={240} className="xl:col-span-2">
+        <ChartCard title="Token usage by model" description={`Input + output tokens per step, with model cost over ${RANGES[effective].label}. Simulated data`} height={240} className="xl:col-span-2">
           {models.length === 0 ? (
             <p className="flex h-full items-center justify-center text-sm text-text-secondary">No language models in this environment.</p>
           ) : (
@@ -167,7 +179,10 @@ export function MonitoringPanel({ env, catalog }: { env: Environment; catalog: C
                 {tokenTotals.map((m, i) => (
                   <li key={m.id} className="flex items-center gap-1.5 text-caption text-text-secondary">
                     <span className="size-2.5 rounded-sm" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} aria-hidden />
-                    <span className="font-semibold text-text-primary">{m.name}</span> {formatCompact(m.in)} in · {formatCompact(m.out)} out
+                    <span className="font-semibold text-text-primary">{m.name}</span> {formatCompact(m.in)} in · {formatCompact(m.out)} out ·{' '}
+                    <span className="tabular font-semibold text-text-primary" data-model-cost={m.id}>
+                      {m.cost !== null ? `${formatINR(m.cost)} via ${m.provider}` : 'No platform price'}
+                    </span>
                   </li>
                 ))}
               </ul>
